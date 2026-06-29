@@ -1,10 +1,14 @@
 import { Cartesian3, Viewer } from "cesium";
 import "cesium/Build/Cesium/Widgets/widgets.css";
+import { CesiumBoundsRenderer } from "./cesium/CesiumBoundsRenderer";
 import { CesiumPointRenderer } from "./cesium/CesiumPointRenderer";
 import { createPointSamplesFromCopc } from "./cesium/createPointSamplesFromCopc";
 import { CopcSource } from "./core/copc/CopcSource";
-import type { CopcHierarchySummary } from "./core/copc/CopcHierarchySummary";
-import type { CopcInspection } from "./core/copc/CopcInspection";
+import type {
+  CopcHierarchyNodeSummary,
+  CopcHierarchySummary,
+} from "./core/copc/CopcHierarchySummary";
+import type { CopcBounds, CopcInspection } from "./core/copc/CopcInspection";
 import type { CopcNodePointSampleResult } from "./core/copc/CopcPointDataSample";
 import type { PointSample } from "./core/PointSample";
 import { createHardcodedPointSamples } from "./core/hardcodedPointSamples";
@@ -13,6 +17,7 @@ import "./style.css";
 const elements = getPrototypeElements();
 let currentSource: CopcSource | undefined;
 let currentInspection: CopcInspection | undefined;
+let currentHierarchy: CopcHierarchySummary | undefined;
 
 const viewer = new Viewer(elements.container, {
   animation: false,
@@ -30,6 +35,7 @@ const viewer = new Viewer(elements.container, {
 
 const points = createHardcodedPointSamples();
 const renderer = new CesiumPointRenderer(viewer.scene);
+const boundsRenderer = new CesiumBoundsRenderer(viewer.scene);
 renderer.setPoints(points);
 
 viewer.camera.flyTo({
@@ -63,6 +69,8 @@ async function inspectUrl(url: string): Promise<void> {
   const source = new CopcSource(url);
   currentSource = source;
   currentInspection = undefined;
+  currentHierarchy = undefined;
+  boundsRenderer.clear();
 
   try {
     const [inspection, hierarchy] = await Promise.all([
@@ -75,6 +83,7 @@ async function inspectUrl(url: string): Promise<void> {
     }
 
     currentInspection = inspection;
+    currentHierarchy = hierarchy;
     populateNodeSelect(hierarchy);
     renderInspection(inspection);
     await renderSelectedHierarchyNode();
@@ -88,6 +97,7 @@ function setInspectionLoading(): void {
   elements.metadataList.replaceChildren();
   elements.nodeSelect.disabled = true;
   elements.nodeSelect.replaceChildren(new Option("Loading hierarchy...", ""));
+  boundsRenderer.clear();
 }
 
 function setInspectionError(error: unknown): void {
@@ -97,11 +107,13 @@ function setInspectionError(error: unknown): void {
       : "COPC inspection failed.";
   elements.metadataList.replaceChildren();
   elements.nodeSelect.disabled = true;
+  boundsRenderer.clear();
 }
 
 function renderInspection(
   inspection: CopcInspection,
   pointResult?: CopcNodePointSampleResult,
+  selectedNode?: CopcHierarchyNodeSummary,
 ): void {
   elements.statusText.textContent = "COPC metadata loaded.";
   elements.metadataList.replaceChildren(
@@ -128,6 +140,18 @@ function renderInspection(
       pointResult
         ? `${pointResult.nodePointCount.toLocaleString()} loaded, ${pointResult.sampledPointCount.toLocaleString()} rendered`
         : "Not loaded yet",
+    ),
+    metadataRow(
+      "Node bounds min",
+      selectedNode ? formatBoundsMin(selectedNode.bounds) : "Not selected",
+    ),
+    metadataRow(
+      "Node bounds max",
+      selectedNode ? formatBoundsMax(selectedNode.bounds) : "Not selected",
+    ),
+    metadataRow(
+      "Node density",
+      selectedNode ? formatDensity(selectedNode.pointDensity) : "Not selected",
     ),
     metadataRow("VLRs", formatVlrs(inspection)),
     metadataRow("WKT", inspection.wkt ? truncateText(inspection.wkt, 220) : "Not found"),
@@ -171,6 +195,13 @@ async function renderSelectedHierarchyNode(): Promise<void> {
   const source = currentSource;
   const inspection = currentInspection;
   const nodeKey = elements.nodeSelect.value;
+  const selectedNode = findNode(nodeKey);
+
+  if (!selectedNode) {
+    setInspectionError(new Error(`COPC hierarchy node was not found: ${nodeKey}`));
+    return;
+  }
+
   elements.statusText.textContent = `Reading COPC node ${nodeKey}...`;
 
   try {
@@ -186,15 +217,20 @@ async function renderSelectedHierarchyNode(): Promise<void> {
     );
 
     renderer.setPoints(cesiumPoints);
+    boundsRenderer.setBounds(selectedNode.bounds, inspection);
     viewer.camera.flyTo({
       destination: cameraTargetForPointCloud(cesiumPoints),
       duration: 0,
     });
-    renderInspection(inspection, pointSamples);
+    renderInspection(inspection, pointSamples, selectedNode);
     elements.statusText.textContent = `Rendered ${pointSamples.sampledPointCount.toLocaleString()} real COPC points from node ${nodeKey}.`;
   } catch (error) {
     setInspectionError(error);
   }
+}
+
+function findNode(nodeKey: string): CopcHierarchyNodeSummary | undefined {
+  return currentHierarchy?.nodes.find((node) => node.key === nodeKey);
 }
 
 function populateNodeSelect(hierarchy: CopcHierarchySummary): void {
@@ -253,11 +289,11 @@ function metadataRow(label: string, value: string): DocumentFragment {
   return fragment;
 }
 
-function formatBoundsMin(bounds: CopcInspection["bounds"]): string {
+function formatBoundsMin(bounds: CopcBounds): string {
   return formatVector([bounds.minX, bounds.minY, bounds.minZ]);
 }
 
-function formatBoundsMax(bounds: CopcInspection["bounds"]): string {
+function formatBoundsMax(bounds: CopcBounds): string {
   return formatVector([bounds.maxX, bounds.maxY, bounds.maxZ]);
 }
 
@@ -279,6 +315,10 @@ function formatVlrs(inspection: CopcInspection): string {
       return `${kind} ${vlr.userId}/${vlr.recordId} (${vlr.contentLength.toLocaleString()} bytes${description})`;
     })
     .join(" | ");
+}
+
+function formatDensity(value: number): string {
+  return `${value.toExponential(3)} pts / unit^3`;
 }
 
 function truncateText(text: string, maxLength: number): string {

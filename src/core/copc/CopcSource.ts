@@ -53,8 +53,11 @@ export class CopcSource {
   }
 
   loadHierarchySummary(): Promise<CopcHierarchySummary> {
-    this.hierarchySummaryPromise ??= this.loadHierarchy().then((hierarchy) => ({
-      nodes: summarizeNodes(hierarchy.nodes),
+    this.hierarchySummaryPromise ??= Promise.all([
+      this.copcPromise,
+      this.loadHierarchy(),
+    ]).then(([copc, hierarchy]) => ({
+      nodes: summarizeNodes(hierarchy.nodes, copc.info.cube),
       pageCount: Object.values(hierarchy.pages).filter(Boolean).length,
     }));
 
@@ -175,6 +178,7 @@ function summarizeVlrs(copc: CopcData): CopcVlrSummary[] {
 
 function summarizeNodes(
   nodes: Hierarchy.Node.Map,
+  cube: readonly number[],
 ): CopcHierarchyNodeSummary[] {
   return Object.entries(nodes)
     .flatMap(([key, node]) => {
@@ -184,15 +188,36 @@ function summarizeNodes(
 
       return [
         {
-          ...parseNodeKey(key),
+          ...createNodeSummary(key, node, cube),
           key,
-          pointCount: node.pointCount,
-          pointDataOffset: node.pointDataOffset,
-          pointDataLength: node.pointDataLength,
         },
       ];
     })
     .sort(compareNodes);
+}
+
+function createNodeSummary(
+  key: string,
+  node: Hierarchy.Node,
+  cube: readonly number[],
+): Omit<CopcHierarchyNodeSummary, "key"> {
+  const parsedKey = parseNodeKey(key);
+  const bounds = boundsForNode(cube, parsedKey);
+  const volume = Math.max(
+    (bounds.maxX - bounds.minX) *
+      (bounds.maxY - bounds.minY) *
+      (bounds.maxZ - bounds.minZ),
+    Number.EPSILON,
+  );
+
+  return {
+    ...parsedKey,
+    bounds,
+    pointCount: node.pointCount,
+    pointDensity: node.pointCount / volume,
+    pointDataOffset: node.pointDataOffset,
+    pointDataLength: node.pointDataLength,
+  };
 }
 
 function parseNodeKey(
@@ -211,6 +236,29 @@ function parseNodeKey(
     x,
     y,
     z,
+  };
+}
+
+function boundsForNode(
+  cube: readonly number[],
+  key: Pick<CopcHierarchyNodeSummary, "depth" | "x" | "y" | "z">,
+): CopcBounds {
+  const cubeBounds = boundsFromTuple(cube);
+  const divisions = 2 ** key.depth;
+  const width = (cubeBounds.maxX - cubeBounds.minX) / divisions;
+  const depth = (cubeBounds.maxY - cubeBounds.minY) / divisions;
+  const height = (cubeBounds.maxZ - cubeBounds.minZ) / divisions;
+  const minX = cubeBounds.minX + key.x * width;
+  const minY = cubeBounds.minY + key.y * depth;
+  const minZ = cubeBounds.minZ + key.z * height;
+
+  return {
+    minX,
+    minY,
+    minZ,
+    maxX: minX + width,
+    maxY: minY + depth,
+    maxZ: minZ + height,
   };
 }
 
