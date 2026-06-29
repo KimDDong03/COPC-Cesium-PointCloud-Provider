@@ -31,9 +31,26 @@ export class CesiumBoundsRenderer {
   }
 
   setBounds(bounds: CopcBounds, inspection: CopcInspection): void {
+    this.setBoundsList([bounds], inspection);
+  }
+
+  setBoundsList(boundsList: readonly CopcBounds[], inspection: CopcInspection): void {
     this.collection.removeAll();
 
     const transform = createCopcCoordinateTransform(inspection);
+    for (const bounds of boundsList) {
+      this.addBounds(bounds, transform);
+    }
+  }
+
+  clear(): void {
+    this.collection.removeAll();
+  }
+
+  private addBounds(
+    bounds: CopcBounds,
+    transform: ReturnType<typeof createCopcCoordinateTransform>,
+  ): void {
     const corners = createBoundsCorners(bounds).map(([x, y, z]) => {
       const coordinate = transform(x, y, z);
 
@@ -52,10 +69,6 @@ export class CesiumBoundsRenderer {
         }),
       });
     }
-  }
-
-  clear(): void {
-    this.collection.removeAll();
   }
 }
 

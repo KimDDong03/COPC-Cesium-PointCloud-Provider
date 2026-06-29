@@ -15,7 +15,10 @@ import type {
   CopcHierarchySummary,
 } from "./core/copc/CopcHierarchySummary";
 import type { CopcBounds, CopcInspection } from "./core/copc/CopcInspection";
-import type { CopcNodePointSampleResult } from "./core/copc/CopcPointDataSample";
+import type {
+  CopcMultiNodePointSampleResult,
+  CopcNodePointSampleResult,
+} from "./core/copc/CopcPointDataSample";
 import {
   suggestHierarchyNode,
   type CopcHierarchyNodeSuggestion,
@@ -30,6 +33,7 @@ let currentSource: CopcSource | undefined;
 let currentInspection: CopcInspection | undefined;
 let currentHierarchy: CopcHierarchySummary | undefined;
 let currentSuggestion: CopcHierarchyNodeSuggestion | undefined;
+const renderNodeSet = new Set<string>();
 
 const viewer = new Viewer(elements.container, {
   animation: false,
@@ -83,6 +87,27 @@ elements.applySuggestionButton.addEventListener("click", () => {
   void renderSelectedHierarchyNode();
 });
 
+elements.addSelectedButton.addEventListener("click", () => {
+  if (elements.nodeSelect.value) {
+    addNodeToRenderSet(elements.nodeSelect.value);
+  }
+});
+
+elements.addSuggestionButton.addEventListener("click", () => {
+  if (currentSuggestion) {
+    addNodeToRenderSet(currentSuggestion.node.key);
+  }
+});
+
+elements.renderSetButton.addEventListener("click", () => {
+  void renderSelectedNodeSet();
+});
+
+elements.clearSetButton.addEventListener("click", () => {
+  renderNodeSet.clear();
+  renderRenderSetControls();
+});
+
 viewer.camera.moveEnd.addEventListener(() => {
   updateSuggestedNode();
 });
@@ -96,8 +121,10 @@ async function inspectUrl(url: string): Promise<void> {
   currentInspection = undefined;
   currentHierarchy = undefined;
   currentSuggestion = undefined;
+  renderNodeSet.clear();
   boundsRenderer.clear();
   renderSuggestion(undefined);
+  renderRenderSetControls();
 
   try {
     const [inspection, hierarchy] = await Promise.all([
@@ -127,6 +154,7 @@ function setInspectionLoading(): void {
   elements.nodeSelect.replaceChildren(new Option("Loading hierarchy...", ""));
   boundsRenderer.clear();
   renderSuggestion(undefined);
+  renderRenderSetControls();
 }
 
 function setInspectionError(error: unknown): void {
@@ -138,12 +166,14 @@ function setInspectionError(error: unknown): void {
   elements.nodeSelect.disabled = true;
   boundsRenderer.clear();
   renderSuggestion(undefined);
+  renderRenderSetControls();
 }
 
 function renderInspection(
   inspection: CopcInspection,
   pointResult?: CopcNodePointSampleResult,
   selectedNode?: CopcHierarchyNodeSummary,
+  nodeSetResult?: CopcMultiNodePointSampleResult,
 ): void {
   elements.statusText.textContent = "COPC metadata loaded.";
   elements.metadataList.replaceChildren(
@@ -182,6 +212,12 @@ function renderInspection(
     metadataRow(
       "Node density",
       selectedNode ? formatDensity(selectedNode.pointDensity) : "Not selected",
+    ),
+    metadataRow(
+      "Render set",
+      nodeSetResult
+        ? `${nodeSetResult.nodeKeys.length.toLocaleString()} nodes, ${nodeSetResult.sampledPointCount.toLocaleString()} points rendered`
+        : formatRenderSetSummary(),
     ),
     metadataRow("VLRs", formatVlrs(inspection)),
     metadataRow("WKT", inspection.wkt ? truncateText(inspection.wkt, 220) : "Not found"),
@@ -255,6 +291,48 @@ async function renderSelectedHierarchyNode(): Promise<void> {
     renderInspection(inspection, pointSamples, selectedNode);
     elements.statusText.textContent = `Rendered ${pointSamples.sampledPointCount.toLocaleString()} real COPC points from node ${nodeKey}.`;
     updateSuggestedNode();
+    renderRenderSetControls();
+  } catch (error) {
+    setInspectionError(error);
+  }
+}
+
+async function renderSelectedNodeSet(): Promise<void> {
+  if (!currentInspection || !currentSource || renderNodeSet.size === 0) {
+    return;
+  }
+
+  const source = currentSource;
+  const inspection = currentInspection;
+  const nodeKeys = [...renderNodeSet];
+  const nodes = nodeKeys.map(findRequiredNode);
+  elements.statusText.textContent = `Reading ${nodeKeys.length.toLocaleString()} COPC nodes...`;
+
+  try {
+    const pointSamples = await source.loadNodesPointSamples({ nodeKeys });
+
+    if (source !== currentSource) {
+      return;
+    }
+
+    const cesiumPoints = createPointSamplesFromCopc(
+      pointSamples.points,
+      inspection,
+    );
+
+    renderer.setPoints(cesiumPoints);
+    boundsRenderer.setBoundsList(
+      nodes.map((node) => node.bounds),
+      inspection,
+    );
+    viewer.camera.flyTo({
+      destination: cameraTargetForPointCloud(cesiumPoints),
+      duration: 0,
+    });
+    renderInspection(inspection, undefined, undefined, pointSamples);
+    elements.statusText.textContent = `Rendered ${pointSamples.sampledPointCount.toLocaleString()} points from ${pointSamples.nodeKeys.length.toLocaleString()} COPC nodes.`;
+    updateSuggestedNode();
+    renderRenderSetControls();
   } catch (error) {
     setInspectionError(error);
   }
@@ -305,10 +383,43 @@ function renderSuggestion(
   const isSelected = suggestion.node.key === elements.nodeSelect.value;
   elements.suggestionText.textContent = `Suggested node: ${suggestion.node.key} (${formatSuggestionDistance(suggestion.distanceToBounds)})`;
   elements.applySuggestionButton.disabled = isSelected;
+  renderRenderSetControls();
 }
 
 function findNode(nodeKey: string): CopcHierarchyNodeSummary | undefined {
   return currentHierarchy?.nodes.find((node) => node.key === nodeKey);
+}
+
+function findRequiredNode(nodeKey: string): CopcHierarchyNodeSummary {
+  const node = findNode(nodeKey);
+
+  if (!node) {
+    throw new Error(`COPC hierarchy node was not found: ${nodeKey}`);
+  }
+
+  return node;
+}
+
+function addNodeToRenderSet(nodeKey: string): void {
+  renderNodeSet.add(nodeKey);
+  renderRenderSetControls();
+}
+
+function renderRenderSetControls(): void {
+  const nodeKeys = [...renderNodeSet];
+  const hasNodes = nodeKeys.length > 0;
+  const selectedNodeKey = elements.nodeSelect.value;
+  const suggestedNodeKey = currentSuggestion?.node.key;
+
+  elements.renderSetText.textContent = hasNodes
+    ? `Render set: ${nodeKeys.join(", ")}`
+    : "Render set: empty.";
+  elements.addSelectedButton.disabled =
+    !selectedNodeKey || renderNodeSet.has(selectedNodeKey);
+  elements.addSuggestionButton.disabled =
+    !suggestedNodeKey || renderNodeSet.has(suggestedNodeKey);
+  elements.renderSetButton.disabled = !hasNodes;
+  elements.clearSetButton.disabled = !hasNodes;
 }
 
 function populateNodeSelect(hierarchy: CopcHierarchySummary): void {
@@ -333,6 +444,11 @@ function getPrototypeElements(): {
   readonly nodeSelect: HTMLSelectElement;
   readonly suggestionText: HTMLParagraphElement;
   readonly applySuggestionButton: HTMLButtonElement;
+  readonly renderSetText: HTMLParagraphElement;
+  readonly addSelectedButton: HTMLButtonElement;
+  readonly addSuggestionButton: HTMLButtonElement;
+  readonly renderSetButton: HTMLButtonElement;
+  readonly clearSetButton: HTMLButtonElement;
   readonly statusText: HTMLParagraphElement;
   readonly metadataList: HTMLDListElement;
 } {
@@ -344,6 +460,17 @@ function getPrototypeElements(): {
   const applySuggestionButton = document.querySelector<HTMLButtonElement>(
     "#copc-apply-suggestion",
   );
+  const renderSetText = document.querySelector<HTMLParagraphElement>("#copc-render-set");
+  const addSelectedButton = document.querySelector<HTMLButtonElement>(
+    "#copc-add-selected",
+  );
+  const addSuggestionButton = document.querySelector<HTMLButtonElement>(
+    "#copc-add-suggestion",
+  );
+  const renderSetButton = document.querySelector<HTMLButtonElement>(
+    "#copc-render-set-button",
+  );
+  const clearSetButton = document.querySelector<HTMLButtonElement>("#copc-clear-set");
   const statusText = document.querySelector<HTMLParagraphElement>("#copc-status");
   const metadataList = document.querySelector<HTMLDListElement>("#copc-metadata");
 
@@ -354,6 +481,11 @@ function getPrototypeElements(): {
     !nodeSelect ||
     !suggestionText ||
     !applySuggestionButton ||
+    !renderSetText ||
+    !addSelectedButton ||
+    !addSuggestionButton ||
+    !renderSetButton ||
+    !clearSetButton ||
     !statusText ||
     !metadataList
   ) {
@@ -367,6 +499,11 @@ function getPrototypeElements(): {
     nodeSelect,
     suggestionText,
     applySuggestionButton,
+    renderSetText,
+    addSelectedButton,
+    addSuggestionButton,
+    renderSetButton,
+    clearSetButton,
     statusText,
     metadataList,
   };
@@ -414,6 +551,12 @@ function formatVlrs(inspection: CopcInspection): string {
 
 function formatDensity(value: number): string {
   return `${value.toExponential(3)} pts / unit^3`;
+}
+
+function formatRenderSetSummary(): string {
+  return renderNodeSet.size > 0
+    ? `${renderNodeSet.size.toLocaleString()} nodes queued`
+    : "Empty";
 }
 
 function formatSuggestionDistance(value: number): string {

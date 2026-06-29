@@ -17,3 +17,11 @@ export interface CopcNodePointSampleResult {
   readonly sampledPointCount: number;
   readonly points: readonly CopcPointDataSample[];
 }
+
+export interface CopcMultiNodePointSampleResult {
+  readonly nodeKeys: readonly string[];
+  readonly nodeResults: readonly CopcNodePointSampleResult[];
+  readonly nodePointCount: number;
+  readonly sampledPointCount: number;
+  readonly points: readonly CopcPointDataSample[];
+}

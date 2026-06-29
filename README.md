@@ -34,6 +34,7 @@ The hierarchy node selector lists nodes from the root hierarchy page and lets th
 `CopcSource` keeps the opened COPC metadata, hierarchy page, and sampled node point data in memory for the active URL.
 The example also computes the selected node bounds and renders a yellow debug bounding box in CesiumJS.
 It can suggest the nearest loaded hierarchy node to the current camera position and apply that suggestion on demand.
+The manual render set can combine multiple hierarchy nodes and render their sampled points together.
 
 ## Planned Shape
 

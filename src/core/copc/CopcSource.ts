@@ -12,6 +12,7 @@ import type {
   CopcVlrSummary,
 } from "./CopcInspection";
 import type {
+  CopcMultiNodePointSampleResult,
   CopcNodePointSampleResult,
   CopcPointColor,
   CopcPointDataSample,
@@ -20,6 +21,11 @@ import type {
 export interface LoadNodePointSamplesOptions {
   readonly nodeKey?: string;
   readonly maxPointCount?: number;
+}
+
+export interface LoadNodesPointSamplesOptions {
+  readonly nodeKeys: readonly string[];
+  readonly maxPointCountPerNode?: number;
 }
 
 const DEFAULT_MAX_POINT_COUNT = 5_000;
@@ -84,6 +90,39 @@ export class CopcSource {
     const promise = this.loadNodePointSamplesWithoutCache(nodeKey, maxPointCount);
     this.nodePointSamplePromises.set(cacheKey, promise);
     return promise;
+  }
+
+  async loadNodesPointSamples(
+    options: LoadNodesPointSamplesOptions,
+  ): Promise<CopcMultiNodePointSampleResult> {
+    const nodeKeys = [...new Set(options.nodeKeys)];
+
+    if (nodeKeys.length === 0) {
+      throw new Error("At least one COPC hierarchy node key is required.");
+    }
+
+    const nodeResults = await Promise.all(
+      nodeKeys.map((nodeKey) =>
+        this.loadNodePointSamples({
+          nodeKey,
+          maxPointCount: options.maxPointCountPerNode,
+        }),
+      ),
+    );
+
+    return {
+      nodeKeys,
+      nodeResults,
+      nodePointCount: nodeResults.reduce(
+        (total, result) => total + result.nodePointCount,
+        0,
+      ),
+      sampledPointCount: nodeResults.reduce(
+        (total, result) => total + result.sampledPointCount,
+        0,
+      ),
+      points: nodeResults.flatMap((result) => result.points),
+    };
   }
 
   private loadHierarchy(): Promise<Hierarchy.Subtree> {

@@ -114,6 +114,34 @@ body {
   background: #233147;
 }
 
+.copc-render-set {
+  margin-top: 10px;
+}
+
+#copc-render-set {
+  margin: 0 0 8px;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  color: #d9e6f7;
+}
+
+.copc-render-set-controls {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.copc-render-set-controls button {
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.copc-render-set-controls button:disabled {
+  color: #77889d;
+  cursor: not-allowed;
+  background: #233147;
+}
+
 #copc-status {
   margin: 12px 0;
   font-size: 13px;
@@ -160,6 +188,10 @@ body {
 
   .copc-suggestion {
     grid-template-columns: 1fr;
+  }
+
+  .copc-render-set-controls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   #copc-metadata {
