@@ -2,18 +2,16 @@ import { Cartesian3, Viewer } from "cesium";
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import { CesiumPointRenderer } from "./cesium/CesiumPointRenderer";
 import { createPointSamplesFromCopc } from "./cesium/createPointSamplesFromCopc";
+import { CopcSource } from "./core/copc/CopcSource";
 import type { CopcHierarchySummary } from "./core/copc/CopcHierarchySummary";
 import type { CopcInspection } from "./core/copc/CopcInspection";
 import type { CopcNodePointSampleResult } from "./core/copc/CopcPointDataSample";
-import { inspectCopc } from "./core/copc/inspectCopc";
-import { loadHierarchySummary } from "./core/copc/loadHierarchySummary";
-import { loadNodePointSamples } from "./core/copc/loadNodePointSamples";
 import type { PointSample } from "./core/PointSample";
 import { createHardcodedPointSamples } from "./core/hardcodedPointSamples";
 import "./style.css";
 
 const elements = getPrototypeElements();
-let currentUrl = "";
+let currentSource: CopcSource | undefined;
 let currentInspection: CopcInspection | undefined;
 
 const viewer = new Viewer(elements.container, {
@@ -62,12 +60,20 @@ void inspectUrl(elements.urlInput.value);
 
 async function inspectUrl(url: string): Promise<void> {
   setInspectionLoading();
-  currentUrl = url;
+  const source = new CopcSource(url);
+  currentSource = source;
   currentInspection = undefined;
 
   try {
-    const inspection = await inspectCopc(url);
-    const hierarchy = await loadHierarchySummary(url);
+    const [inspection, hierarchy] = await Promise.all([
+      source.inspect(),
+      source.loadHierarchySummary(),
+    ]);
+
+    if (source !== currentSource) {
+      return;
+    }
+
     currentInspection = inspection;
     populateNodeSelect(hierarchy);
     renderInspection(inspection);
@@ -158,18 +164,25 @@ elements.nodeSelect.addEventListener("change", () => {
 });
 
 async function renderSelectedHierarchyNode(): Promise<void> {
-  if (!currentInspection || !currentUrl || !elements.nodeSelect.value) {
+  if (!currentInspection || !currentSource || !elements.nodeSelect.value) {
     return;
   }
 
+  const source = currentSource;
+  const inspection = currentInspection;
   const nodeKey = elements.nodeSelect.value;
   elements.statusText.textContent = `Reading COPC node ${nodeKey}...`;
 
   try {
-    const pointSamples = await loadNodePointSamples(currentUrl, { nodeKey });
+    const pointSamples = await source.loadNodePointSamples({ nodeKey });
+
+    if (source !== currentSource) {
+      return;
+    }
+
     const cesiumPoints = createPointSamplesFromCopc(
       pointSamples.points,
-      currentInspection,
+      inspection,
     );
 
     renderer.setPoints(cesiumPoints);
@@ -177,7 +190,7 @@ async function renderSelectedHierarchyNode(): Promise<void> {
       destination: cameraTargetForPointCloud(cesiumPoints),
       duration: 0,
     });
-    renderInspection(currentInspection, pointSamples);
+    renderInspection(inspection, pointSamples);
     elements.statusText.textContent = `Rendered ${pointSamples.sampledPointCount.toLocaleString()} real COPC points from node ${nodeKey}.`;
   } catch (error) {
     setInspectionError(error);
