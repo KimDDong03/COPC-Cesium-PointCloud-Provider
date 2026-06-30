@@ -190,6 +190,7 @@ const sourceOptions: CopcSourceOptions = {
   maxCachedHierarchyPages: 3,
   maxCachedSampleSets: 2,
   maxCachedPointSampleBytes: 1024,
+  maxConcurrentPointSampleWorkerRequests: 2,
   pointSampleLoading: pointSampleLoadingMode,
 };
 const nodeSampleOptions: LoadNodePointSamplesOptions = {
@@ -217,6 +218,7 @@ if (app) {
     String(sourceOptions.maxCachedHierarchyPages),
     String(sourceOptions.maxCachedSampleSets),
     String(sourceOptions.maxCachedPointSampleBytes),
+    String(sourceOptions.maxConcurrentPointSampleWorkerRequests),
     String(Boolean(nodeSampleOptions.signal)),
     String(Boolean(depthEstimate)),
     String(Boolean(inspection)),

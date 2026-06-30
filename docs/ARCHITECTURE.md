@@ -62,6 +62,7 @@ The current implementation includes:
 - `CopcPointCloudLayer.renderAutomatic` for selecting and rendering nodes in one call.
 - `CopcPointCloudLayer.selectNodesForCamera` for selecting nodes without immediately rendering.
 - Optional `pointSampleLoading: "worker"` support that moves COPC point-data reads and LAZ decoding into a Web Worker, with main-thread fallback when a worker cannot be created.
+- A small `maxConcurrentPointSampleWorkerRequests` queue so worker-backed point sampling applies request backpressure before dispatch.
 - `AbortSignal` support for point-sample loading and Cesium render calls so stale camera-stream worker requests can be canceled and late worker responses ignored.
 - Example-only `Stream on camera move` behavior that reruns hierarchy expansion, camera selection, and cached sample rendering.
 
@@ -89,7 +90,7 @@ Camera-based selection requires both directions:
 - Point rendering uses Cesium point primitives, not a custom optimized WebGL primitive.
 - Point sample cache byte usage is estimated from decoded sample fields, not from JavaScript object heap size.
 - Worker loading currently targets point data only; hierarchy metadata selection and cache policy remain on the main thread.
-- Worker cancellation is request-level. It prevents stale responses from being applied, but it does not yet interrupt every in-flight COPC range read inside lower-level dependencies.
+- Worker cancellation is request-level. It prevents stale responses from being applied and drops queued stale work before dispatch, but it does not yet interrupt every in-flight COPC range read inside lower-level dependencies.
 - Camera streaming is prototype-oriented; it expands a small number of hierarchy pages per update while keeping the example's automatic render depth shallow.
 - CRS detection is not complete; projected CRS data should pass explicit transform options.
 
@@ -97,5 +98,5 @@ Camera-based selection requires both directions:
 
 1. Calibrate screen-space error estimates against Cesium camera frustum parameters and point-density metrics.
 2. Tune hierarchy cache policy with byte-aware limits and camera-priority hints.
-3. Add worker request backpressure and a small concurrency queue for point sampling.
+3. Tune worker concurrency defaults and add worker-pool support if one worker becomes a bottleneck.
 4. Replace point primitive rendering with a more scalable Cesium-native primitive path when the basic API stabilizes.

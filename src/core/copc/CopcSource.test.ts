@@ -212,6 +212,15 @@ describe("CopcSource point sample cache", () => {
     expect(
       () =>
         new CopcSource("https://example.com/sample.copc.laz", {
+          maxConcurrentPointSampleWorkerRequests: 0,
+        }),
+    ).toThrow(
+      "maxConcurrentPointSampleWorkerRequests must be a positive integer.",
+    );
+
+    expect(
+      () =>
+        new CopcSource("https://example.com/sample.copc.laz", {
           pointSampleLoading: "invalid",
         } as never),
     ).toThrow("pointSampleLoading must be either 'main-thread' or 'worker'.");
@@ -289,6 +298,135 @@ describe("CopcSource point sample cache", () => {
         cacheMissCount: 1,
       }),
     );
+  });
+
+  it("limits concurrent worker point sample requests", async () => {
+    const worker = new FakePointSampleWorker();
+    const source = new CopcSource("https://example.com/sample.copc.laz", {
+      pointSampleLoading: "worker",
+      maxConcurrentPointSampleWorkerRequests: 2,
+      createPointSampleWorker: () => worker as unknown as Worker,
+    });
+    const mutableSource = source as unknown as {
+      copcPromise: Promise<CopcData>;
+      loadHierarchyPageData: (
+        page: Hierarchy.Page,
+      ) => Promise<Hierarchy.Subtree>;
+    };
+    const nodeKeys = ["0-0-0-0", "1-0-0-0", "1-1-0-0"];
+
+    mutableSource.copcPromise = Promise.resolve({
+      info: {
+        cube: [0, 0, 0, 8, 8, 8],
+        rootHierarchyPage: { pageOffset: 10, pageLength: 20 },
+      },
+    } as CopcData);
+    mutableSource.loadHierarchyPageData = async () => ({
+      nodes: {
+        "0-0-0-0": createNode(100),
+        "1-0-0-0": createNode(50),
+        "1-1-0-0": createNode(25),
+      },
+      pages: {},
+    });
+
+    const promise = source.loadNodesPointSamples({
+      nodeKeys,
+      maxPointCountPerNode: 5,
+    });
+    await waitForWorkerLoadRequestCount(worker, 2);
+    expect(
+      worker.requests.filter(isLoadRequest).map((request) => request.nodeKey),
+    ).toEqual(["0-0-0-0", "1-0-0-0"]);
+
+    const firstRequest = worker.requests.find(isLoadRequest);
+
+    if (!firstRequest) {
+      throw new Error("Expected first worker load request.");
+    }
+
+    worker.emit(createWorkerSuccessResponse(firstRequest));
+    await waitForWorkerLoadRequestCount(worker, 3);
+
+    const loadRequests = worker.requests.filter(isLoadRequest);
+    expect(loadRequests.map((request) => request.nodeKey)).toEqual(nodeKeys);
+
+    for (const request of loadRequests.slice(1)) {
+      worker.emit(createWorkerSuccessResponse(request));
+    }
+
+    const result = await promise;
+    expect(result.nodeKeys).toEqual(nodeKeys);
+    expect(result.sampledPointCount).toBe(3);
+  });
+
+  it("does not send queued worker point sample requests after abort", async () => {
+    const worker = new FakePointSampleWorker();
+    const abortController = new AbortController();
+    const source = new CopcSource("https://example.com/sample.copc.laz", {
+      pointSampleLoading: "worker",
+      maxConcurrentPointSampleWorkerRequests: 1,
+      createPointSampleWorker: () => worker as unknown as Worker,
+    });
+    const mutableSource = source as unknown as {
+      copcPromise: Promise<CopcData>;
+      loadHierarchyPageData: (
+        page: Hierarchy.Page,
+      ) => Promise<Hierarchy.Subtree>;
+    };
+
+    mutableSource.copcPromise = Promise.resolve({
+      info: {
+        cube: [0, 0, 0, 8, 8, 8],
+        rootHierarchyPage: { pageOffset: 10, pageLength: 20 },
+      },
+    } as CopcData);
+    mutableSource.loadHierarchyPageData = async () => ({
+      nodes: {
+        "0-0-0-0": createNode(100),
+        "1-0-0-0": createNode(50),
+      },
+      pages: {},
+    });
+
+    const firstPromise = source.loadNodePointSamples({
+      nodeKey: "0-0-0-0",
+      maxPointCount: 5,
+      signal: abortController.signal,
+    });
+    const secondPromise = source.loadNodePointSamples({
+      nodeKey: "1-0-0-0",
+      maxPointCount: 5,
+      signal: abortController.signal,
+    });
+    await waitForWorkerLoadRequestCount(worker, 1);
+
+    const firstRequest = worker.requests.find(isLoadRequest);
+
+    if (!firstRequest) {
+      throw new Error("Expected first worker load request.");
+    }
+
+    abortController.abort();
+
+    const results = await Promise.allSettled([firstPromise, secondPromise]);
+    expect(results).toEqual([
+      {
+        status: "rejected",
+        reason: expect.objectContaining({ name: "AbortError" }),
+      },
+      {
+        status: "rejected",
+        reason: expect.objectContaining({ name: "AbortError" }),
+      },
+    ]);
+    expect(
+      worker.requests.filter(isLoadRequest).map((request) => request.nodeKey),
+    ).toEqual(["0-0-0-0"]);
+    expect(worker.requests).toContainEqual({
+      id: firstRequest.id,
+      type: "cancel",
+    });
   });
 
   it("cancels in-flight worker point sample requests when aborted", async () => {
@@ -651,6 +789,27 @@ function createSamplePoints(
   }));
 }
 
+function isLoadRequest(
+  request: CopcPointSampleWorkerRequest,
+): request is CopcPointSampleWorkerLoadRequest {
+  return request.type === "loadNodePointSamples";
+}
+
+function createWorkerSuccessResponse(
+  request: CopcPointSampleWorkerLoadRequest,
+): CopcPointSampleWorkerResponse {
+  return {
+    id: request.id,
+    type: "loadNodePointSamples:success",
+    result: {
+      nodeKey: request.nodeKey,
+      nodePointCount: request.node.pointCount,
+      sampledPointCount: 1,
+      points: [{ x: request.id, y: request.id, z: request.id }],
+    },
+  };
+}
+
 class FakePointSampleWorker {
   readonly requests: CopcPointSampleWorkerRequest[] = [];
   private messageListener:
@@ -716,4 +875,21 @@ async function waitForWorkerRequestCount(
   }
 
   throw new Error(`Timed out waiting for ${requestCount} worker requests.`);
+}
+
+async function waitForWorkerLoadRequestCount(
+  worker: FakePointSampleWorker,
+  requestCount: number,
+): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (worker.requests.filter(isLoadRequest).length >= requestCount) {
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  throw new Error(
+    `Timed out waiting for ${requestCount} worker load requests.`,
+  );
 }
