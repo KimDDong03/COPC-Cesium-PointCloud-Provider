@@ -97,7 +97,7 @@ await writeFile(
         typecheck: "tsc --noEmit",
       },
       dependencies: {
-        "copc-viewer": toFileDependency(tarballPath),
+        "copc-cesium": toFileDependency(tarballPath),
       },
       devDependencies: {
         typescript: "^5.9.3",
@@ -147,9 +147,9 @@ await writeFile(
   type CopcPointCloudLayerCameraSelectionOptions,
   type CopcCoordinateTransformStatus,
   type CopcInspection,
-} from "copc-viewer";
-import { CopcSource, type CopcPointSampleCacheStats } from "copc-viewer/core";
-import { CesiumPointRenderer } from "copc-viewer/cesium";
+} from "copc-cesium";
+import { CopcSource, type CopcPointSampleCacheStats } from "copc-cesium/core";
+import { CesiumPointRenderer } from "copc-cesium/cesium";
 
 const exportedConstructors = [
   CopcPointCloudLayer,

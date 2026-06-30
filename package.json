@@ -1,7 +1,25 @@
 {
-  "name": "copc-viewer",
+  "name": "copc-cesium",
   "version": "0.0.0",
+  "description": "CesiumJS-native COPC point cloud streaming and visualization library prototype.",
+  "license": "MIT",
   "private": true,
+  "keywords": [
+    "cesium",
+    "cesiumjs",
+    "copc",
+    "point-cloud",
+    "lidar",
+    "webgis"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/KimDDong03/COPC_VIEWER.git"
+  },
+  "bugs": {
+    "url": "https://github.com/KimDDong03/COPC_VIEWER/issues"
+  },
+  "homepage": "https://github.com/KimDDong03/COPC_VIEWER#readme",
   "type": "module",
   "main": "./dist/lib/index.js",
   "module": "./dist/lib/index.js",
@@ -22,6 +40,7 @@
   },
   "files": [
     "dist/lib",
+    "LICENSE",
     "README.md"
   ],
   "scripts": {

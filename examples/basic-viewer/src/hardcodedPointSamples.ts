@@ -1,4 +1,4 @@
-import type { PointSample } from "copc-viewer";
+import type { PointSample } from "copc-cesium";
 
 export function createHardcodedPointSamples(): PointSample[] {
   return [

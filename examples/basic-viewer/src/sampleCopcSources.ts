@@ -2,7 +2,7 @@ import {
   createDefaultCopcCoordinateTransforms,
   createProj4CoordinateTransforms,
   type CopcCoordinateTransformFactory,
-} from "copc-viewer";
+} from "copc-cesium";
 
 const EPSG_32611 = "EPSG:32611";
 

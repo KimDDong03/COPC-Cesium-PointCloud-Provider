@@ -6,19 +6,19 @@ export default defineConfig({
   resolve: {
     alias: [
       {
-        find: "copc-viewer/cesium",
+        find: "copc-cesium/cesium",
         replacement: filePathFromUrl(
           new URL("./src/cesium/index.ts", import.meta.url),
         ),
       },
       {
-        find: "copc-viewer/core",
+        find: "copc-cesium/core",
         replacement: filePathFromUrl(
           new URL("./src/core/index.ts", import.meta.url),
         ),
       },
       {
-        find: "copc-viewer",
+        find: "copc-cesium",
         replacement: filePathFromUrl(new URL("./src/index.ts", import.meta.url)),
       },
     ],

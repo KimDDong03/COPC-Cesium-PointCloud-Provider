@@ -17,7 +17,7 @@ import {
   type CopcNodePointSampleResult,
   type CopcPointSampleCacheStats,
   type PointSample,
-} from "copc-viewer";
+} from "copc-cesium";
 import { createHardcodedPointSamples } from "./hardcodedPointSamples";
 import {
   createCustomCopcSource,

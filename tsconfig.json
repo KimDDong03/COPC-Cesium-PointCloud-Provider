@@ -16,9 +16,9 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
     "paths": {
-      "copc-viewer": ["src/index.ts"],
-      "copc-viewer/core": ["src/core/index.ts"],
-      "copc-viewer/cesium": ["src/cesium/index.ts"]
+      "copc-cesium": ["src/index.ts"],
+      "copc-cesium/core": ["src/core/index.ts"],
+      "copc-cesium/cesium": ["src/cesium/index.ts"]
     }
   },
   "include": ["src", "examples", "vite.config.ts", "vite.lib.config.ts"]

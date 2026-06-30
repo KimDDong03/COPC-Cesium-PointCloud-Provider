@@ -1,16 +1,19 @@
-# COPC Viewer
+# copc-cesium
 
 [![CI](https://github.com/KimDDong03/COPC_VIEWER/actions/workflows/ci.yml/badge.svg)](https://github.com/KimDDong03/COPC_VIEWER/actions/workflows/ci.yml)
 
-CesiumJS-native COPC point cloud visualization library prototype.
+CesiumJS-native COPC point cloud streaming and visualization library prototype.
+
+`copc-cesium` lets a CesiumJS developer load COPC point cloud data directly from a COPC file or URL, inspect its hierarchy, range-read selected point nodes, transform source coordinates, and render sampled points in a Cesium scene without pre-converting the data to 3D Tiles.
 
 ## Goal
 
 Allow a CesiumJS developer to load a COPC file or URL directly into a Cesium scene without pre-converting it to 3D Tiles.
 
 This project handles already-created COPC files. It does not target live LiDAR input, a general point cloud viewer app, or a COPC-to-3D-Tiles conversion pipeline.
+Here, streaming means on-demand COPC hierarchy and point-data range reads driven by camera/node selection, not real-time sensor ingestion.
 
-## First Prototype Target
+## Prototype Scope
 
 The current prototype is intentionally small:
 
@@ -19,6 +22,7 @@ The current prototype is intentionally small:
 3. Read a small set of real XYZ points.
 4. Transform the sample COPC CRS into Cesium-friendly longitude, latitude, and height.
 5. Display sampled COPC hierarchy-node points in CesiumJS.
+6. Re-select a small node set from the current camera and reuse in-memory node sample cache.
 
 Full LOD, persistent cache management, workers, custom primitives, packaging, and advanced styling come later.
 
@@ -45,10 +49,10 @@ npm run smoke:package
 `npm run build:example` writes the runnable demo bundle to `dist/example`.
 `npm pack --dry-run` can be used after `npm run build` to inspect the package contents without publishing.
 `npm run smoke:example` builds the example, starts a temporary preview server, and verifies Autzen, SoFi, and Custom URL + proj4 rendering in a browser. Run `npm run smoke:example:install-browser` once if Playwright reports that Chrome for Testing is missing.
-`npm run smoke:package` packs the local build, installs it into a temporary consumer project, and verifies public imports from `copc-viewer`, `copc-viewer/core`, and `copc-viewer/cesium`.
+`npm run smoke:package` packs the local build, installs it into a temporary consumer project, and verifies public imports from `copc-cesium`, `copc-cesium/core`, and `copc-cesium/cesium`.
 
 The runnable prototype lives in `examples/basic-viewer`. The root `src` folder contains reusable COPC and Cesium integration code used by that example.
-Reusable source entry points are `src/index.ts`, `src/core/index.ts`, and `src/cesium/index.ts`; package exports expose built JS and type declarations as `copc-viewer`, `copc-viewer/core`, and `copc-viewer/cesium`.
+Reusable source entry points are `src/index.ts`, `src/core/index.ts`, and `src/cesium/index.ts`; package exports expose built JS and type declarations as `copc-cesium`, `copc-cesium/core`, and `copc-cesium/cesium`.
 `CopcPointCloudLayer` is the first thin Cesium-facing API: it owns a `CopcSource`, point renderer, bounds renderer, and simple camera-based node rendering helpers.
 
 The default example URL loads the public Autzen COPC sample, reads the root hierarchy node, samples up to 5,000 points, and renders them in CesiumJS.
@@ -73,7 +77,7 @@ Included example presets:
 import {
   CopcPointCloudLayer,
   createDefaultCopcCoordinateTransforms,
-} from "copc-viewer";
+} from "copc-cesium";
 
 const layer = new CopcPointCloudLayer(viewer.scene, {
   url,
@@ -96,6 +100,12 @@ The prototype default transform supports geographic coordinates and the public A
 `layer.load()` returns a `coordinateTransform` status so examples and applications can show whether the active transform is `geographic`, `epsg:2992`, or `custom`, and whether camera-based selection is available.
 For projected CRS data, `createProj4CoordinateTransforms({ sourceCrs, sourceDefinition })` creates a `coordinateTransforms` factory backed by `proj4`.
 In the basic viewer, custom URLs use the default transform when the Source CRS field is empty. If Source CRS is filled, the viewer creates a proj4-backed transform from that CRS and the optional proj4 definition field.
+
+## Project Documents
+
+- [Architecture](docs/ARCHITECTURE.md)
+- [Contributing](CONTRIBUTING.md)
+- [License](LICENSE)
 
 ## Planned Shape
 
