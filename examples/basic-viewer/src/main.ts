@@ -32,6 +32,8 @@ import "./style.css";
 
 const CUSTOM_SAMPLE_OPTION_VALUE = "custom";
 const AUTO_LOD_MAX_HIERARCHY_PAGES = 2;
+const AUTO_LOD_MAX_NODE_POINT_DATA_LENGTH = 1_000_000;
+const AUTO_LOD_MAX_TOTAL_POINT_DATA_LENGTH = 2_000_000;
 const CAMERA_STREAM_MAX_HIERARCHY_PAGES = 1;
 const CAMERA_STREAM_MAX_NODES = 1;
 const CAMERA_STREAM_MAX_DEPTH = 0;
@@ -446,6 +448,8 @@ async function renderAutomaticNodeSet(): Promise<void> {
       expandHierarchy: true,
       maxNodes: 4,
       maxHierarchyPages: AUTO_LOD_MAX_HIERARCHY_PAGES,
+      maxNodePointDataLength: AUTO_LOD_MAX_NODE_POINT_DATA_LENGTH,
+      maxTotalPointDataLength: AUTO_LOD_MAX_TOTAL_POINT_DATA_LENGTH,
     });
 
     if (!result || layer !== currentLayer) {
@@ -998,7 +1002,12 @@ function formatLoadedHierarchyPages(pageKeys: readonly string[]): string {
 function formatCameraSelection(
   selection: CopcHierarchyNodeCameraSelection,
 ): string {
-  return `${selection.nodes.length.toLocaleString()} nodes at depth ${selection.selectedDepth.toLocaleString()} (target depth ${selection.targetDepth.toLocaleString()}, root span ${selection.estimatedRootScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 0 })} px)`;
+  const budgetSummary =
+    selection.skippedByBudgetCount > 0
+      ? `, ${selection.skippedByBudgetCount.toLocaleString()} skipped by budget`
+      : "";
+
+  return `${selection.nodes.length.toLocaleString()} nodes at depth ${selection.selectedDepth.toLocaleString()} (target depth ${selection.targetDepth.toLocaleString()}, root span ${selection.estimatedRootScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 0 })} px${budgetSummary})`;
 }
 
 function formatCoordinateTransform(

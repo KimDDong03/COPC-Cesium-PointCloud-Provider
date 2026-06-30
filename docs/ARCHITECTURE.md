@@ -56,7 +56,7 @@ The current implementation includes:
 - `CopcSource.loadHierarchyPage` and `loadNextHierarchyPage` for on-demand COPC hierarchy page range reads.
 - `selectHierarchyPagesForTarget` for choosing nearby pending hierarchy pages from their octree bounds.
 - `CopcSource` point sample caching by node key and sample count.
-- `selectHierarchyNodesForCamera` for simple camera-based node selection.
+- `selectHierarchyNodesForCamera` for camera-based node selection with optional point-count and point-data byte budgets.
 - `CopcPointCloudLayer.expandHierarchyForCamera` for camera-targeted hierarchy expansion.
 - `CopcPointCloudLayer.renderAutomatic` for selecting and rendering nodes in one call.
 - `CopcPointCloudLayer.selectNodesForCamera` for selecting nodes without immediately rendering.
@@ -81,7 +81,7 @@ Camera-based selection requires both directions:
 
 ## Current Limitations
 
-- Hierarchy page expansion is camera-targeted but still conservative; it is not yet a full screen-space error or eviction policy.
+- Hierarchy page expansion and node selection are camera-targeted but still conservative; this is not yet a full screen-space error or eviction policy.
 - Point rendering uses Cesium point primitives, not a custom optimized WebGL primitive.
 - Cache is in-memory and unbounded.
 - Camera streaming is prototype-oriented; it expands a small number of hierarchy pages per update while keeping the example's automatic render depth shallow.
@@ -90,7 +90,7 @@ Camera-based selection requires both directions:
 ## Near-Term Roadmap
 
 1. Expand cache policy with explicit limits and invalidation.
-2. Add a better screen-space error policy for progressive hierarchy and point loading.
+2. Replace the current simple screen-space estimate with a stronger screen-space error policy for progressive hierarchy and point loading.
 3. Add bounded hierarchy and point cache eviction.
 4. Move heavy point decoding/preparation work into Web Workers.
 5. Replace point primitive rendering with a more scalable Cesium-native primitive path when the basic API stabilizes.

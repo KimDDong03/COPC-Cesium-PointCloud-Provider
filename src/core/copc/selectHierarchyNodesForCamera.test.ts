@@ -43,6 +43,35 @@ describe("selectHierarchyNodesForCamera", () => {
     expect(selection?.nodes.every((node) => node.depth === 3)).toBe(true);
   });
 
+  it("falls back to a nearby depth when target-depth nodes exceed the node budget", () => {
+    const selection = selectHierarchyNodesForCamera(createBudgetedDepthNodes(), {
+      target: { x: 80, y: 80, z: 10 },
+      viewportHeightPixels: 720,
+      maxNodePointDataLength: 1_000,
+      targetNodeScreenPixels: 220,
+    });
+
+    expect(selection?.targetDepth).toBe(2);
+    expect(selection?.selectedDepth).toBe(1);
+    expect(selection?.nodes.map((node) => node.key)).toEqual(["1-1-1-0"]);
+  });
+
+  it("limits selected nodes by total point-data budget", () => {
+    const selection = selectHierarchyNodesForCamera(createNodeGrid(), {
+      target: { x: 62.5, y: 62.5, z: 10 },
+      viewportHeightPixels: 720,
+      maxNodes: 4,
+      maxTotalPointDataLength: 250,
+      targetNodeScreenPixels: 220,
+    });
+
+    expect(selection?.nodes.map((node) => node.key)).toEqual([
+      "2-2-2-0",
+      "2-1-2-0",
+    ]);
+    expect(selection?.skippedByBudgetCount).toBe(14);
+  });
+
   it("rejects invalid selection limits", () => {
     expect(() =>
       selectHierarchyNodesForCamera(createSparseDepthNodes(), {
@@ -51,6 +80,16 @@ describe("selectHierarchyNodesForCamera", () => {
         maxNodes: 0,
       }),
     ).toThrow("maxNodes must be a positive integer.");
+  });
+
+  it("rejects invalid resource budgets", () => {
+    expect(() =>
+      selectHierarchyNodesForCamera(createSparseDepthNodes(), {
+        target: { x: 0, y: 0, z: 0 },
+        viewportHeightPixels: 720,
+        maxNodePointDataLength: 0,
+      }),
+    ).toThrow("maxNodePointDataLength must be a positive finite number.");
   });
 });
 
@@ -76,12 +115,30 @@ function createSparseDepthNodes(): CopcHierarchyNodeSummary[] {
   ];
 }
 
+function createBudgetedDepthNodes(): CopcHierarchyNodeSummary[] {
+  return [
+    createNode("0-0-0-0", 0, 0, 0, 100, {
+      pointDataLength: 1_000,
+    }),
+    createNode("1-1-1-0", 1, 50, 50, 50, {
+      pointDataLength: 800,
+    }),
+    createNode("2-3-3-0", 2, 75, 75, 25, {
+      pointDataLength: 2_000,
+    }),
+  ];
+}
+
 function createNode(
   key: string,
   depth: number,
   minX: number,
   minY: number,
   size: number,
+  options: {
+    readonly pointCount?: number;
+    readonly pointDataLength?: number;
+  } = {},
 ): CopcHierarchyNodeSummary {
   const bounds = {
     minX,
@@ -99,9 +156,9 @@ function createNode(
     y: minY / size,
     z: 0,
     bounds,
-    pointCount: 1000,
+    pointCount: options.pointCount ?? 1000,
     pointDensity: 1,
     pointDataOffset: 0,
-    pointDataLength: 100,
+    pointDataLength: options.pointDataLength ?? 100,
   };
 }

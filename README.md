@@ -65,7 +65,7 @@ The Load next page button range-reads the next pending COPC hierarchy page and r
 The example also computes the selected node bounds and renders a yellow debug bounding box in CesiumJS.
 It can suggest the nearest loaded hierarchy node to the current camera position and apply that suggestion on demand.
 The manual render set can combine multiple hierarchy nodes and render their sampled points together.
-The Auto LOD button expands a small number of nearby pending hierarchy pages, selects nearby loaded hierarchy nodes from the current camera position and viewport height, then renders them through the same multi-node path.
+The Auto LOD button expands a small number of nearby pending hierarchy pages, selects nearby loaded hierarchy nodes from the current camera position and viewport height, applies a small point-data byte budget, then renders them through the same multi-node path.
 The Stream on camera move toggle reruns camera-based hierarchy expansion and node selection after camera movement, then reuses the in-memory COPC point-sample cache for already loaded node/sample-count pairs.
 
 Included example presets:
@@ -90,7 +90,12 @@ const { hierarchy, coordinateTransform } = await layer.load();
 await layer.renderNode(hierarchy.nodes[0].key);
 await layer.loadNextHierarchyPage();
 await layer.expandHierarchyForCamera({ camera: viewer.camera, maxPages: 2 });
-await layer.renderAutomatic({ camera: viewer.camera, maxNodes: 4 });
+await layer.renderAutomatic({
+  camera: viewer.camera,
+  maxNodes: 4,
+  maxNodePointDataLength: 1_000_000,
+  maxTotalPointDataLength: 2_000_000,
+});
 const selection = await layer.selectNodesForCamera({ camera: viewer.camera });
 
 layer.destroy();

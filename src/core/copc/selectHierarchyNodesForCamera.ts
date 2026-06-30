@@ -8,6 +8,10 @@ export interface SelectHierarchyNodesForCameraOptions {
   readonly maxNodes?: number;
   readonly minDepth?: number;
   readonly maxDepth?: number;
+  readonly maxNodePointCount?: number;
+  readonly maxNodePointDataLength?: number;
+  readonly maxTotalPointCount?: number;
+  readonly maxTotalPointDataLength?: number;
   readonly targetNodeScreenPixels?: number;
 }
 
@@ -16,6 +20,7 @@ export interface CopcHierarchyNodeCameraSelection {
   readonly targetDepth: number;
   readonly selectedDepth: number;
   readonly estimatedRootScreenPixels: number;
+  readonly skippedByBudgetCount: number;
   readonly reason: string;
 }
 
@@ -48,6 +53,23 @@ export function selectHierarchyNodesForCamera(
   if (!Number.isFinite(targetNodeScreenPixels) || targetNodeScreenPixels <= 0) {
     throw new Error("targetNodeScreenPixels must be a positive finite number.");
   }
+
+  validatePositiveFiniteBudget(
+    options.maxNodePointCount,
+    "maxNodePointCount",
+  );
+  validatePositiveFiniteBudget(
+    options.maxNodePointDataLength,
+    "maxNodePointDataLength",
+  );
+  validatePositiveFiniteBudget(
+    options.maxTotalPointCount,
+    "maxTotalPointCount",
+  );
+  validatePositiveFiniteBudget(
+    options.maxTotalPointDataLength,
+    "maxTotalPointDataLength",
+  );
 
   const hierarchyMaxDepth = maxNodeDepth(nodes);
   const minDepth = options.minDepth ?? 0;
@@ -85,28 +107,26 @@ export function selectHierarchyNodesForCamera(
     boundedMinDepth,
     boundedMaxDepth,
   );
-  const selectedDepth = nearestAvailableDepth(availableDepths, targetDepth);
-  const selectedNodes = nodes
-    .filter((node) => node.depth === selectedDepth)
-    .map((node) => ({
-      node,
-      distanceToBounds: distanceToBounds3d(options.target, node.bounds),
-    }))
-    .sort(
-      (left, right) =>
-        left.distanceToBounds - right.distanceToBounds ||
-        right.node.pointCount - left.node.pointCount ||
-        left.node.key.localeCompare(right.node.key),
-    )
-    .slice(0, maxNodes)
-    .map(({ node }) => node);
+  const selection = selectBudgetedNodes(nodes, availableDepths, targetDepth, {
+    target: options.target,
+    maxNodes,
+    maxNodePointCount: options.maxNodePointCount,
+    maxNodePointDataLength: options.maxNodePointDataLength,
+    maxTotalPointCount: options.maxTotalPointCount,
+    maxTotalPointDataLength: options.maxTotalPointDataLength,
+  });
+
+  if (!selection) {
+    return undefined;
+  }
 
   return {
-    nodes: selectedNodes,
+    nodes: selection.nodes,
     targetDepth,
-    selectedDepth,
+    selectedDepth: selection.selectedDepth,
     estimatedRootScreenPixels,
-    reason: `Selected ${selectedNodes.length} nearest depth ${selectedDepth} nodes for the current camera.`,
+    skippedByBudgetCount: selection.skippedByBudgetCount,
+    reason: `Selected ${selection.nodes.length} nearest depth ${selection.selectedDepth} nodes for the current camera.`,
   };
 }
 
@@ -134,15 +154,144 @@ function sortedAvailableDepths(
     .sort((left, right) => left - right);
 }
 
-function nearestAvailableDepth(
+interface SelectBudgetedNodesOptions {
+  readonly target: CopcTargetPoint;
+  readonly maxNodes: number;
+  readonly maxNodePointCount: number | undefined;
+  readonly maxNodePointDataLength: number | undefined;
+  readonly maxTotalPointCount: number | undefined;
+  readonly maxTotalPointDataLength: number | undefined;
+}
+
+interface BudgetedNodeSelection {
+  readonly nodes: readonly CopcHierarchyNodeSummary[];
+  readonly selectedDepth: number;
+  readonly skippedByBudgetCount: number;
+}
+
+function selectBudgetedNodes(
+  nodes: readonly CopcHierarchyNodeSummary[],
   availableDepths: readonly number[],
   targetDepth: number,
-): number {
-  return availableDepths.reduce((nearestDepth, depth) =>
-    Math.abs(depth - targetDepth) < Math.abs(nearestDepth - targetDepth)
-      ? depth
-      : nearestDepth,
+  options: SelectBudgetedNodesOptions,
+): BudgetedNodeSelection | undefined {
+  for (const depth of depthsByTargetDistance(availableDepths, targetDepth)) {
+    const candidates = nodes
+      .filter((node) => node.depth === depth)
+      .map((node) => ({
+        node,
+        distanceToBounds: distanceToBounds3d(options.target, node.bounds),
+      }))
+      .sort(
+        (left, right) =>
+          left.distanceToBounds - right.distanceToBounds ||
+          right.node.depth - left.node.depth ||
+          right.node.pointCount - left.node.pointCount ||
+          left.node.key.localeCompare(right.node.key),
+      );
+    const selection = selectWithinBudget(
+      candidates.map(({ node }) => node),
+      options,
+    );
+
+    if (selection.nodes.length > 0) {
+      return {
+        ...selection,
+        selectedDepth: depth,
+      };
+    }
+  }
+
+  return undefined;
+}
+
+function depthsByTargetDistance(
+  availableDepths: readonly number[],
+  targetDepth: number,
+): number[] {
+  return [...availableDepths].sort(
+    (left, right) =>
+      Math.abs(left - targetDepth) - Math.abs(right - targetDepth) ||
+      right - left,
   );
+}
+
+function selectWithinBudget(
+  nodes: readonly CopcHierarchyNodeSummary[],
+  options: SelectBudgetedNodesOptions,
+): Omit<BudgetedNodeSelection, "selectedDepth"> {
+  const selectedNodes: CopcHierarchyNodeSummary[] = [];
+  let selectedPointCount = 0;
+  let selectedPointDataLength = 0;
+  let skippedByBudgetCount = 0;
+
+  for (const node of nodes) {
+    if (selectedNodes.length >= options.maxNodes) {
+      break;
+    }
+
+    if (
+      isNodeOverIndividualBudget(node, options) ||
+      isNodeOverTotalBudget(
+        node,
+        selectedPointCount,
+        selectedPointDataLength,
+        options,
+      )
+    ) {
+      skippedByBudgetCount += 1;
+      continue;
+    }
+
+    selectedNodes.push(node);
+    selectedPointCount += node.pointCount;
+    selectedPointDataLength += node.pointDataLength;
+  }
+
+  return {
+    nodes: selectedNodes,
+    skippedByBudgetCount,
+  };
+}
+
+function isNodeOverIndividualBudget(
+  node: CopcHierarchyNodeSummary,
+  options: SelectBudgetedNodesOptions,
+): boolean {
+  return (
+    (options.maxNodePointCount !== undefined &&
+      node.pointCount > options.maxNodePointCount) ||
+    (options.maxNodePointDataLength !== undefined &&
+      node.pointDataLength > options.maxNodePointDataLength)
+  );
+}
+
+function isNodeOverTotalBudget(
+  node: CopcHierarchyNodeSummary,
+  selectedPointCount: number,
+  selectedPointDataLength: number,
+  options: SelectBudgetedNodesOptions,
+): boolean {
+  return (
+    (options.maxTotalPointCount !== undefined &&
+      selectedPointCount + node.pointCount > options.maxTotalPointCount) ||
+    (options.maxTotalPointDataLength !== undefined &&
+      selectedPointDataLength + node.pointDataLength >
+        options.maxTotalPointDataLength)
+  );
+}
+
+function validatePositiveFiniteBudget(
+  value: number | undefined,
+  name: string,
+): void {
+  if (value === undefined) {
+    return;
+  }
+
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`${name} must be a positive finite number.`);
+  }
 }
 
 function boundsForHierarchy(
