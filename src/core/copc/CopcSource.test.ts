@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { Copc as CopcData, Hierarchy } from "copc";
 import { CopcSource } from "./CopcSource";
 import type { CopcNodePointSampleResult } from "./CopcPointDataSample";
+import type {
+  CopcPointSampleWorkerRequest,
+  CopcPointSampleWorkerResponse,
+} from "./CopcPointSampleWorkerProtocol";
 
 describe("CopcSource point sample cache", () => {
   it("reports cache hits and misses for sampled hierarchy nodes", async () => {
@@ -203,6 +207,87 @@ describe("CopcSource point sample cache", () => {
           maxCachedHierarchyPages: 0,
         }),
     ).toThrow("maxCachedHierarchyPages must be a positive integer.");
+
+    expect(
+      () =>
+        new CopcSource("https://example.com/sample.copc.laz", {
+          pointSampleLoading: "invalid",
+        } as never),
+    ).toThrow("pointSampleLoading must be either 'main-thread' or 'worker'.");
+  });
+
+  it("loads sampled hierarchy node points through a worker when configured", async () => {
+    const worker = new FakePointSampleWorker((request) => ({
+      id: request.id,
+      type: "loadNodePointSamples:success",
+      result: {
+        nodeKey: request.nodeKey,
+        nodePointCount: request.node.pointCount,
+        sampledPointCount: 1,
+        points: [
+          {
+            x: 1,
+            y: 2,
+            z: 3,
+          },
+        ],
+      },
+    }));
+    const source = new CopcSource("https://example.com/sample.copc.laz", {
+      pointSampleLoading: "worker",
+      createPointSampleWorker: () => worker as unknown as Worker,
+    });
+    const mutableSource = source as unknown as {
+      copcPromise: Promise<CopcData>;
+      loadHierarchyPageData: (
+        page: Hierarchy.Page,
+      ) => Promise<Hierarchy.Subtree>;
+    };
+
+    mutableSource.copcPromise = Promise.resolve({
+      info: {
+        cube: [0, 0, 0, 8, 8, 8],
+        rootHierarchyPage: { pageOffset: 10, pageLength: 20 },
+      },
+    } as CopcData);
+    mutableSource.loadHierarchyPageData = async () => ({
+      nodes: {
+        "0-0-0-0": createNode(100),
+      },
+      pages: {},
+    });
+
+    const result = await source.loadNodePointSamples({
+      nodeKey: "0-0-0-0",
+      maxPointCount: 5,
+    });
+
+    expect(worker.requests).toEqual([
+      expect.objectContaining({
+        url: "https://example.com/sample.copc.laz",
+        nodeKey: "0-0-0-0",
+        node: createNode(100),
+        maxPointCount: 5,
+      }),
+    ]);
+    expect(result).toEqual({
+      nodeKey: "0-0-0-0",
+      nodePointCount: 100,
+      sampledPointCount: 1,
+      points: [
+        {
+          x: 1,
+          y: 2,
+          z: 3,
+        },
+      ],
+    });
+    expect(source.getPointSampleCacheStats()).toEqual(
+      expect.objectContaining({
+        cachedSampleSetCount: 1,
+        cacheMissCount: 1,
+      }),
+    );
   });
 
   it("loads and merges additional hierarchy pages on demand", async () => {
@@ -495,4 +580,43 @@ function createSamplePoints(
       blue: 3,
     },
   }));
+}
+
+class FakePointSampleWorker {
+  readonly requests: CopcPointSampleWorkerRequest[] = [];
+  private messageListener:
+    | ((event: MessageEvent<CopcPointSampleWorkerResponse>) => void)
+    | undefined;
+
+  constructor(
+    private readonly respond: (
+      request: CopcPointSampleWorkerRequest,
+    ) => CopcPointSampleWorkerResponse,
+  ) {}
+
+  addEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject,
+  ): void {
+    if (type !== "message" || typeof listener !== "function") {
+      return;
+    }
+
+    this.messageListener = listener as (
+      event: MessageEvent<CopcPointSampleWorkerResponse>,
+    ) => void;
+  }
+
+  postMessage(message: CopcPointSampleWorkerRequest): void {
+    this.requests.push(message);
+    queueMicrotask(() => {
+      this.messageListener?.({
+        data: this.respond(message),
+      } as MessageEvent<CopcPointSampleWorkerResponse>);
+    });
+  }
+
+  terminate(): void {
+    this.messageListener = undefined;
+  }
 }

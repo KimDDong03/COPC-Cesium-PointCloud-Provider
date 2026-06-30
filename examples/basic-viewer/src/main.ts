@@ -184,6 +184,7 @@ async function inspectSource(source: CopcSourceConfig): Promise<void> {
     maxCachedHierarchyPages: HIERARCHY_PAGE_CACHE_LIMIT,
     maxCachedSampleSets: POINT_SAMPLE_CACHE_LIMIT,
     maxCachedPointSampleBytes: POINT_SAMPLE_CACHE_BYTE_LIMIT,
+    pointSampleLoading: "worker",
     coordinateTransforms: activeSource.coordinateTransforms,
   });
   currentLayer = layer;
@@ -326,6 +327,7 @@ function renderInspection(
         ? formatPointSampleCacheStats(currentLayer.source.getPointSampleCacheStats())
         : "Not loaded",
     ),
+    metadataRow("Point loader", "Web Worker with main-thread fallback"),
     metadataRow(
       "Auto LOD",
       cameraSelection ? formatCameraSelection(cameraSelection) : "Not applied",

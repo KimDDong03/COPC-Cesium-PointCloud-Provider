@@ -20,11 +20,17 @@ export type {
 } from "./copc/CopcPointDataSample";
 export {
   CopcSource,
+  type CopcPointSampleLoadingMode,
   type CopcSourceOptions,
   type LoadHierarchyPagesResult,
   type LoadNodePointSamplesOptions,
   type LoadNodesPointSamplesOptions,
 } from "./copc/CopcSource";
+export { createCopcPointSampleWorker } from "./copc/createCopcPointSampleWorker";
+export type {
+  CopcPointSampleWorkerRequest,
+  CopcPointSampleWorkerResponse,
+} from "./copc/CopcPointSampleWorkerProtocol";
 export { inspectCopc } from "./copc/inspectCopc";
 export { loadHierarchySummary } from "./copc/loadHierarchySummary";
 export { loadNodePointSamples } from "./copc/loadNodePointSamples";

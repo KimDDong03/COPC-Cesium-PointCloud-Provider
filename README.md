@@ -22,7 +22,7 @@ The current prototype is intentionally small:
 3. Read a small set of real XYZ points.
 4. Transform the sample COPC CRS into Cesium-friendly longitude, latitude, and height.
 5. Display sampled COPC hierarchy-node points in CesiumJS.
-6. Load nearby COPC hierarchy pages progressively, track loaded hierarchy page provenance, and reuse a bounded in-memory node sample cache.
+6. Load nearby COPC hierarchy pages progressively, track loaded hierarchy page provenance, reuse bounded caches, and optionally decode point samples in a Web Worker.
 
 Full LOD, persistent cache management, workers, custom primitives, packaging, and advanced styling come later.
 
@@ -67,6 +67,7 @@ It can suggest the nearest loaded hierarchy node to the current camera position 
 The manual render set can combine multiple hierarchy nodes and render their sampled points together.
 The Auto LOD button expands a small number of nearby pending hierarchy pages, estimates each available depth's nearest node screen size and COPC spacing-derived point spacing in screen pixels, applies a small point-data byte budget, then renders the selected nodes through the same multi-node path.
 The Stream on camera move toggle reruns camera-based hierarchy expansion and node selection after camera movement, then reuses the in-memory COPC point-sample cache for already loaded node/sample-count pairs.
+The basic viewer enables `pointSampleLoading: "worker"` so COPC point-data reads and LAZ decoding run in a Web Worker when the browser supports it. If worker creation is unavailable, `CopcSource` falls back to the existing main-thread point sampling path.
 
 Included example presets:
 
@@ -86,6 +87,7 @@ const layer = new CopcPointCloudLayer(viewer.scene, {
   maxCachedHierarchyPages: 64,
   maxCachedSampleSets: 32,
   maxCachedPointSampleBytes: 32 * 1024 * 1024,
+  pointSampleLoading: "worker",
   coordinateTransforms: createDefaultCopcCoordinateTransforms,
 });
 const { hierarchy, coordinateTransform } = await layer.load();

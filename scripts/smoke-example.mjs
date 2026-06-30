@@ -228,6 +228,10 @@ function createSmokeFlow(baseUrl) {
     "Point sample cache stats were not reported after camera streaming.",
   );
   await check(
+    async () => (await metadataValue("Point loader"))?.includes("Web Worker"),
+    "Worker point loader status was not reported.",
+  );
+  await check(
     async () => (await metadataValue("Hierarchy pages"))?.includes("evictions"),
     "Hierarchy page cache stats were not reported after camera streaming.",
   );

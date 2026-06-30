@@ -13,7 +13,10 @@ import type {
   CopcMultiNodePointSampleResult,
   CopcNodePointSampleResult,
 } from "../core/copc/CopcPointDataSample";
-import { CopcSource } from "../core/copc/CopcSource";
+import {
+  CopcSource,
+  type CopcPointSampleLoadingMode,
+} from "../core/copc/CopcSource";
 import {
   selectHierarchyPagesForTarget,
   type CopcHierarchyPageTargetSelection,
@@ -45,6 +48,8 @@ export interface CopcPointCloudLayerOptions {
   readonly maxCachedHierarchyPages?: number;
   readonly maxCachedSampleSets?: number;
   readonly maxCachedPointSampleBytes?: number;
+  readonly pointSampleLoading?: CopcPointSampleLoadingMode;
+  readonly createPointSampleWorker?: () => Worker;
   readonly showBounds?: boolean;
   readonly coordinateTransforms?: CopcCoordinateTransformFactory;
 }
@@ -140,6 +145,8 @@ export class CopcPointCloudLayer {
       maxCachedHierarchyPages: options.maxCachedHierarchyPages,
       maxCachedSampleSets: options.maxCachedSampleSets,
       maxCachedPointSampleBytes: options.maxCachedPointSampleBytes,
+      pointSampleLoading: options.pointSampleLoading,
+      createPointSampleWorker: options.createPointSampleWorker,
     });
     this.pointRenderer = new CesiumPointRenderer(scene);
     this.boundsRenderer = new CesiumBoundsRenderer(scene);
@@ -424,7 +431,7 @@ export class CopcPointCloudLayer {
     this.loadedHierarchy = undefined;
     this.coordinateTransforms = undefined;
     this.coordinateTransformStatus = undefined;
-    this.source.clearPointSampleCache();
+    this.source.destroy();
     this.pointRenderer.destroy();
     this.boundsRenderer.destroy();
   }

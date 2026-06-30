@@ -1,7 +1,12 @@
 import { Copc } from "copc";
 import type { Copc as CopcData, Getter, Hierarchy } from "copc";
 import { createHttpRangeGetter } from "./createHttpRangeGetter";
-import { getSharedLazPerf } from "./createLazPerf";
+import { createCopcPointSampleWorker } from "./createCopcPointSampleWorker";
+import { loadCopcNodePointSamples } from "./loadCopcNodePointSamples";
+import type {
+  CopcPointSampleWorkerRequest,
+  CopcPointSampleWorkerResponse,
+} from "./CopcPointSampleWorkerProtocol";
 import type {
   CopcHierarchyCacheStats,
   CopcHierarchyPageReference,
@@ -16,7 +21,6 @@ import type {
 import type {
   CopcMultiNodePointSampleResult,
   CopcNodePointSampleResult,
-  CopcPointColor,
   CopcPointDataSample,
   CopcPointSampleCacheStats,
 } from "./CopcPointDataSample";
@@ -40,7 +44,11 @@ export interface CopcSourceOptions {
   readonly maxCachedHierarchyPages?: number;
   readonly maxCachedSampleSets?: number;
   readonly maxCachedPointSampleBytes?: number;
+  readonly pointSampleLoading?: CopcPointSampleLoadingMode;
+  readonly createPointSampleWorker?: () => Worker;
 }
+
+export type CopcPointSampleLoadingMode = "main-thread" | "worker";
 
 const DEFAULT_MAX_POINT_COUNT = 5_000;
 const DEFAULT_NODE_KEY = "0-0-0-0";
@@ -62,12 +70,19 @@ interface HierarchyPageCacheEntry {
   readonly isRoot: boolean;
 }
 
+interface PointSampleWorkerRequestEntry {
+  readonly resolve: (result: CopcNodePointSampleResult) => void;
+  readonly reject: (error: unknown) => void;
+}
+
 export class CopcSource {
   readonly url: string;
 
   private readonly maxCachedSampleSets: number;
   private readonly maxCachedPointSampleBytes: number;
   private readonly maxCachedHierarchyPages: number;
+  private readonly pointSampleLoading: CopcPointSampleLoadingMode;
+  private readonly createPointSampleWorker: () => Worker;
   private readonly getter: Getter;
   private readonly copcPromise: Promise<CopcData>;
   private hierarchyPromise: Promise<Hierarchy.Subtree> | undefined;
@@ -86,11 +101,18 @@ export class CopcSource {
     string,
     PointSampleCacheEntry
   >();
+  private readonly pointSampleWorkerRequests = new Map<
+    number,
+    PointSampleWorkerRequestEntry
+  >();
   private cachedPointSampleBytes = 0;
   private hierarchyPageCacheEvictionCount = 0;
   private pointSampleCacheHitCount = 0;
   private pointSampleCacheMissCount = 0;
   private pointSampleCacheEvictionCount = 0;
+  private pointSampleWorker: Worker | undefined;
+  private pointSampleWorkerUnavailable = false;
+  private pointSampleWorkerRequestId = 0;
 
   constructor(url: string, options: CopcSourceOptions = {}) {
     const maxCachedHierarchyPages =
@@ -122,10 +144,25 @@ export class CopcSource {
       throw new Error("maxCachedPointSampleBytes must be a positive integer.");
     }
 
+    if (
+      options.pointSampleLoading !== undefined &&
+      options.pointSampleLoading !== "main-thread" &&
+      options.pointSampleLoading !== "worker"
+    ) {
+      throw new Error(
+        "pointSampleLoading must be either 'main-thread' or 'worker'.",
+      );
+    }
+
     this.url = url;
     this.maxCachedHierarchyPages = maxCachedHierarchyPages;
     this.maxCachedSampleSets = maxCachedSampleSets;
     this.maxCachedPointSampleBytes = maxCachedPointSampleBytes;
+    this.pointSampleLoading =
+      options.pointSampleLoading ??
+      (options.createPointSampleWorker ? "worker" : "main-thread");
+    this.createPointSampleWorker =
+      options.createPointSampleWorker ?? createCopcPointSampleWorker;
     this.getter = createHttpRangeGetter(url);
     this.copcPromise = Copc.create(this.getter);
   }
@@ -322,6 +359,13 @@ export class CopcSource {
     return clearedCount;
   }
 
+  destroy(): void {
+    this.clearPointSampleCache();
+    this.terminatePointSampleWorker(
+      new Error("COPC point sample worker was terminated."),
+    );
+  }
+
   async loadNodesPointSamples(
     options: LoadNodesPointSamplesOptions,
   ): Promise<CopcMultiNodePointSampleResult> {
@@ -509,6 +553,102 @@ export class CopcSource {
     this.hierarchyPageCacheEvictionCount += 1;
   }
 
+  private getPointSampleWorker(): Worker | undefined {
+    if (this.pointSampleLoading !== "worker" || this.pointSampleWorkerUnavailable) {
+      return undefined;
+    }
+
+    if (this.pointSampleWorker) {
+      return this.pointSampleWorker;
+    }
+
+    try {
+      const worker = this.createPointSampleWorker();
+      worker.addEventListener("message", (event) => {
+        this.handlePointSampleWorkerMessage(
+          event as MessageEvent<CopcPointSampleWorkerResponse>,
+        );
+      });
+      worker.addEventListener("error", (event) => {
+        this.pointSampleWorkerUnavailable = true;
+        this.terminatePointSampleWorker(
+          event.error instanceof Error
+            ? event.error
+            : new Error("COPC point sample worker failed."),
+        );
+      });
+      this.pointSampleWorker = worker;
+      return worker;
+    } catch {
+      this.pointSampleWorkerUnavailable = true;
+      return undefined;
+    }
+  }
+
+  private loadNodePointSamplesWithWorker(
+    nodeKey: string,
+    node: Hierarchy.Node,
+    maxPointCount: number,
+  ): Promise<CopcNodePointSampleResult> | undefined {
+    const worker = this.getPointSampleWorker();
+
+    if (!worker) {
+      return undefined;
+    }
+
+    const id = ++this.pointSampleWorkerRequestId;
+    const request: CopcPointSampleWorkerRequest = {
+      id,
+      type: "loadNodePointSamples",
+      url: this.url,
+      nodeKey,
+      node,
+      maxPointCount,
+    };
+
+    return new Promise((resolve, reject) => {
+      this.pointSampleWorkerRequests.set(id, {
+        resolve,
+        reject,
+      });
+      worker.postMessage(request);
+    });
+  }
+
+  private handlePointSampleWorkerMessage(
+    event: MessageEvent<CopcPointSampleWorkerResponse>,
+  ): void {
+    const response = event.data;
+    const request = this.pointSampleWorkerRequests.get(response.id);
+
+    if (!request) {
+      return;
+    }
+
+    this.pointSampleWorkerRequests.delete(response.id);
+
+    if (response.type === "loadNodePointSamples:success") {
+      request.resolve(response.result);
+      return;
+    }
+
+    request.reject(createErrorFromWorkerResponse(response.error));
+  }
+
+  private terminatePointSampleWorker(error: Error): void {
+    const worker = this.pointSampleWorker;
+    this.pointSampleWorker = undefined;
+
+    if (worker) {
+      worker.terminate();
+    }
+
+    for (const request of this.pointSampleWorkerRequests.values()) {
+      request.reject(error);
+    }
+    this.pointSampleWorkerRequests.clear();
+  }
+
   private evictPointSampleCacheIfNeeded(): void {
     while (
       this.nodePointSampleCache.size > this.maxCachedSampleSets ||
@@ -565,40 +705,35 @@ export class CopcSource {
 
     this.touchLoadedHierarchyPage(this.hierarchyNodePageIds.get(nodeKey));
 
-    const view = await Copc.loadPointDataView(this.getter, copc, node, {
-      lazPerf: await getSharedLazPerf(),
-      include: ["X", "Y", "Z", "Red", "Green", "Blue"],
-    });
+    const workerResult = this.loadNodePointSamplesWithWorker(
+      nodeKey,
+      node,
+      maxPointCount,
+    );
 
-    const getX = view.getter("X");
-    const getY = view.getter("Y");
-    const getZ = view.getter("Z");
-    const colorGetters = getColorGetters(view);
-    const sampledPointCount = Math.min(view.pointCount, maxPointCount);
-    const step = view.pointCount / sampledPointCount;
-    const points: CopcPointDataSample[] = [];
-
-    for (let sampleIndex = 0; sampleIndex < sampledPointCount; sampleIndex += 1) {
-      const pointIndex = Math.min(
-        view.pointCount - 1,
-        Math.floor(sampleIndex * step),
-      );
-
-      points.push({
-        x: getX(pointIndex),
-        y: getY(pointIndex),
-        z: getZ(pointIndex),
-        color: colorGetters ? colorAt(colorGetters, pointIndex) : undefined,
-      });
+    if (workerResult) {
+      return workerResult;
     }
 
-    return {
+    return loadCopcNodePointSamples({
+      getter: this.getter,
+      copc,
       nodeKey,
-      nodePointCount: view.pointCount,
-      sampledPointCount,
-      points,
-    };
+      node,
+      maxPointCount,
+    });
   }
+}
+
+function createErrorFromWorkerResponse(error: {
+  readonly name?: string;
+  readonly message: string;
+  readonly stack?: string;
+}): Error {
+  const restoredError = new Error(error.message);
+  restoredError.name = error.name ?? "Error";
+  restoredError.stack = error.stack;
+  return restoredError;
 }
 
 function createInspection(sourceUrl: string, copc: CopcData): CopcInspection {
@@ -823,46 +958,6 @@ function boundsFromTuple(bounds: readonly number[]): CopcBounds {
     maxY: bounds[4],
     maxZ: bounds[5],
   };
-}
-
-function getColorGetters(view: {
-  readonly dimensions: Record<string, unknown>;
-  getter(name: string): (index: number) => number;
-}):
-  | {
-      readonly red: (index: number) => number;
-      readonly green: (index: number) => number;
-      readonly blue: (index: number) => number;
-    }
-  | undefined {
-  if (!("Red" in view.dimensions) || !("Green" in view.dimensions) || !("Blue" in view.dimensions)) {
-    return undefined;
-  }
-
-  return {
-    red: view.getter("Red"),
-    green: view.getter("Green"),
-    blue: view.getter("Blue"),
-  };
-}
-
-function colorAt(
-  getters: {
-    readonly red: (index: number) => number;
-    readonly green: (index: number) => number;
-    readonly blue: (index: number) => number;
-  },
-  index: number,
-): CopcPointColor {
-  return {
-    red: toByteColor(getters.red(index)),
-    green: toByteColor(getters.green(index)),
-    blue: toByteColor(getters.blue(index)),
-  };
-}
-
-function toByteColor(value: number): number {
-  return Math.max(0, Math.min(255, Math.round(value / 257)));
 }
 
 function estimatePointSampleResultByteSize(

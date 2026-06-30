@@ -8,6 +8,7 @@ const externalDependencies = [
 ];
 
 export default defineConfig({
+  base: "",
   build: {
     emptyOutDir: true,
     lib: {
