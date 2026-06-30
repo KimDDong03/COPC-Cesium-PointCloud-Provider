@@ -20,8 +20,18 @@ export interface CopcHierarchyNodeCameraSelection {
   readonly targetDepth: number;
   readonly selectedDepth: number;
   readonly estimatedRootScreenPixels: number;
+  readonly estimatedSelectedDepthScreenPixels: number;
+  readonly targetNodeScreenPixels: number;
+  readonly depthEstimates: readonly CopcHierarchyNodeDepthEstimate[];
   readonly skippedByBudgetCount: number;
   readonly reason: string;
+}
+
+export interface CopcHierarchyNodeDepthEstimate {
+  readonly depth: number;
+  readonly nodeCount: number;
+  readonly nearestNodeKey: string;
+  readonly estimatedNodeScreenPixels: number;
 }
 
 const DEFAULT_MAX_NODES = 4;
@@ -96,16 +106,20 @@ export function selectHierarchyNodesForCamera(
   }
 
   const rootBounds = boundsForHierarchy(nodes);
-  const rootSpan = Math.max(horizontalSpan(rootBounds), Number.EPSILON);
-  const distance = Math.max(
-    distanceToBounds3d(options.target, rootBounds),
-    rootSpan / viewportHeightPixels,
+  const estimatedRootScreenPixels = estimateBoundsScreenPixels(
+    rootBounds,
+    options.target,
+    viewportHeightPixels,
   );
-  const estimatedRootScreenPixels = (rootSpan / distance) * viewportHeightPixels;
-  const targetDepth = clampInteger(
-    Math.floor(Math.log2(estimatedRootScreenPixels / targetNodeScreenPixels)),
-    boundedMinDepth,
-    boundedMaxDepth,
+  const depthEstimates = estimateAvailableDepthsScreenSize(
+    nodes,
+    availableDepths,
+    options.target,
+    viewportHeightPixels,
+  );
+  const targetDepth = chooseTargetDepth(
+    depthEstimates,
+    targetNodeScreenPixels,
   );
   const selection = selectBudgetedNodes(nodes, availableDepths, targetDepth, {
     target: options.target,
@@ -120,13 +134,22 @@ export function selectHierarchyNodesForCamera(
     return undefined;
   }
 
+  const selectedDepthEstimate = findDepthEstimate(
+    depthEstimates,
+    selection.selectedDepth,
+  );
+
   return {
     nodes: selection.nodes,
     targetDepth,
     selectedDepth: selection.selectedDepth,
     estimatedRootScreenPixels,
+    estimatedSelectedDepthScreenPixels:
+      selectedDepthEstimate.estimatedNodeScreenPixels,
+    targetNodeScreenPixels,
+    depthEstimates,
     skippedByBudgetCount: selection.skippedByBudgetCount,
-    reason: `Selected ${selection.nodes.length} nearest depth ${selection.selectedDepth} nodes for the current camera.`,
+    reason: `Selected ${selection.nodes.length} nearest depth ${selection.selectedDepth} nodes; nearest depth ${selection.selectedDepth} node is estimated at ${selectedDepthEstimate.estimatedNodeScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 0 })} px against a ${targetNodeScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 0 })} px target.`,
   };
 }
 
@@ -152,6 +175,76 @@ function sortedAvailableDepths(
   return [...new Set(nodes.map((node) => node.depth))]
     .filter((depth) => depth >= minDepth && depth <= maxDepth)
     .sort((left, right) => left - right);
+}
+
+function estimateAvailableDepthsScreenSize(
+  nodes: readonly CopcHierarchyNodeSummary[],
+  availableDepths: readonly number[],
+  target: CopcTargetPoint,
+  viewportHeightPixels: number,
+): CopcHierarchyNodeDepthEstimate[] {
+  return availableDepths.map((depth) => {
+    const nodesAtDepth = nodes.filter((node) => node.depth === depth);
+    const nearestNode = nodesAtDepth
+      .map((node) => ({
+        node,
+        distanceToBounds: distanceToBounds3d(target, node.bounds),
+      }))
+      .sort(
+        (left, right) =>
+          left.distanceToBounds - right.distanceToBounds ||
+          right.node.pointCount - left.node.pointCount ||
+          left.node.key.localeCompare(right.node.key),
+      )[0]?.node;
+
+    if (!nearestNode) {
+      throw new Error(`No COPC hierarchy nodes were found at depth ${depth}.`);
+    }
+
+    return {
+      depth,
+      nodeCount: nodesAtDepth.length,
+      nearestNodeKey: nearestNode.key,
+      estimatedNodeScreenPixels: estimateBoundsScreenPixels(
+        nearestNode.bounds,
+        target,
+        viewportHeightPixels,
+      ),
+    };
+  });
+}
+
+function chooseTargetDepth(
+  depthEstimates: readonly CopcHierarchyNodeDepthEstimate[],
+  targetNodeScreenPixels: number,
+): number {
+  const satisfyingDepth = [...depthEstimates]
+    .filter(
+      (estimate) =>
+        estimate.estimatedNodeScreenPixels <= targetNodeScreenPixels,
+    )
+    .sort((left, right) => left.depth - right.depth)[0];
+
+  if (satisfyingDepth) {
+    return satisfyingDepth.depth;
+  }
+
+  return [...depthEstimates].sort(
+    (left, right) => right.depth - left.depth,
+  )[0].depth;
+}
+
+function findDepthEstimate(
+  depthEstimates: readonly CopcHierarchyNodeDepthEstimate[],
+  depth: number,
+): CopcHierarchyNodeDepthEstimate {
+  const estimate = depthEstimates.find((candidate) => candidate.depth === depth);
+
+  if (!estimate) {
+    throw new Error(`No COPC hierarchy depth estimate was found for ${depth}.`);
+  }
+
+  return estimate;
 }
 
 interface SelectBudgetedNodesOptions {
@@ -327,6 +420,17 @@ function horizontalSpan(bounds: CopcBounds): number {
   return Math.max(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY);
 }
 
+function estimateBoundsScreenPixels(
+  bounds: CopcBounds,
+  target: CopcTargetPoint,
+  viewportHeightPixels: number,
+): number {
+  const span = Math.max(horizontalSpan(bounds), Number.EPSILON);
+  const distance = Math.max(distanceToBounds3d(target, bounds), span);
+
+  return (span / distance) * viewportHeightPixels;
+}
+
 function distanceToBounds3d(target: CopcTargetPoint, bounds: CopcBounds): number {
   return Math.hypot(
     distanceToRange(target.x, bounds.minX, bounds.maxX),
@@ -345,8 +449,4 @@ function distanceToRange(value: number, min: number, max: number): number {
   }
 
   return 0;
-}
-
-function clampInteger(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
 }

@@ -22,6 +22,22 @@ describe("selectHierarchyNodesForCamera", () => {
 
     expect(selection?.targetDepth).toBe(2);
     expect(selection?.selectedDepth).toBe(2);
+    expect(selection?.targetNodeScreenPixels).toBe(220);
+    expect(selection?.estimatedSelectedDepthScreenPixels).toBe(720);
+    expect(selection?.depthEstimates).toEqual([
+      expect.objectContaining({
+        depth: 0,
+        nodeCount: 1,
+        nearestNodeKey: "0-0-0-0",
+        estimatedNodeScreenPixels: 720,
+      }),
+      expect.objectContaining({
+        depth: 2,
+        nodeCount: 16,
+        nearestNodeKey: "2-2-2-0",
+        estimatedNodeScreenPixels: 720,
+      }),
+    ]);
     expect(selection?.nodes.map((node) => node.key)).toEqual([
       "2-2-2-0",
       "2-1-2-0",
@@ -37,10 +53,50 @@ describe("selectHierarchyNodesForCamera", () => {
       targetNodeScreenPixels: 220,
     });
 
-    expect(selection?.targetDepth).toBe(2);
+    expect(selection?.targetDepth).toBe(3);
     expect(selection?.selectedDepth).toBe(3);
     expect(selection?.nodes).toHaveLength(2);
     expect(selection?.nodes.every((node) => node.depth === 3)).toBe(true);
+  });
+
+  it("uses the shallowest depth that satisfies the target screen size", () => {
+    const selection = selectHierarchyNodesForCamera(createProgressiveDepthNodes(), {
+      target: { x: 200, y: 10, z: 10 },
+      viewportHeightPixels: 720,
+      maxNodes: 2,
+      targetNodeScreenPixels: 220,
+    });
+
+    expect(selection?.targetDepth).toBe(2);
+    expect(selection?.selectedDepth).toBe(2);
+    expect(selection?.estimatedRootScreenPixels).toBe(720);
+    expect(selection?.estimatedSelectedDepthScreenPixels).toBe(180);
+    expect(selection?.depthEstimates.map((estimate) => ({
+      depth: estimate.depth,
+      nearestNodeKey: estimate.nearestNodeKey,
+      estimatedNodeScreenPixels: estimate.estimatedNodeScreenPixels,
+    }))).toEqual([
+      {
+        depth: 0,
+        nearestNodeKey: "0-0-0-0",
+        estimatedNodeScreenPixels: 720,
+      },
+      {
+        depth: 1,
+        nearestNodeKey: "1-1-0-0",
+        estimatedNodeScreenPixels: 360,
+      },
+      {
+        depth: 2,
+        nearestNodeKey: "2-3-0-0",
+        estimatedNodeScreenPixels: 180,
+      },
+      {
+        depth: 3,
+        nearestNodeKey: "3-7-0-0",
+        estimatedNodeScreenPixels: 90,
+      },
+    ]);
   });
 
   it("falls back to a nearby depth when target-depth nodes exceed the node budget", () => {
@@ -126,6 +182,15 @@ function createBudgetedDepthNodes(): CopcHierarchyNodeSummary[] {
     createNode("2-3-3-0", 2, 75, 75, 25, {
       pointDataLength: 2_000,
     }),
+  ];
+}
+
+function createProgressiveDepthNodes(): CopcHierarchyNodeSummary[] {
+  return [
+    createNode("0-0-0-0", 0, 0, 0, 100),
+    createNode("1-1-0-0", 1, 50, 0, 50),
+    createNode("2-3-0-0", 2, 75, 0, 25),
+    createNode("3-7-0-0", 3, 87.5, 0, 12.5),
   ];
 }
 

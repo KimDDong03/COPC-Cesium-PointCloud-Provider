@@ -1009,7 +1009,7 @@ function formatCameraSelection(
       ? `, ${selection.skippedByBudgetCount.toLocaleString()} skipped by budget`
       : "";
 
-  return `${selection.nodes.length.toLocaleString()} nodes at depth ${selection.selectedDepth.toLocaleString()} (target depth ${selection.targetDepth.toLocaleString()}, root span ${selection.estimatedRootScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 0 })} px${budgetSummary})`;
+  return `${selection.nodes.length.toLocaleString()} nodes at depth ${selection.selectedDepth.toLocaleString()} (target depth ${selection.targetDepth.toLocaleString()}, selected depth ${selection.estimatedSelectedDepthScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 0 })} px / ${selection.targetNodeScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 0 })} px target, root ${selection.estimatedRootScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 0 })} px${budgetSummary})`;
 }
 
 function formatCoordinateTransform(

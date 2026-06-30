@@ -56,7 +56,7 @@ The current implementation includes:
 - `CopcSource.loadHierarchyPage` and `loadNextHierarchyPage` for on-demand COPC hierarchy page range reads.
 - `selectHierarchyPagesForTarget` for choosing nearby pending hierarchy pages from their octree bounds.
 - `CopcSource` point sample caching by node key and sample count, with a bounded LRU sample-set limit.
-- `selectHierarchyNodesForCamera` for camera-based node selection with optional point-count and point-data byte budgets.
+- `selectHierarchyNodesForCamera` for camera-based node selection using per-depth nearest-node screen-size estimates, with optional point-count and point-data byte budgets.
 - `CopcPointCloudLayer.expandHierarchyForCamera` for camera-targeted hierarchy expansion.
 - `CopcPointCloudLayer.renderAutomatic` for selecting and rendering nodes in one call.
 - `CopcPointCloudLayer.selectNodesForCamera` for selecting nodes without immediately rendering.
@@ -81,7 +81,7 @@ Camera-based selection requires both directions:
 
 ## Current Limitations
 
-- Hierarchy page expansion and node selection are camera-targeted but still conservative; this is not yet a full screen-space error or eviction policy.
+- Hierarchy page expansion and node selection are camera-targeted but still conservative; node selection now uses screen-size estimates, but this is not yet a full point-spacing screen-space error policy.
 - Point rendering uses Cesium point primitives, not a custom optimized WebGL primitive.
 - Point sample cache is bounded by sample-set count, but not yet by decoded byte size.
 - Camera streaming is prototype-oriented; it expands a small number of hierarchy pages per update while keeping the example's automatic render depth shallow.
@@ -89,7 +89,7 @@ Camera-based selection requires both directions:
 
 ## Near-Term Roadmap
 
-1. Replace the current simple screen-space estimate with a stronger screen-space error policy for progressive hierarchy and point loading.
+1. Add point-spacing-aware screen-space error thresholds for progressive hierarchy and point loading.
 2. Add bounded hierarchy cache eviction and byte-aware point cache budgeting.
 3. Move heavy point decoding/preparation work into Web Workers.
 4. Replace point primitive rendering with a more scalable Cesium-native primitive path when the basic API stabilizes.

@@ -145,6 +145,7 @@ await writeFile(
   createDefaultCopcCoordinateTransforms,
   createProj4CoordinateTransforms,
   selectHierarchyPagesForTarget,
+  type CopcHierarchyNodeDepthEstimate,
   type CopcPointCloudLayerCameraSelectionOptions,
   type CopcCoordinateTransformStatus,
   type CopcHierarchyPageReference,
@@ -173,6 +174,7 @@ const cacheStats: CopcPointSampleCacheStats | undefined = undefined;
 const sourceOptions: CopcSourceOptions = { maxCachedSampleSets: 2 };
 const createSource = (): CopcSource =>
   new CopcSource("https://example.com/sample.copc.laz", sourceOptions);
+const depthEstimate: CopcHierarchyNodeDepthEstimate | undefined = undefined;
 const hierarchyPage: CopcHierarchyPageReference | undefined = undefined;
 const pageSelection: CopcHierarchyPageTargetSelection | undefined = undefined;
 const hierarchyExpansionOptions:
@@ -188,6 +190,7 @@ if (app) {
     exportedConstructors.map((constructor) => constructor.name).join(", "),
     String(Boolean(createSource)),
     String(sourceOptions.maxCachedSampleSets),
+    String(Boolean(depthEstimate)),
     String(Boolean(inspection)),
     String(Boolean(transformStatus)),
     String(Boolean(cacheStats)),
