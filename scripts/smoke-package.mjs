@@ -157,6 +157,7 @@ import {
   CopcSource,
   createCopcPointSampleWorker,
   type CopcHierarchyCacheStats,
+  type LoadNodePointSamplesOptions,
   type CopcPointSampleLoadingMode,
   type CopcPointSampleCacheStats,
   type CopcSourceOptions,
@@ -191,6 +192,10 @@ const sourceOptions: CopcSourceOptions = {
   maxCachedPointSampleBytes: 1024,
   pointSampleLoading: pointSampleLoadingMode,
 };
+const nodeSampleOptions: LoadNodePointSamplesOptions = {
+  nodeKey: "0-0-0-0",
+  signal: new AbortController().signal,
+};
 const createSource = (): CopcSource =>
   new CopcSource("https://example.com/sample.copc.laz", sourceOptions);
 const depthEstimate: CopcHierarchyNodeDepthEstimate | undefined = undefined;
@@ -212,6 +217,7 @@ if (app) {
     String(sourceOptions.maxCachedHierarchyPages),
     String(sourceOptions.maxCachedSampleSets),
     String(sourceOptions.maxCachedPointSampleBytes),
+    String(Boolean(nodeSampleOptions.signal)),
     String(Boolean(depthEstimate)),
     String(Boolean(inspection)),
     String(Boolean(transformStatus)),

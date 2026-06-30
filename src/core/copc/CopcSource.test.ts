@@ -3,6 +3,7 @@ import type { Copc as CopcData, Hierarchy } from "copc";
 import { CopcSource } from "./CopcSource";
 import type { CopcNodePointSampleResult } from "./CopcPointDataSample";
 import type {
+  CopcPointSampleWorkerLoadRequest,
   CopcPointSampleWorkerRequest,
   CopcPointSampleWorkerResponse,
 } from "./CopcPointSampleWorkerProtocol";
@@ -285,6 +286,74 @@ describe("CopcSource point sample cache", () => {
     expect(source.getPointSampleCacheStats()).toEqual(
       expect.objectContaining({
         cachedSampleSetCount: 1,
+        cacheMissCount: 1,
+      }),
+    );
+  });
+
+  it("cancels in-flight worker point sample requests when aborted", async () => {
+    const worker = new FakePointSampleWorker();
+    const abortController = new AbortController();
+    const source = new CopcSource("https://example.com/sample.copc.laz", {
+      pointSampleLoading: "worker",
+      createPointSampleWorker: () => worker as unknown as Worker,
+    });
+    const mutableSource = source as unknown as {
+      copcPromise: Promise<CopcData>;
+      loadHierarchyPageData: (
+        page: Hierarchy.Page,
+      ) => Promise<Hierarchy.Subtree>;
+    };
+
+    mutableSource.copcPromise = Promise.resolve({
+      info: {
+        cube: [0, 0, 0, 8, 8, 8],
+        rootHierarchyPage: { pageOffset: 10, pageLength: 20 },
+      },
+    } as CopcData);
+    mutableSource.loadHierarchyPageData = async () => ({
+      nodes: {
+        "0-0-0-0": createNode(100),
+      },
+      pages: {},
+    });
+
+    const promise = source.loadNodePointSamples({
+      nodeKey: "0-0-0-0",
+      maxPointCount: 5,
+      signal: abortController.signal,
+    });
+    await waitForWorkerRequestCount(worker, 1);
+    const request = worker.requests[0];
+
+    if (!request || request.type !== "loadNodePointSamples") {
+      throw new Error("Expected worker load request.");
+    }
+
+    abortController.abort();
+
+    await expect(promise).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    expect(worker.requests).toContainEqual({
+      id: request.id,
+      type: "cancel",
+    });
+
+    worker.emit({
+      id: request.id,
+      type: "loadNodePointSamples:success",
+      result: {
+        nodeKey: request.nodeKey,
+        nodePointCount: request.node.pointCount,
+        sampledPointCount: 1,
+        points: [{ x: 1, y: 2, z: 3 }],
+      },
+    });
+
+    expect(source.getPointSampleCacheStats()).toEqual(
+      expect.objectContaining({
+        cachedSampleSetCount: 0,
         cacheMissCount: 1,
       }),
     );
@@ -589,8 +658,8 @@ class FakePointSampleWorker {
     | undefined;
 
   constructor(
-    private readonly respond: (
-      request: CopcPointSampleWorkerRequest,
+    private readonly respond?: (
+      request: CopcPointSampleWorkerLoadRequest,
     ) => CopcPointSampleWorkerResponse,
   ) {}
 
@@ -609,14 +678,42 @@ class FakePointSampleWorker {
 
   postMessage(message: CopcPointSampleWorkerRequest): void {
     this.requests.push(message);
+    if (message.type === "cancel") {
+      return;
+    }
+
+    const response = this.respond?.(message);
+    if (!response) {
+      return;
+    }
+
     queueMicrotask(() => {
-      this.messageListener?.({
-        data: this.respond(message),
-      } as MessageEvent<CopcPointSampleWorkerResponse>);
+      this.emit(response);
     });
+  }
+
+  emit(response: CopcPointSampleWorkerResponse): void {
+    this.messageListener?.({
+      data: response,
+    } as MessageEvent<CopcPointSampleWorkerResponse>);
   }
 
   terminate(): void {
     this.messageListener = undefined;
   }
+}
+
+async function waitForWorkerRequestCount(
+  worker: FakePointSampleWorker,
+  requestCount: number,
+): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (worker.requests.length >= requestCount) {
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  throw new Error(`Timed out waiting for ${requestCount} worker requests.`);
 }

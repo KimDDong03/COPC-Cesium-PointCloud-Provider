@@ -12,7 +12,9 @@ interface WorkerCopcSource {
   readonly copc: Promise<CopcData>;
 }
 
+const CANCELED_REQUEST_TTL_MS = 60_000;
 const copcSources = new Map<string, WorkerCopcSource>();
+const canceledRequestIds = new Set<number>();
 const workerScope = globalThis as unknown as {
   addEventListener(
     type: "message",
@@ -29,8 +31,16 @@ async function handleRequest(
   request: CopcPointSampleWorkerRequest,
 ): Promise<void> {
   try {
-    if (request.type !== "loadNodePointSamples") {
-      throw new Error(`Unsupported COPC point sample worker request: ${request.type}`);
+    if (request.type === "cancel") {
+      canceledRequestIds.add(request.id);
+      setTimeout(() => {
+        canceledRequestIds.delete(request.id);
+      }, CANCELED_REQUEST_TTL_MS);
+      return;
+    }
+
+    if (canceledRequestIds.has(request.id)) {
+      return;
     }
 
     const source = getWorkerCopcSource(request.url);
@@ -42,12 +52,20 @@ async function handleRequest(
       maxPointCount: request.maxPointCount,
     });
 
+    if (canceledRequestIds.delete(request.id)) {
+      return;
+    }
+
     workerScope.postMessage({
       id: request.id,
       type: "loadNodePointSamples:success",
       result,
     });
   } catch (error) {
+    if (canceledRequestIds.delete(request.id)) {
+      return;
+    }
+
     workerScope.postMessage({
       id: request.id,
       type: "loadNodePointSamples:error",

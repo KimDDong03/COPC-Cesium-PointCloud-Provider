@@ -50,6 +50,7 @@ let currentCoordinateTransform: CopcCoordinateTransformStatus | undefined;
 let currentSuggestion: CopcHierarchyNodeSuggestion | undefined;
 let currentSource: CopcSourceConfig = DEFAULT_SAMPLE_COPC_SOURCE;
 let automaticStreamRequestId = 0;
+let automaticStreamAbortController: AbortController | undefined;
 let lastAutomaticStreamNodeKeySignature = "";
 const renderNodeSet = new Set<string>();
 
@@ -150,6 +151,12 @@ elements.autoLodButton.addEventListener("click", () => {
 elements.autoStreamCheckbox.addEventListener("change", () => {
   lastAutomaticStreamNodeKeySignature = "";
 
+  if (!elements.autoStreamCheckbox.checked) {
+    automaticStreamAbortController?.abort();
+    automaticStreamAbortController = undefined;
+    return;
+  }
+
   if (elements.autoStreamCheckbox.checked) {
     void renderAutomaticNodeSetForCameraMove(true);
   }
@@ -175,6 +182,8 @@ void inspectSource(DEFAULT_SAMPLE_COPC_SOURCE);
 async function inspectSource(source: CopcSourceConfig): Promise<void> {
   const activeSource = normalizeSourceConfig(source);
   const previousLayer = currentLayer;
+  automaticStreamAbortController?.abort();
+  automaticStreamAbortController = undefined;
   currentLayer = undefined;
   previousLayer?.destroy();
   setInspectionLoading();
@@ -511,15 +520,21 @@ async function renderAutomaticNodeSetForCameraMove(
   }
 
   const layer = currentLayer;
+  automaticStreamAbortController?.abort();
+  const abortController = new AbortController();
+  automaticStreamAbortController = abortController;
+  const { signal } = abortController;
   const requestId = (automaticStreamRequestId += 1);
 
   try {
     const hierarchyExpansion = await layer.expandHierarchyForCamera({
       camera: viewer.camera,
       maxPages: CAMERA_STREAM_MAX_HIERARCHY_PAGES,
+      signal,
     });
 
     if (
+      signal.aborted ||
       layer !== currentLayer ||
       requestId !== automaticStreamRequestId ||
       !elements.autoStreamCheckbox.checked
@@ -532,9 +547,11 @@ async function renderAutomaticNodeSetForCameraMove(
       camera: viewer.camera,
       maxNodes: CAMERA_STREAM_MAX_NODES,
       maxDepth: CAMERA_STREAM_MAX_DEPTH,
+      signal,
     });
 
     if (
+      signal.aborted ||
       !cameraSelection ||
       cameraSelection.nodes.length === 0 ||
       layer !== currentLayer ||
@@ -551,12 +568,12 @@ async function renderAutomaticNodeSetForCameraMove(
       return;
     }
 
-    lastAutomaticStreamNodeKeySignature = nodeKeySignature;
     elements.statusText.textContent = `Streaming ${nodeKeys.length.toLocaleString()} COPC nodes for camera position...`;
 
-    const result = await layer.renderNodes(nodeKeys);
+    const result = await layer.renderNodes(nodeKeys, { signal });
 
     if (
+      signal.aborted ||
       layer !== currentLayer ||
       requestId !== automaticStreamRequestId ||
       !elements.autoStreamCheckbox.checked
@@ -564,6 +581,7 @@ async function renderAutomaticNodeSetForCameraMove(
       return;
     }
 
+    lastAutomaticStreamNodeKeySignature = nodeKeySignature;
     renderNodeSet.clear();
     result.nodes.forEach((node) => renderNodeSet.add(node.key));
     renderRenderSetControls();
@@ -577,11 +595,19 @@ async function renderAutomaticNodeSetForCameraMove(
     elements.statusText.textContent = `Camera stream rendered ${result.pointSamples.sampledPointCount.toLocaleString()} points from ${result.pointSamples.nodeKeys.length.toLocaleString()} COPC nodes${formatLoadedHierarchyPages(loadedPageKeys)}.`;
     updateSuggestedNode();
   } catch (error) {
+    if (isAbortError(error)) {
+      return;
+    }
+
     if (layer !== currentLayer) {
       return;
     }
 
     setInspectionError(error);
+  } finally {
+    if (automaticStreamAbortController === abortController) {
+      automaticStreamAbortController = undefined;
+    }
   }
 }
 
@@ -1027,6 +1053,10 @@ function formatLoadedHierarchyPages(pageKeys: readonly string[]): string {
   return pageKeys.length > 0
     ? ` after loading ${pageKeys.length.toLocaleString()} hierarchy pages`
     : "";
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
 }
 
 function formatCameraSelection(

@@ -28,11 +28,13 @@ import type {
 export interface LoadNodePointSamplesOptions {
   readonly nodeKey?: string;
   readonly maxPointCount?: number;
+  readonly signal?: AbortSignal;
 }
 
 export interface LoadNodesPointSamplesOptions {
   readonly nodeKeys: readonly string[];
   readonly maxPointCountPerNode?: number;
+  readonly signal?: AbortSignal;
 }
 
 export interface LoadHierarchyPagesResult {
@@ -289,6 +291,8 @@ export class CopcSource {
   loadNodePointSamples(
     options: LoadNodePointSamplesOptions = {},
   ): Promise<CopcNodePointSampleResult> {
+    throwIfAborted(options.signal);
+
     const maxPointCount = options.maxPointCount ?? DEFAULT_MAX_POINT_COUNT;
     const nodeKey = options.nodeKey ?? DEFAULT_NODE_KEY;
 
@@ -303,7 +307,7 @@ export class CopcSource {
       this.pointSampleCacheHitCount += 1;
       this.nodePointSampleCache.delete(cacheKey);
       this.nodePointSampleCache.set(cacheKey, cached);
-      return cached.promise;
+      return withAbortSignal(cached.promise, options.signal);
     }
 
     this.pointSampleCacheMissCount += 1;
@@ -311,6 +315,7 @@ export class CopcSource {
     const promise = this.loadNodePointSamplesWithoutCache(
       nodeKey,
       maxPointCount,
+      options.signal,
     )
       .then((result) => {
         if (this.nodePointSampleCache.get(cacheKey) !== entry) {
@@ -380,6 +385,7 @@ export class CopcSource {
         this.loadNodePointSamples({
           nodeKey,
           maxPointCount: options.maxPointCountPerNode,
+          signal: options.signal,
         }),
       ),
     );
@@ -589,12 +595,15 @@ export class CopcSource {
     nodeKey: string,
     node: Hierarchy.Node,
     maxPointCount: number,
+    signal: AbortSignal | undefined,
   ): Promise<CopcNodePointSampleResult> | undefined {
     const worker = this.getPointSampleWorker();
 
     if (!worker) {
       return undefined;
     }
+
+    throwIfAborted(signal);
 
     const id = ++this.pointSampleWorkerRequestId;
     const request: CopcPointSampleWorkerRequest = {
@@ -607,10 +616,34 @@ export class CopcSource {
     };
 
     return new Promise((resolve, reject) => {
+      const abort = (): void => {
+        this.pointSampleWorkerRequests.delete(id);
+        worker.postMessage({
+          id,
+          type: "cancel",
+        } satisfies CopcPointSampleWorkerRequest);
+        reject(createAbortError(signal));
+      };
+      const cleanup = (): void => {
+        signal?.removeEventListener("abort", abort);
+      };
+
+      if (signal?.aborted) {
+        abort();
+        return;
+      }
+
       this.pointSampleWorkerRequests.set(id, {
-        resolve,
-        reject,
+        resolve: (result) => {
+          cleanup();
+          resolve(result);
+        },
+        reject: (error) => {
+          cleanup();
+          reject(error);
+        },
       });
+      signal?.addEventListener("abort", abort, { once: true });
       worker.postMessage(request);
     });
   }
@@ -687,15 +720,21 @@ export class CopcSource {
   private async loadNodePointSamplesWithoutCache(
     nodeKey: string,
     maxPointCount: number,
+    signal: AbortSignal | undefined,
   ): Promise<CopcNodePointSampleResult> {
+    throwIfAborted(signal);
+
     const [copc, hierarchy] = await Promise.all([
       this.copcPromise,
       this.loadHierarchy(),
     ]);
+    throwIfAborted(signal);
+
     let node = hierarchy.nodes[nodeKey];
 
     if (!node && hierarchy.pages[nodeKey]) {
       await this.loadHierarchyPage(nodeKey);
+      throwIfAborted(signal);
       node = hierarchy.nodes[nodeKey];
     }
 
@@ -709,19 +748,23 @@ export class CopcSource {
       nodeKey,
       node,
       maxPointCount,
+      signal,
     );
 
     if (workerResult) {
       return workerResult;
     }
 
-    return loadCopcNodePointSamples({
+    const result = await loadCopcNodePointSamples({
       getter: this.getter,
       copc,
       nodeKey,
       node,
       maxPointCount,
     });
+
+    throwIfAborted(signal);
+    return result;
   }
 }
 
@@ -734,6 +777,61 @@ function createErrorFromWorkerResponse(error: {
   restoredError.name = error.name ?? "Error";
   restoredError.stack = error.stack;
   return restoredError;
+}
+
+function withAbortSignal<T>(
+  promise: Promise<T>,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  if (!signal) {
+    return promise;
+  }
+
+  throwIfAborted(signal);
+
+  return new Promise((resolve, reject) => {
+    const abort = (): void => {
+      cleanup();
+      reject(createAbortError(signal));
+    };
+    const cleanup = (): void => {
+      signal.removeEventListener("abort", abort);
+    };
+
+    signal.addEventListener("abort", abort, { once: true });
+    promise.then(
+      (result) => {
+        cleanup();
+        resolve(result);
+      },
+      (error: unknown) => {
+        cleanup();
+        reject(error);
+      },
+    );
+  });
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw createAbortError(signal);
+  }
+}
+
+function createAbortError(signal: AbortSignal | undefined): Error {
+  const reason = signal?.reason;
+
+  if (reason instanceof Error) {
+    return reason;
+  }
+
+  if (typeof DOMException !== "undefined") {
+    return new DOMException("COPC point sample request was aborted.", "AbortError");
+  }
+
+  const error = new Error("COPC point sample request was aborted.");
+  error.name = "AbortError";
+  return error;
 }
 
 function createInspection(sourceUrl: string, copc: CopcData): CopcInspection {

@@ -63,11 +63,13 @@ export interface CopcPointCloudLayerLoadResult {
 export interface CopcPointCloudLayerRenderNodeOptions {
   readonly maxPointCount?: number;
   readonly showBounds?: boolean;
+  readonly signal?: AbortSignal;
 }
 
 export interface CopcPointCloudLayerRenderNodesOptions {
   readonly maxPointCountPerNode?: number;
   readonly showBounds?: boolean;
+  readonly signal?: AbortSignal;
 }
 
 export interface CopcPointCloudLayerCameraSelectionOptions
@@ -77,6 +79,7 @@ export interface CopcPointCloudLayerCameraSelectionOptions
   > {
   readonly camera: Camera;
   readonly viewportHeightPixels?: number;
+  readonly signal?: AbortSignal;
 }
 
 export interface CopcPointCloudLayerHierarchyExpansionOptions {
@@ -84,6 +87,7 @@ export interface CopcPointCloudLayerHierarchyExpansionOptions {
   readonly maxPages?: number;
   readonly minDepth?: number;
   readonly maxDepth?: number;
+  readonly signal?: AbortSignal;
 }
 
 export interface CopcPointCloudLayerAutomaticRenderOptions
@@ -93,6 +97,7 @@ export interface CopcPointCloudLayerAutomaticRenderOptions
   readonly expandHierarchy?: boolean;
   readonly maxHierarchyPages?: number;
   readonly maxHierarchyPageDepth?: number;
+  readonly signal?: AbortSignal;
 }
 
 export interface CopcPointCloudLayerNodeRenderResult {
@@ -218,8 +223,10 @@ export class CopcPointCloudLayer {
   ): Promise<CopcPointCloudLayerHierarchyExpansionResult | undefined> {
     this.assertNotDestroyed();
 
-    const { camera, ...selectionOptions } = options;
+    const { camera, signal, ...selectionOptions } = options;
+    throwIfAborted(signal);
     const { inspection, hierarchy } = await this.load();
+    throwIfAborted(signal);
     const pageSelection = selectHierarchyPagesForTarget(
       hierarchy.pendingPages,
       {
@@ -235,6 +242,7 @@ export class CopcPointCloudLayer {
     const result = await this.source.loadHierarchyPages(
       pageSelection.pages.map((page) => page.key),
     );
+    throwIfAborted(signal);
     this.assertNotDestroyed();
     this.loadedHierarchy = result.hierarchy;
 
@@ -252,6 +260,7 @@ export class CopcPointCloudLayer {
     this.assertNotDestroyed();
 
     const { inspection, hierarchy } = await this.load();
+    throwIfAborted(options.signal);
     this.assertNotDestroyed();
 
     const node = findRequiredNode(hierarchy, nodeKey);
@@ -259,6 +268,7 @@ export class CopcPointCloudLayer {
       nodeKey,
       maxPointCount:
         options.maxPointCount ?? this.defaultMaxPointCountPerNode,
+      signal: options.signal,
     });
     this.assertNotDestroyed();
 
@@ -296,6 +306,7 @@ export class CopcPointCloudLayer {
 
     const normalizedNodeKeys = uniqueNodeKeys(nodeKeys);
     const { inspection, hierarchy } = await this.load();
+    throwIfAborted(options.signal);
     this.assertNotDestroyed();
 
     const nodes = normalizedNodeKeys.map((nodeKey) =>
@@ -305,6 +316,7 @@ export class CopcPointCloudLayer {
       nodeKeys: normalizedNodeKeys,
       maxPointCountPerNode:
         options.maxPointCountPerNode ?? this.defaultMaxPointCountPerNode,
+      signal: options.signal,
     });
     this.assertNotDestroyed();
 
@@ -344,17 +356,24 @@ export class CopcPointCloudLayer {
       maxHierarchyPages,
       maxHierarchyPageDepth,
       maxPointCountPerNode,
+      signal,
       showBounds,
       ...selectionOptions
     } = options;
+    throwIfAborted(signal);
     const hierarchyExpansion = (expandHierarchy ?? false)
       ? await this.expandHierarchyForCamera({
           camera: options.camera,
           maxPages: maxHierarchyPages,
           maxDepth: maxHierarchyPageDepth,
+          signal,
         })
       : undefined;
-    const cameraSelection = await this.selectNodesForCamera(selectionOptions);
+    const cameraSelection = await this.selectNodesForCamera({
+      ...selectionOptions,
+      signal,
+    });
+    throwIfAborted(signal);
 
     if (!cameraSelection || cameraSelection.nodes.length === 0) {
       return undefined;
@@ -364,6 +383,7 @@ export class CopcPointCloudLayer {
       cameraSelection.nodes.map((node) => node.key),
       {
         maxPointCountPerNode,
+        signal,
         showBounds,
       },
     );
@@ -380,8 +400,16 @@ export class CopcPointCloudLayer {
   ): Promise<CopcHierarchyNodeCameraSelection | undefined> {
     this.assertNotDestroyed();
 
-    const { camera, viewportHeightPixels, spacing, ...selectionOptions } = options;
+    const {
+      camera,
+      viewportHeightPixels,
+      spacing,
+      signal,
+      ...selectionOptions
+    } = options;
+    throwIfAborted(signal);
     const { inspection, hierarchy } = await this.load();
+    throwIfAborted(signal);
     this.assertNotDestroyed();
 
     return selectHierarchyNodesForCamera(hierarchy.nodes, {
@@ -524,6 +552,29 @@ function normalizeCoordinateTransformStatus(
     label: transforms.status?.label ?? "Custom coordinate transform",
     supportsCameraSelection: Boolean(transforms.toCopc),
   };
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) {
+    return;
+  }
+
+  const reason = signal.reason;
+
+  if (reason instanceof Error) {
+    throw reason;
+  }
+
+  if (typeof DOMException !== "undefined") {
+    throw new DOMException(
+      "COPC point sample request was aborted.",
+      "AbortError",
+    );
+  }
+
+  const error = new Error("COPC point sample request was aborted.");
+  error.name = "AbortError";
+  throw error;
 }
 
 function findRequiredNode(
