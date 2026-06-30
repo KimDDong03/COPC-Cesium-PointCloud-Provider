@@ -24,7 +24,7 @@ The current prototype is intentionally small:
 5. Display sampled COPC hierarchy-node points in CesiumJS.
 6. Load nearby COPC hierarchy pages progressively, track loaded hierarchy page provenance, reuse bounded caches, and optionally decode point samples in a Web Worker.
 
-Full LOD, persistent cache management, worker pools, custom primitives, and advanced styling come later.
+Full production LOD, persistent cache management, worker pools, custom WebGL primitives, and advanced styling come later.
 
 ## Run
 
@@ -55,12 +55,13 @@ The same browser rendering smoke is available as the manual GitHub Actions workf
 The runnable prototype lives in `examples/basic-viewer`. The root `src` folder contains reusable COPC and Cesium integration code used by that example.
 Reusable source entry points are `src/index.ts`, `src/core/index.ts`, and `src/cesium/index.ts`; package exports expose built JS and type declarations as `copc-cesium`, `copc-cesium/core`, and `copc-cesium/cesium`.
 `CopcPointCloudLayer` is the first thin Cesium-facing API: it owns a `CopcSource`, point renderer, bounds renderer, and simple camera-based node rendering helpers.
-The default point renderer is `CesiumPointPrimitiveRenderer`, backed by Cesium `PointPrimitiveCollection`. `CopcPointCloudLayer` also accepts a `createPointRenderer` factory so future renderer backends can be swapped without changing COPC loading logic. `CesiumPointRenderer` remains as a compatibility alias.
+The default point renderer is `CesiumPointPrimitiveRenderer`, backed by Cesium `PointPrimitiveCollection`. `CopcPointCloudLayer` also accepts a `createPointRenderer` factory so renderer backends can be swapped without changing COPC loading logic. `CesiumBufferPointRenderer` is an experimental GPU-buffer backend backed by Cesium `BufferPointCollection`; `CesiumPointRenderer` remains as a compatibility alias.
 
 The default example URL loads the public Autzen COPC sample, reads the root hierarchy node, samples up to 5,000 points, and renders them in CesiumJS.
 The example keeps sample COPC URLs and their transform factories in a small preset list while still allowing direct custom URL entry.
 For custom URLs, the example can also accept a source CRS and optional proj4 definition before loading the COPC file.
 The hierarchy node selector lists currently loaded nodes and lets the example render one selected node at a time.
+The renderer selector can switch between the stable point-primitive renderer and the experimental buffer-backed renderer.
 `CopcSource` keeps the opened COPC metadata, loaded hierarchy pages, pending hierarchy page references with bounds and source-page provenance, hierarchy cache stats, and bounded in-memory caches for hierarchy pages and sampled node point data for the active URL. The hierarchy page cache evicts loaded non-root leaf pages back to pending page references when the configured page limit is reached. The point sample cache is limited by both sample-set count and estimated decoded sample bytes.
 The Load next page button range-reads the next pending COPC hierarchy page and refreshes the available node list without converting the file to 3D Tiles.
 The example also computes the selected node bounds and renders a yellow debug bounding box in CesiumJS.
@@ -79,6 +80,7 @@ Included example presets:
 
 ```ts
 import {
+  CesiumBufferPointRenderer,
   CesiumPointPrimitiveRenderer,
   CopcPointCloudLayer,
   createDefaultCopcCoordinateTransforms,
@@ -92,6 +94,8 @@ const layer = new CopcPointCloudLayer(viewer.scene, {
   maxConcurrentPointSampleWorkerRequests: 3,
   pointSampleLoading: "worker",
   createPointRenderer: (scene) => new CesiumPointPrimitiveRenderer(scene),
+  // Experimental alternative:
+  // createPointRenderer: (scene) => new CesiumBufferPointRenderer(scene),
   coordinateTransforms: createDefaultCopcCoordinateTransforms,
 });
 const { hierarchy, coordinateTransform } = await layer.load();

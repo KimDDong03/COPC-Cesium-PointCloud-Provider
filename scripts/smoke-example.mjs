@@ -205,8 +205,21 @@ function createSmokeFlow(baseUrl) {
     "Autzen coordinate transform was not reported.",
   );
   await check(
+    async () => (await metadataValue("Point renderer")) === "PointPrimitiveCollection",
+    "Default point primitive renderer was not reported.",
+  );
+  await check(
     async () => page.locator("#copc-source-crs").isDisabled(),
     "Projection controls should be disabled for sample presets.",
+  );
+
+  await page.getByLabel("Renderer").selectOption("buffer");
+  await waitForRenderedStatus();
+  await check(
+    async () =>
+      (await metadataValue("Point renderer")) ===
+      "BufferPointCollection (experimental)",
+    "Experimental buffer point renderer was not reported.",
   );
 
   await page.getByLabel("Sample").selectOption("sofi-stadium");

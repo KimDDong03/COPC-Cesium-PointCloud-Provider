@@ -17,6 +17,7 @@ export type {
   CopcPointCloudRenderer,
   CopcPointCloudRendererFactory,
 } from "./CopcPointCloudRenderer";
+export { CesiumBufferPointRenderer } from "./CesiumBufferPointRenderer";
 export { CesiumPointPrimitiveRenderer } from "./CesiumPointPrimitiveRenderer";
 export { CesiumPointRenderer } from "./CesiumPointRenderer";
 export {

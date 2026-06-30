@@ -4,6 +4,7 @@ import {
 } from "cesium";
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import {
+  CesiumBufferPointRenderer,
   CesiumPointPrimitiveRenderer,
   CopcPointCloudLayer,
   type CopcBounds,
@@ -17,6 +18,7 @@ import {
   type CopcMultiNodePointSampleResult,
   type CopcNodePointSampleResult,
   type CopcPointCloudLayerHierarchyExpansionResult,
+  type CopcPointCloudRendererFactory,
   type CopcPointSampleCacheStats,
   type PointSample,
 } from "copc-cesium";
@@ -41,6 +43,12 @@ const CAMERA_STREAM_MAX_DEPTH = 0;
 const HIERARCHY_PAGE_CACHE_LIMIT = 64;
 const POINT_SAMPLE_CACHE_LIMIT = 32;
 const POINT_SAMPLE_CACHE_BYTE_LIMIT = 32 * 1024 * 1024;
+const POINT_RENDERER_LABELS = {
+  primitive: "PointPrimitiveCollection",
+  buffer: "BufferPointCollection (experimental)",
+} as const;
+
+type PointRendererKind = keyof typeof POINT_RENDERER_LABELS;
 
 const elements = getPrototypeElements();
 let currentLayer: CopcPointCloudLayer | undefined;
@@ -49,6 +57,7 @@ let currentHierarchy: CopcHierarchySummary | undefined;
 let currentCoordinateTransform: CopcCoordinateTransformStatus | undefined;
 let currentSuggestion: CopcHierarchyNodeSuggestion | undefined;
 let currentSource: CopcSourceConfig = DEFAULT_SAMPLE_COPC_SOURCE;
+let currentPointRendererKind: PointRendererKind = "primitive";
 let automaticStreamRequestId = 0;
 let automaticStreamAbortController: AbortController | undefined;
 let lastAutomaticStreamNodeKeySignature = "";
@@ -113,6 +122,10 @@ elements.sampleSelect.addEventListener("change", () => {
   clearCustomProjectionInputs();
   syncCustomProjectionControls();
   void inspectSource(sample);
+});
+
+elements.rendererSelect.addEventListener("change", () => {
+  void inspectSource(createSourceConfigFromForm());
 });
 
 elements.urlInput.addEventListener("input", () => {
@@ -181,6 +194,7 @@ void inspectSource(DEFAULT_SAMPLE_COPC_SOURCE);
 
 async function inspectSource(source: CopcSourceConfig): Promise<void> {
   const activeSource = normalizeSourceConfig(source);
+  const pointRendererKind = readPointRendererKind();
   const previousLayer = currentLayer;
   automaticStreamAbortController?.abort();
   automaticStreamAbortController = undefined;
@@ -194,6 +208,7 @@ async function inspectSource(source: CopcSourceConfig): Promise<void> {
     maxCachedSampleSets: POINT_SAMPLE_CACHE_LIMIT,
     maxCachedPointSampleBytes: POINT_SAMPLE_CACHE_BYTE_LIMIT,
     pointSampleLoading: "worker",
+    createPointRenderer: createPointRendererFactory(pointRendererKind),
     coordinateTransforms: activeSource.coordinateTransforms,
   });
   currentLayer = layer;
@@ -202,6 +217,7 @@ async function inspectSource(source: CopcSourceConfig): Promise<void> {
   currentCoordinateTransform = undefined;
   currentSuggestion = undefined;
   currentSource = activeSource;
+  currentPointRendererKind = pointRendererKind;
   automaticStreamRequestId += 1;
   lastAutomaticStreamNodeKeySignature = "";
   elements.urlInput.value = activeSource.url;
@@ -274,6 +290,7 @@ function renderInspection(
     metadataRow("Point count", inspection.pointCount.toLocaleString()),
     metadataRow("Source preset", currentSource.label),
     metadataRow("Source note", currentSource.description),
+    metadataRow("Point renderer", POINT_RENDERER_LABELS[currentPointRendererKind]),
     metadataRow("LAS version", inspection.lasVersion),
     metadataRow(
       "Point format",
@@ -830,6 +847,18 @@ function readCustomProjectionOptions(): CustomCopcProjectionOptions {
   };
 }
 
+function readPointRendererKind(): PointRendererKind {
+  return elements.rendererSelect.value === "buffer" ? "buffer" : "primitive";
+}
+
+function createPointRendererFactory(
+  kind: PointRendererKind,
+): CopcPointCloudRendererFactory {
+  return kind === "buffer"
+    ? (scene) => new CesiumBufferPointRenderer(scene)
+    : (scene) => new CesiumPointPrimitiveRenderer(scene);
+}
+
 function syncCustomProjectionControls(): void {
   const isCustomSource =
     elements.sampleSelect.value === CUSTOM_SAMPLE_OPTION_VALUE;
@@ -868,6 +897,7 @@ function getPrototypeElements(): {
   readonly container: HTMLDivElement;
   readonly form: HTMLFormElement;
   readonly sampleSelect: HTMLSelectElement;
+  readonly rendererSelect: HTMLSelectElement;
   readonly urlInput: HTMLInputElement;
   readonly sourceCrsInput: HTMLInputElement;
   readonly sourceDefinitionInput: HTMLTextAreaElement;
@@ -890,6 +920,9 @@ function getPrototypeElements(): {
   const form = document.querySelector<HTMLFormElement>("#copc-form");
   const sampleSelect = document.querySelector<HTMLSelectElement>(
     "#copc-sample-select",
+  );
+  const rendererSelect = document.querySelector<HTMLSelectElement>(
+    "#copc-renderer-select",
   );
   const urlInput = document.querySelector<HTMLInputElement>("#copc-url");
   const sourceCrsInput = document.querySelector<HTMLInputElement>(
@@ -931,6 +964,7 @@ function getPrototypeElements(): {
     !container ||
     !form ||
     !sampleSelect ||
+    !rendererSelect ||
     !urlInput ||
     !sourceCrsInput ||
     !sourceDefinitionInput ||
@@ -956,6 +990,7 @@ function getPrototypeElements(): {
     container,
     form,
     sampleSelect,
+    rendererSelect,
     urlInput,
     sourceCrsInput,
     sourceDefinitionInput,

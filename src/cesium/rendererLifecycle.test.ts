@@ -2,6 +2,7 @@ import type { Scene } from "cesium";
 import { describe, expect, it } from "vitest";
 import type { CopcBounds, CopcInspection } from "../core";
 import { CesiumBoundsRenderer } from "./CesiumBoundsRenderer";
+import { CesiumBufferPointRenderer } from "./CesiumBufferPointRenderer";
 import { CesiumPointPrimitiveRenderer } from "./CesiumPointPrimitiveRenderer";
 import { CesiumPointRenderer } from "./CesiumPointRenderer";
 
@@ -38,6 +39,54 @@ describe("Cesium renderer lifecycle", () => {
     );
   });
 
+  it("rebuilds buffer point collections when points change", () => {
+    const { addedPrimitives, removedPrimitives, scene } = createSceneStub();
+    const renderer = new CesiumBufferPointRenderer(scene);
+
+    expect(addedPrimitives).toHaveLength(0);
+
+    renderer.setPoints([
+      {
+        longitudeDegrees: 127,
+        latitudeDegrees: 37,
+        heightMeters: 10,
+      },
+    ]);
+
+    expect(addedPrimitives).toHaveLength(1);
+    expect(removedPrimitives).toHaveLength(0);
+
+    renderer.setPoints([
+      {
+        longitudeDegrees: 127,
+        latitudeDegrees: 37,
+        heightMeters: 10,
+      },
+      {
+        longitudeDegrees: 127.001,
+        latitudeDegrees: 37.001,
+        heightMeters: 15,
+        color: {
+          red: 255,
+          green: 0,
+          blue: 0,
+        },
+      },
+    ]);
+
+    expect(addedPrimitives).toHaveLength(2);
+    expect(removedPrimitives).toHaveLength(1);
+
+    renderer.clear();
+    renderer.destroy();
+    renderer.destroy();
+
+    expect(removedPrimitives).toHaveLength(2);
+    expect(() => renderer.setPoints([])).toThrow(
+      "CesiumBufferPointRenderer has been destroyed.",
+    );
+  });
+
   it("removes bounds primitive collections once when destroyed", () => {
     const { removedPrimitives, scene } = createSceneStub();
     const renderer = new CesiumBoundsRenderer(scene);
@@ -54,16 +103,22 @@ describe("Cesium renderer lifecycle", () => {
 });
 
 function createSceneStub(): {
+  readonly addedPrimitives: unknown[];
   readonly removedPrimitives: unknown[];
   readonly scene: Scene;
 } {
+  const addedPrimitives: unknown[] = [];
   const removedPrimitives: unknown[] = [];
 
   return {
+    addedPrimitives,
     removedPrimitives,
     scene: {
       primitives: {
-        add: <T>(primitive: T): T => primitive,
+        add: <T>(primitive: T): T => {
+          addedPrimitives.push(primitive);
+          return primitive;
+        },
         remove: (primitive: unknown): boolean => {
           removedPrimitives.push(primitive);
           return true;

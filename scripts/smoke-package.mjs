@@ -165,6 +165,7 @@ import {
   type CopcSourceOptions,
 } from "copc-cesium/core";
 import {
+  CesiumBufferPointRenderer,
   CesiumPointPrimitiveRenderer,
   CesiumPointRenderer,
   type CopcPointCloudRendererFactory,
@@ -173,6 +174,7 @@ import {
 const exportedConstructors = [
   CopcPointCloudLayer,
   CopcSource,
+  CesiumBufferPointRenderer,
   CesiumPointRenderer,
   CesiumPointPrimitiveRenderer,
   createDefaultCopcCoordinateTransforms,
