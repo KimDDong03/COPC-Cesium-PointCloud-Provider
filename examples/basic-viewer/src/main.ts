@@ -1066,13 +1066,17 @@ function formatCameraSelection(
     selection.skippedByBudgetCount > 0
       ? `, ${selection.skippedByBudgetCount.toLocaleString()} skipped by budget`
       : "";
+  const viewSummary =
+    selection.skippedByViewCount > 0
+      ? `, ${selection.skippedByViewCount.toLocaleString()} outside view`
+      : "";
   const spacingSummary =
     selection.estimatedSelectedDepthPointSpacingScreenPixels !== undefined &&
     selection.targetPointSpacingScreenPixels !== undefined
       ? `, spacing ${selection.estimatedSelectedDepthPointSpacingScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 1 })} px / ${selection.targetPointSpacingScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 1 })} px target`
       : "";
 
-  return `${selection.nodes.length.toLocaleString()} nodes at depth ${selection.selectedDepth.toLocaleString()} (target depth ${selection.targetDepth.toLocaleString()}, selected depth ${selection.estimatedSelectedDepthScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 0 })} px / ${selection.targetNodeScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 0 })} px target, root ${selection.estimatedRootScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 0 })} px${spacingSummary}${budgetSummary})`;
+  return `${selection.nodes.length.toLocaleString()} nodes at depth ${selection.selectedDepth.toLocaleString()} (target depth ${selection.targetDepth.toLocaleString()}, selected depth ${selection.estimatedSelectedDepthScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 0 })} px / ${selection.targetNodeScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 0 })} px target, root ${selection.estimatedRootScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 0 })} px${spacingSummary}${viewSummary}${budgetSummary})`;
 }
 
 function formatCoordinateTransform(

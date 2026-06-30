@@ -65,7 +65,7 @@ The Load next page button range-reads the next pending COPC hierarchy page and r
 The example also computes the selected node bounds and renders a yellow debug bounding box in CesiumJS.
 It can suggest the nearest loaded hierarchy node to the current camera position and apply that suggestion on demand.
 The manual render set can combine multiple hierarchy nodes and render their sampled points together.
-The Auto LOD button expands a small number of nearby pending hierarchy pages, estimates each available depth's nearest node screen size and COPC spacing-derived point spacing in screen pixels, applies a small point-data byte budget, then renders the selected nodes through the same multi-node path.
+The Auto LOD button expands a small number of nearby pending hierarchy pages, estimates each available depth's nearest node screen size and COPC spacing-derived point spacing in screen pixels, culls nodes outside the camera view direction, applies a small point-data byte budget, then renders the selected nodes through the same multi-node path.
 The Stream on camera move toggle reruns camera-based hierarchy expansion and node selection after camera movement, then reuses the in-memory COPC point-sample cache for already loaded node/sample-count pairs.
 The basic viewer enables `pointSampleLoading: "worker"` so COPC point-data reads and LAZ decoding run in a Web Worker when the browser supports it. If worker creation is unavailable, `CopcSource` falls back to the existing main-thread point sampling path. Worker point sampling uses a small concurrency limit so camera-driven requests do not all dispatch at once. Point sample APIs accept an `AbortSignal`; the basic viewer aborts stale camera-stream point reads when a newer camera request starts.
 
@@ -101,6 +101,7 @@ await layer.renderAutomatic({
   camera: viewer.camera,
   maxNodes: 4,
   signal: abortController.signal,
+  maxViewAngleDegrees: 80,
   targetPointSpacingScreenPixels: 4,
   maxNodePointDataLength: 1_000_000,
   maxTotalPointDataLength: 2_000_000,

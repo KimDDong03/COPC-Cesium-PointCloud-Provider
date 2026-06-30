@@ -59,6 +59,34 @@ describe("selectHierarchyNodesForCamera", () => {
     expect(selection?.nodes.every((node) => node.depth === 3)).toBe(true);
   });
 
+  it("culls nodes outside the camera view direction before applying budgets", () => {
+    const selection = selectHierarchyNodesForCamera(createDirectionalNodes(), {
+      target: { x: 0, y: 100, z: 25 },
+      viewDirection: { x: 1, y: 0, z: 0 },
+      maxViewAngleDegrees: 70,
+      viewportHeightPixels: 720,
+      minDepth: 1,
+      maxDepth: 1,
+      maxNodes: 4,
+      targetNodeScreenPixels: 1_000,
+    });
+
+    expect(selection?.maxViewAngleDegrees).toBe(70);
+    expect(selection?.skippedByViewCount).toBe(2);
+    expect(selection?.depthEstimates).toEqual([
+      expect.objectContaining({
+        depth: 1,
+        nodeCount: 2,
+        nearestNodeKey: "1-1-0-0",
+      }),
+    ]);
+    expect(selection?.nodes.map((node) => node.key)).toEqual([
+      "1-1-0-0",
+      "1-1-1-0",
+    ]);
+    expect(selection?.reason).toContain("Culled 2 off-camera candidate nodes.");
+  });
+
   it("uses the shallowest depth that satisfies the target screen size", () => {
     const selection = selectHierarchyNodesForCamera(createProgressiveDepthNodes(), {
       target: { x: 200, y: 10, z: 10 },
@@ -213,6 +241,25 @@ describe("selectHierarchyNodesForCamera", () => {
       "targetPointSpacingScreenPixels must be a positive finite number.",
     );
   });
+
+  it("rejects invalid view direction options", () => {
+    expect(() =>
+      selectHierarchyNodesForCamera(createSparseDepthNodes(), {
+        target: { x: 0, y: 0, z: 0 },
+        viewDirection: { x: 0, y: 0, z: 0 },
+        viewportHeightPixels: 720,
+      }),
+    ).toThrow("viewDirection must be a non-zero vector.");
+
+    expect(() =>
+      selectHierarchyNodesForCamera(createSparseDepthNodes(), {
+        target: { x: 0, y: 0, z: 0 },
+        viewDirection: { x: 1, y: 0, z: 0 },
+        viewportHeightPixels: 720,
+        maxViewAngleDegrees: 180,
+      }),
+    ).toThrow("maxViewAngleDegrees must be between 0 and 180 degrees.");
+  });
 });
 
 function createNodeGrid(): CopcHierarchyNodeSummary[] {
@@ -248,6 +295,16 @@ function createBudgetedDepthNodes(): CopcHierarchyNodeSummary[] {
     createNode("2-3-3-0", 2, 75, 75, 25, {
       pointDataLength: 2_000,
     }),
+  ];
+}
+
+function createDirectionalNodes(): CopcHierarchyNodeSummary[] {
+  return [
+    createNode("0-0-0-0", 0, -100, 0, 200),
+    createNode("1-0-0-0", 1, -100, 50, 50),
+    createNode("1-0-1-0", 1, -100, 100, 50),
+    createNode("1-1-0-0", 1, 50, 50, 50),
+    createNode("1-1-1-0", 1, 50, 100, 50),
   ];
 }
 

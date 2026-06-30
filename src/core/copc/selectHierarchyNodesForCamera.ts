@@ -4,6 +4,7 @@ import type { CopcTargetPoint } from "./suggestHierarchyNode";
 
 export interface SelectHierarchyNodesForCameraOptions {
   readonly target: CopcTargetPoint;
+  readonly viewDirection?: CopcTargetVector;
   readonly viewportHeightPixels: number;
   readonly maxNodes?: number;
   readonly minDepth?: number;
@@ -13,8 +14,15 @@ export interface SelectHierarchyNodesForCameraOptions {
   readonly maxTotalPointCount?: number;
   readonly maxTotalPointDataLength?: number;
   readonly targetNodeScreenPixels?: number;
+  readonly maxViewAngleDegrees?: number;
   readonly spacing?: number;
   readonly targetPointSpacingScreenPixels?: number;
+}
+
+export interface CopcTargetVector {
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
 }
 
 export interface CopcHierarchyNodeCameraSelection {
@@ -26,8 +34,10 @@ export interface CopcHierarchyNodeCameraSelection {
   readonly targetNodeScreenPixels: number;
   readonly estimatedSelectedDepthPointSpacingScreenPixels: number | undefined;
   readonly targetPointSpacingScreenPixels: number | undefined;
+  readonly maxViewAngleDegrees: number | undefined;
   readonly spacing: number | undefined;
   readonly depthEstimates: readonly CopcHierarchyNodeDepthEstimate[];
+  readonly skippedByViewCount: number;
   readonly skippedByBudgetCount: number;
   readonly reason: string;
 }
@@ -44,6 +54,7 @@ export interface CopcHierarchyNodeDepthEstimate {
 const DEFAULT_MAX_NODES = 4;
 const DEFAULT_TARGET_NODE_SCREEN_PIXELS = 220;
 const DEFAULT_TARGET_POINT_SPACING_SCREEN_PIXELS = 4;
+const DEFAULT_MAX_VIEW_ANGLE_DEGREES = 80;
 
 export function selectHierarchyNodesForCamera(
   nodes: readonly CopcHierarchyNodeSummary[],
@@ -54,6 +65,7 @@ export function selectHierarchyNodesForCamera(
   }
 
   assertFiniteTarget(options.target);
+  assertFiniteViewDirection(options.viewDirection);
 
   const maxNodes = options.maxNodes ?? DEFAULT_MAX_NODES;
   const viewportHeightPixels = options.viewportHeightPixels;
@@ -64,6 +76,10 @@ export function selectHierarchyNodesForCamera(
       ? undefined
       : options.targetPointSpacingScreenPixels ??
         DEFAULT_TARGET_POINT_SPACING_SCREEN_PIXELS;
+  const maxViewAngleDegrees =
+    options.viewDirection === undefined
+      ? undefined
+      : options.maxViewAngleDegrees ?? DEFAULT_MAX_VIEW_ANGLE_DEGREES;
 
   if (!Number.isSafeInteger(maxNodes) || maxNodes <= 0) {
     throw new Error("maxNodes must be a positive integer.");
@@ -76,6 +92,8 @@ export function selectHierarchyNodesForCamera(
   if (!Number.isFinite(targetNodeScreenPixels) || targetNodeScreenPixels <= 0) {
     throw new Error("targetNodeScreenPixels must be a positive finite number.");
   }
+
+  validateViewAngle(maxViewAngleDegrees);
 
   if (options.spacing !== undefined) {
     validatePositiveFiniteBudget(options.spacing, "spacing");
@@ -125,8 +143,18 @@ export function selectHierarchyNodesForCamera(
 
   const boundedMinDepth = Math.min(minDepth, hierarchyMaxDepth);
   const boundedMaxDepth = Math.min(maxDepth, hierarchyMaxDepth);
-  const availableDepths = sortedAvailableDepths(
+  const candidateNodes = filterNodesForView(
     nodes,
+    boundedMinDepth,
+    boundedMaxDepth,
+    {
+      target: options.target,
+      viewDirection: options.viewDirection,
+      maxViewAngleDegrees,
+    },
+  );
+  const availableDepths = sortedAvailableDepths(
+    candidateNodes.nodes,
     boundedMinDepth,
     boundedMaxDepth,
   );
@@ -142,7 +170,7 @@ export function selectHierarchyNodesForCamera(
     viewportHeightPixels,
   );
   const depthEstimates = estimateAvailableDepthsScreenSize(
-    nodes,
+    candidateNodes.nodes,
     availableDepths,
     options.target,
     viewportHeightPixels,
@@ -153,14 +181,19 @@ export function selectHierarchyNodesForCamera(
     targetNodeScreenPixels,
     targetPointSpacingScreenPixels,
   );
-  const selection = selectBudgetedNodes(nodes, availableDepths, targetDepth, {
-    target: options.target,
-    maxNodes,
-    maxNodePointCount: options.maxNodePointCount,
-    maxNodePointDataLength: options.maxNodePointDataLength,
-    maxTotalPointCount: options.maxTotalPointCount,
-    maxTotalPointDataLength: options.maxTotalPointDataLength,
-  });
+  const selection = selectBudgetedNodes(
+    candidateNodes.nodes,
+    availableDepths,
+    targetDepth,
+    {
+      target: options.target,
+      maxNodes,
+      maxNodePointCount: options.maxNodePointCount,
+      maxNodePointDataLength: options.maxNodePointDataLength,
+      maxTotalPointCount: options.maxTotalPointCount,
+      maxTotalPointDataLength: options.maxTotalPointDataLength,
+    },
+  );
 
   if (!selection) {
     return undefined;
@@ -182,14 +215,17 @@ export function selectHierarchyNodesForCamera(
     estimatedSelectedDepthPointSpacingScreenPixels:
       selectedDepthEstimate.estimatedPointSpacingScreenPixels,
     targetPointSpacingScreenPixels,
+    maxViewAngleDegrees,
     spacing: options.spacing,
     depthEstimates,
+    skippedByViewCount: candidateNodes.skippedByViewCount,
     skippedByBudgetCount: selection.skippedByBudgetCount,
     reason: createSelectionReason(
       selection,
       selectedDepthEstimate,
       targetNodeScreenPixels,
       targetPointSpacingScreenPixels,
+      candidateNodes.skippedByViewCount,
     ),
   };
 }
@@ -201,6 +237,26 @@ function assertFiniteTarget(target: CopcTargetPoint): void {
     !Number.isFinite(target.z)
   ) {
     throw new Error("target must contain finite x, y, and z values.");
+  }
+}
+
+function assertFiniteViewDirection(
+  viewDirection: CopcTargetVector | undefined,
+): void {
+  if (viewDirection === undefined) {
+    return;
+  }
+
+  if (
+    !Number.isFinite(viewDirection.x) ||
+    !Number.isFinite(viewDirection.y) ||
+    !Number.isFinite(viewDirection.z)
+  ) {
+    throw new Error("viewDirection must contain finite x, y, and z values.");
+  }
+
+  if (vectorLength(viewDirection) <= Number.EPSILON) {
+    throw new Error("viewDirection must be a non-zero vector.");
   }
 }
 
@@ -325,14 +381,19 @@ function createSelectionReason(
   selectedDepthEstimate: CopcHierarchyNodeDepthEstimate,
   targetNodeScreenPixels: number,
   targetPointSpacingScreenPixels: number | undefined,
+  skippedByViewCount: number,
 ): string {
   const pointSpacingReason =
     targetPointSpacingScreenPixels === undefined ||
     selectedDepthEstimate.estimatedPointSpacingScreenPixels === undefined
       ? ""
       : ` and point spacing ${selectedDepthEstimate.estimatedPointSpacingScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 1 })} px against a ${targetPointSpacingScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 1 })} px target`;
+  const viewReason =
+    skippedByViewCount === 0
+      ? ""
+      : ` Culled ${skippedByViewCount.toLocaleString()} off-camera candidate nodes.`;
 
-  return `Selected ${selection.nodes.length} nearest depth ${selection.selectedDepth} nodes; nearest depth ${selection.selectedDepth} node is estimated at ${selectedDepthEstimate.estimatedNodeScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 0 })} px against a ${targetNodeScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 0 })} px target${pointSpacingReason}.`;
+  return `Selected ${selection.nodes.length} nearest depth ${selection.selectedDepth} nodes; nearest depth ${selection.selectedDepth} node is estimated at ${selectedDepthEstimate.estimatedNodeScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 0 })} px against a ${targetNodeScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 0 })} px target${pointSpacingReason}.${viewReason}`;
 }
 
 interface SelectBudgetedNodesOptions {
@@ -348,6 +409,52 @@ interface BudgetedNodeSelection {
   readonly nodes: readonly CopcHierarchyNodeSummary[];
   readonly selectedDepth: number;
   readonly skippedByBudgetCount: number;
+}
+
+interface ViewFilteredNodeSelection {
+  readonly nodes: readonly CopcHierarchyNodeSummary[];
+  readonly skippedByViewCount: number;
+}
+
+function filterNodesForView(
+  nodes: readonly CopcHierarchyNodeSummary[],
+  minDepth: number,
+  maxDepth: number,
+  options: {
+    readonly target: CopcTargetPoint;
+    readonly viewDirection: CopcTargetVector | undefined;
+    readonly maxViewAngleDegrees: number | undefined;
+  },
+): ViewFilteredNodeSelection {
+  const depthFilteredNodes = nodes.filter(
+    (node) => node.depth >= minDepth && node.depth <= maxDepth,
+  );
+
+  if (
+    options.viewDirection === undefined ||
+    options.maxViewAngleDegrees === undefined
+  ) {
+    return {
+      nodes: depthFilteredNodes,
+      skippedByViewCount: 0,
+    };
+  }
+
+  const viewDirection = options.viewDirection;
+  const cosMaxViewAngle = Math.cos(degreesToRadians(options.maxViewAngleDegrees));
+  const visibleNodes = depthFilteredNodes.filter((node) =>
+    isBoundsInsideViewCone(
+      node.bounds,
+      options.target,
+      viewDirection,
+      cosMaxViewAngle,
+    ),
+  );
+
+  return {
+    nodes: visibleNodes,
+    skippedByViewCount: depthFilteredNodes.length - visibleNodes.length,
+  };
 }
 
 function selectBudgetedNodes(
@@ -475,6 +582,20 @@ function validatePositiveFiniteBudget(
   }
 }
 
+function validateViewAngle(maxViewAngleDegrees: number | undefined): void {
+  if (maxViewAngleDegrees === undefined) {
+    return;
+  }
+
+  if (
+    !Number.isFinite(maxViewAngleDegrees) ||
+    maxViewAngleDegrees <= 0 ||
+    maxViewAngleDegrees >= 180
+  ) {
+    throw new Error("maxViewAngleDegrees must be between 0 and 180 degrees.");
+  }
+}
+
 function boundsForHierarchy(
   nodes: readonly CopcHierarchyNodeSummary[],
 ): CopcBounds {
@@ -551,4 +672,82 @@ function distanceToRange(value: number, min: number, max: number): number {
   }
 
   return 0;
+}
+
+function isBoundsInsideViewCone(
+  bounds: CopcBounds,
+  target: CopcTargetPoint,
+  viewDirection: CopcTargetVector,
+  cosMaxViewAngle: number,
+): boolean {
+  if (isPointInsideBounds(target, bounds)) {
+    return true;
+  }
+
+  const center = boundsCenter(bounds);
+  const toCenter = {
+    x: center.x - target.x,
+    y: center.y - target.y,
+    z: center.z - target.z,
+  };
+  const centerDistance = vectorLength(toCenter);
+
+  if (centerDistance <= Number.EPSILON) {
+    return true;
+  }
+
+  const directionLength = vectorLength(viewDirection);
+  const alignment =
+    dotVectors(toCenter, viewDirection) / (centerDistance * directionLength);
+  const angularRadiusSlack =
+    boundsRadius(bounds) / Math.max(centerDistance, Number.EPSILON);
+
+  return alignment >= cosMaxViewAngle - angularRadiusSlack;
+}
+
+function isPointInsideBounds(
+  point: CopcTargetPoint,
+  bounds: CopcBounds,
+): boolean {
+  return (
+    point.x >= bounds.minX &&
+    point.x <= bounds.maxX &&
+    point.y >= bounds.minY &&
+    point.y <= bounds.maxY &&
+    point.z >= bounds.minZ &&
+    point.z <= bounds.maxZ
+  );
+}
+
+function boundsCenter(bounds: CopcBounds): CopcTargetPoint {
+  return {
+    x: (bounds.minX + bounds.maxX) / 2,
+    y: (bounds.minY + bounds.maxY) / 2,
+    z: (bounds.minZ + bounds.maxZ) / 2,
+  };
+}
+
+function boundsRadius(bounds: CopcBounds): number {
+  return (
+    Math.hypot(
+      bounds.maxX - bounds.minX,
+      bounds.maxY - bounds.minY,
+      bounds.maxZ - bounds.minZ,
+    ) / 2
+  );
+}
+
+function dotVectors(
+  left: CopcTargetVector,
+  right: CopcTargetVector,
+): number {
+  return left.x * right.x + left.y * right.y + left.z * right.z;
+}
+
+function vectorLength(vector: CopcTargetVector): number {
+  return Math.hypot(vector.x, vector.y, vector.z);
+}
+
+function degreesToRadians(degrees: number): number {
+  return (degrees / 180) * Math.PI;
 }

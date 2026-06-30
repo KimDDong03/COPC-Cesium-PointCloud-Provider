@@ -1,4 +1,5 @@
 import {
+  Cartesian3,
   Cartographic,
   Math as CesiumMath,
   type Camera,
@@ -24,6 +25,7 @@ import {
 import {
   selectHierarchyNodesForCamera,
   type CopcHierarchyNodeCameraSelection,
+  type CopcTargetVector,
   type SelectHierarchyNodesForCameraOptions,
 } from "../core/copc/selectHierarchyNodesForCamera";
 import {
@@ -75,7 +77,7 @@ export interface CopcPointCloudLayerRenderNodesOptions {
 export interface CopcPointCloudLayerCameraSelectionOptions
   extends Omit<
     SelectHierarchyNodesForCameraOptions,
-    "target" | "viewportHeightPixels"
+    "target" | "viewDirection" | "viewportHeightPixels"
   > {
   readonly camera: Camera;
   readonly viewportHeightPixels?: number;
@@ -411,11 +413,13 @@ export class CopcPointCloudLayer {
     const { inspection, hierarchy } = await this.load();
     throwIfAborted(signal);
     this.assertNotDestroyed();
+    const target = this.cameraPositionToCopc(camera, inspection);
 
     return selectHierarchyNodesForCamera(hierarchy.nodes, {
       ...selectionOptions,
       spacing: spacing ?? inspection.spacing,
-      target: this.cameraPositionToCopc(camera, inspection),
+      target,
+      viewDirection: this.cameraDirectionToCopc(camera, inspection, target),
       viewportHeightPixels:
         viewportHeightPixels ?? this.scene.canvas.clientHeight,
     });
@@ -507,6 +511,59 @@ export class CopcPointCloudLayer {
       CesiumMath.toDegrees(cartographic.latitude),
       cartographic.height,
     );
+  }
+
+  private cameraDirectionToCopc(
+    camera: Camera,
+    inspection: CopcInspection,
+    target: CopcTargetPoint,
+  ): CopcTargetVector | undefined {
+    if (!camera.directionWC) {
+      return undefined;
+    }
+
+    const cartographic = Cartographic.fromCartesian(camera.positionWC);
+    const transform = this.getCoordinateTransforms(inspection).toCopc;
+
+    if (!transform) {
+      return undefined;
+    }
+
+    const stepMeters = Math.min(
+      10_000,
+      Math.max(100, Math.abs(cartographic.height) * 0.02),
+    );
+    const directionEndpoint = Cartesian3.add(
+      camera.positionWC,
+      Cartesian3.multiplyByScalar(
+        camera.directionWC,
+        stepMeters,
+        new Cartesian3(),
+      ),
+      new Cartesian3(),
+    );
+    const endpointCartographic = Cartographic.fromCartesian(directionEndpoint);
+    const endpoint = transform(
+      CesiumMath.toDegrees(endpointCartographic.longitude),
+      CesiumMath.toDegrees(endpointCartographic.latitude),
+      endpointCartographic.height,
+    );
+    const vector = {
+      x: endpoint.x - target.x,
+      y: endpoint.y - target.y,
+      z: endpoint.z - target.z,
+    };
+
+    if (
+      !Number.isFinite(vector.x) ||
+      !Number.isFinite(vector.y) ||
+      !Number.isFinite(vector.z) ||
+      Math.hypot(vector.x, vector.y, vector.z) <= Number.EPSILON
+    ) {
+      return undefined;
+    }
+
+    return vector;
   }
 
   private shouldShowBounds(showBounds: boolean | undefined): boolean {

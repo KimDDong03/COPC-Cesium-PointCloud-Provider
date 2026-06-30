@@ -160,6 +160,7 @@ import {
   type LoadNodePointSamplesOptions,
   type CopcPointSampleLoadingMode,
   type CopcPointSampleCacheStats,
+  type CopcTargetVector,
   type CopcSourceOptions,
 } from "copc-cesium/core";
 import { CesiumPointRenderer } from "copc-cesium/cesium";
@@ -197,6 +198,7 @@ const nodeSampleOptions: LoadNodePointSamplesOptions = {
   nodeKey: "0-0-0-0",
   signal: new AbortController().signal,
 };
+const viewDirection: CopcTargetVector = { x: 1, y: 0, z: 0 };
 const createSource = (): CopcSource =>
   new CopcSource("https://example.com/sample.copc.laz", sourceOptions);
 const depthEstimate: CopcHierarchyNodeDepthEstimate | undefined = undefined;
@@ -207,7 +209,10 @@ const hierarchyExpansionOptions:
   | undefined = undefined;
 const cameraSelectionOptions:
   | CopcPointCloudLayerCameraSelectionOptions
-  | undefined = undefined;
+  | undefined = {
+    camera: {} as CopcPointCloudLayerCameraSelectionOptions["camera"],
+    maxViewAngleDegrees: 80,
+  };
 const app = document.querySelector<HTMLDivElement>("#app");
 
 if (app) {
@@ -220,6 +225,7 @@ if (app) {
     String(sourceOptions.maxCachedPointSampleBytes),
     String(sourceOptions.maxConcurrentPointSampleWorkerRequests),
     String(Boolean(nodeSampleOptions.signal)),
+    String(Boolean(viewDirection)),
     String(Boolean(depthEstimate)),
     String(Boolean(inspection)),
     String(Boolean(transformStatus)),
