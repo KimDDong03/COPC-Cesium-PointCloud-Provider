@@ -1,0 +1,42 @@
+name: Example Browser Smoke
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  browser-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browser
+        run: npm run smoke:example:install-browser
+
+      - name: Run example browser smoke
+        run: npm run smoke:example
+
+      - name: Upload smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: example-browser-smoke
+          if-no-files-found: ignore
+          path: |
+            output/playwright/
+            output/example-smoke/
+            .playwright-cli/

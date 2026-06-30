@@ -50,6 +50,7 @@ npm run smoke:package
 `npm pack --dry-run` can be used after `npm run build` to inspect the package contents without publishing.
 `npm run smoke:example` builds the example, starts a temporary preview server, and verifies Autzen, SoFi, and Custom URL + proj4 rendering in a browser. Run `npm run smoke:example:install-browser` once if Playwright reports that Chrome for Testing is missing.
 `npm run smoke:package` packs the local build, installs it into a temporary consumer project, and verifies public imports from `copc-cesium`, `copc-cesium/core`, and `copc-cesium/cesium`.
+The same browser rendering smoke is available as the manual GitHub Actions workflow `Example Browser Smoke`.
 
 The runnable prototype lives in `examples/basic-viewer`. The root `src` folder contains reusable COPC and Cesium integration code used by that example.
 Reusable source entry points are `src/index.ts`, `src/core/index.ts`, and `src/cesium/index.ts`; package exports expose built JS and type declarations as `copc-cesium`, `copc-cesium/core`, and `copc-cesium/cesium`.
