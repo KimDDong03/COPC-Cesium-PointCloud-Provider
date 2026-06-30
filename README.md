@@ -55,6 +55,7 @@ The same browser rendering smoke is available as the manual GitHub Actions workf
 The runnable prototype lives in `examples/basic-viewer`. The root `src` folder contains reusable COPC and Cesium integration code used by that example.
 Reusable source entry points are `src/index.ts`, `src/core/index.ts`, and `src/cesium/index.ts`; package exports expose built JS and type declarations as `copc-cesium`, `copc-cesium/core`, and `copc-cesium/cesium`.
 `CopcPointCloudLayer` is the first thin Cesium-facing API: it owns a `CopcSource`, point renderer, bounds renderer, and simple camera-based node rendering helpers.
+The default point renderer is `CesiumPointRenderer`, backed by Cesium `PointPrimitiveCollection`. `CopcPointCloudLayer` also accepts a `createPointRenderer` factory so future renderer backends can be swapped without changing COPC loading logic.
 
 The default example URL loads the public Autzen COPC sample, reads the root hierarchy node, samples up to 5,000 points, and renders them in CesiumJS.
 The example keeps sample COPC URLs and their transform factories in a small preset list while still allowing direct custom URL entry.
@@ -78,6 +79,7 @@ Included example presets:
 
 ```ts
 import {
+  CesiumPointRenderer,
   CopcPointCloudLayer,
   createDefaultCopcCoordinateTransforms,
 } from "copc-cesium";
@@ -89,6 +91,7 @@ const layer = new CopcPointCloudLayer(viewer.scene, {
   maxCachedPointSampleBytes: 32 * 1024 * 1024,
   maxConcurrentPointSampleWorkerRequests: 3,
   pointSampleLoading: "worker",
+  createPointRenderer: (scene) => new CesiumPointRenderer(scene),
   coordinateTransforms: createDefaultCopcCoordinateTransforms,
 });
 const { hierarchy, coordinateTransform } = await layer.load();

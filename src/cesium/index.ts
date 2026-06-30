@@ -13,6 +13,10 @@ export {
   type CopcPointCloudLayerRenderNodesOptions,
 } from "./CopcPointCloudLayer";
 export { CesiumBoundsRenderer } from "./CesiumBoundsRenderer";
+export type {
+  CopcPointCloudRenderer,
+  CopcPointCloudRendererFactory,
+} from "./CopcPointCloudRenderer";
 export { CesiumPointRenderer } from "./CesiumPointRenderer";
 export {
   createDefaultCopcCoordinateTransforms,

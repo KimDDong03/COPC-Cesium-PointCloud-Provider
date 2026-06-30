@@ -10,6 +10,7 @@ import type {
   CopcCoordinateTransformStatus,
   CopcToCesiumCoordinateTransform,
 } from "./copcCoordinateTransform";
+import type { CopcPointCloudRenderer } from "./CopcPointCloudRenderer";
 
 describe("CopcPointCloudLayer coordinate transforms", () => {
   it("passes the point sample cache limit to the owned COPC source", () => {
@@ -76,8 +77,10 @@ describe("CopcPointCloudLayer coordinate transforms", () => {
   });
 
   it("applies the configured transform before sending points and bounds to renderers", async () => {
+    const pointRendering = createRecordingPointRenderer();
     const layer = new CopcPointCloudLayer(createSceneStub(), {
       url: "https://example.com/sample.copc.laz",
+      createPointRenderer: () => pointRendering.renderer,
       coordinateTransforms: () => ({
         toCesium: (x, y, z) => ({
           longitudeDegrees: x + 100,
@@ -86,7 +89,7 @@ describe("CopcPointCloudLayer coordinate transforms", () => {
         }),
       }),
     });
-    const rendered = captureLayerRendering(layer);
+    const boundsRendering = captureLayerBoundsRendering(layer);
 
     patchLayerSource(layer);
 
@@ -104,12 +107,18 @@ describe("CopcPointCloudLayer coordinate transforms", () => {
         },
       },
     ]);
-    expect(rendered.points).toEqual(result.points);
-    expect(rendered.boundsCoordinate).toEqual({
+    expect(pointRendering.points).toEqual(result.points);
+    expect(boundsRendering.boundsCoordinate).toEqual({
       longitudeDegrees: 100,
       latitudeDegrees: 200,
       heightMeters: 300,
     });
+
+    layer.clear();
+    layer.destroy();
+
+    expect(pointRendering.clearCount).toBe(1);
+    expect(pointRendering.destroyCount).toBe(1);
   });
 });
 
@@ -301,16 +310,13 @@ function patchLayerSource(layer: CopcPointCloudLayer): void {
   });
 }
 
-function captureLayerRendering(layer: CopcPointCloudLayer): {
+function captureLayerBoundsRendering(layer: CopcPointCloudLayer): {
   boundsCoordinate: unknown;
-  points: readonly PointSample[];
 } {
   const captured: {
     boundsCoordinate: unknown;
-    points: readonly PointSample[];
   } = {
     boundsCoordinate: undefined,
-    points: [],
   };
   const mutableLayer = layer as unknown as {
     boundsRenderer: {
@@ -322,20 +328,8 @@ function captureLayerRendering(layer: CopcPointCloudLayer): {
       clear: () => void;
       destroy: () => void;
     };
-    pointRenderer: {
-      setPoints: (points: readonly PointSample[]) => void;
-      clear: () => void;
-      destroy: () => void;
-    };
   };
 
-  mutableLayer.pointRenderer = {
-    setPoints: (points) => {
-      captured.points = points;
-    },
-    clear: () => undefined,
-    destroy: () => undefined,
-  };
   mutableLayer.boundsRenderer = {
     setBounds: (bounds, _inspection, transform) => {
       captured.boundsCoordinate = transform(bounds.minX, bounds.minY, bounds.minZ);
@@ -345,6 +339,37 @@ function captureLayerRendering(layer: CopcPointCloudLayer): {
   };
 
   return captured;
+}
+
+function createRecordingPointRenderer(): {
+  readonly renderer: CopcPointCloudRenderer;
+  readonly points: readonly PointSample[];
+  readonly clearCount: number;
+  readonly destroyCount: number;
+} {
+  const recording: {
+    renderer: CopcPointCloudRenderer;
+    points: readonly PointSample[];
+    clearCount: number;
+    destroyCount: number;
+  } = {
+    renderer: {
+      setPoints: (points) => {
+        recording.points = points;
+      },
+      clear: () => {
+        recording.clearCount += 1;
+      },
+      destroy: () => {
+        recording.destroyCount += 1;
+      },
+    },
+    points: [],
+    clearCount: 0,
+    destroyCount: 0,
+  };
+
+  return recording;
 }
 
 function createSceneStub(): Scene {

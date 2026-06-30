@@ -164,7 +164,10 @@ import {
   type CopcTargetVector,
   type CopcSourceOptions,
 } from "copc-cesium/core";
-import { CesiumPointRenderer } from "copc-cesium/cesium";
+import {
+  CesiumPointRenderer,
+  type CopcPointCloudRendererFactory,
+} from "copc-cesium/cesium";
 
 const exportedConstructors = [
   CopcPointCloudLayer,
@@ -200,6 +203,11 @@ const nodeSampleOptions: LoadNodePointSamplesOptions = {
   signal: new AbortController().signal,
 };
 const viewDirection: CopcTargetVector = { x: 1, y: 0, z: 0 };
+const pointRendererFactory: CopcPointCloudRendererFactory = () => ({
+  setPoints: () => undefined,
+  clear: () => undefined,
+  destroy: () => undefined,
+});
 const createSource = (): CopcSource =>
   new CopcSource("https://example.com/sample.copc.laz", sourceOptions);
 const depthEstimate: CopcHierarchyNodeDepthEstimate | undefined = undefined;
@@ -233,6 +241,7 @@ if (app) {
     String(sourceOptions.maxConcurrentPointSampleWorkerRequests),
     String(Boolean(nodeSampleOptions.signal)),
     String(Boolean(viewDirection)),
+    String(Boolean(pointRendererFactory)),
     String(Boolean(depthEstimate)),
     String(Boolean(inspection)),
     String(Boolean(transformStatus)),

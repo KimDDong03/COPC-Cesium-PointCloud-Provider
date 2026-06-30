@@ -5,11 +5,12 @@ import {
   type Scene,
 } from "cesium";
 import type { PointColor, PointSample } from "../core/PointSample";
+import type { CopcPointCloudRenderer } from "./CopcPointCloudRenderer";
 
 const DEFAULT_POINT_COLOR = Color.CYAN;
 const DEFAULT_PIXEL_SIZE = 12;
 
-export class CesiumPointRenderer {
+export class CesiumPointRenderer implements CopcPointCloudRenderer {
   private readonly scene: Scene;
   private readonly collection: PointPrimitiveCollection;
   private destroyed = false;

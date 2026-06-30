@@ -38,6 +38,10 @@ import {
 import type { PointSample } from "../core/PointSample";
 import { CesiumBoundsRenderer } from "./CesiumBoundsRenderer";
 import { CesiumPointRenderer } from "./CesiumPointRenderer";
+import type {
+  CopcPointCloudRenderer,
+  CopcPointCloudRendererFactory,
+} from "./CopcPointCloudRenderer";
 import {
   createDefaultCopcCoordinateTransforms,
   type CopcCoordinateTransformFactory,
@@ -54,6 +58,7 @@ export interface CopcPointCloudLayerOptions {
   readonly maxCachedPointSampleBytes?: number;
   readonly pointSampleLoading?: CopcPointSampleLoadingMode;
   readonly createPointSampleWorker?: () => Worker;
+  readonly createPointRenderer?: CopcPointCloudRendererFactory;
   readonly showBounds?: boolean;
   readonly coordinateTransforms?: CopcCoordinateTransformFactory;
 }
@@ -136,7 +141,7 @@ export class CopcPointCloudLayer {
   readonly source: CopcSource;
 
   private readonly scene: Scene;
-  private readonly pointRenderer: CesiumPointRenderer;
+  private readonly pointRenderer: CopcPointCloudRenderer;
   private readonly boundsRenderer: CesiumBoundsRenderer;
   private readonly defaultMaxPointCountPerNode: number | undefined;
   private readonly defaultShowBounds: boolean;
@@ -157,7 +162,10 @@ export class CopcPointCloudLayer {
       pointSampleLoading: options.pointSampleLoading,
       createPointSampleWorker: options.createPointSampleWorker,
     });
-    this.pointRenderer = new CesiumPointRenderer(scene);
+    this.pointRenderer = (
+      options.createPointRenderer ??
+      ((scene) => new CesiumPointRenderer(scene))
+    )(scene);
     this.boundsRenderer = new CesiumBoundsRenderer(scene);
     this.defaultMaxPointCountPerNode = options.maxPointCountPerNode;
     this.defaultShowBounds = options.showBounds ?? true;
