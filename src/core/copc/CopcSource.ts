@@ -55,6 +55,13 @@ interface PointSampleCacheEntry {
   estimatedByteSize: number;
 }
 
+interface HierarchyPageCacheEntry {
+  readonly page: Hierarchy.Page;
+  readonly pageKey?: string;
+  readonly parentPageId?: string;
+  readonly isRoot: boolean;
+}
+
 export class CopcSource {
   readonly url: string;
 
@@ -69,7 +76,10 @@ export class CopcSource {
     string,
     Promise<Hierarchy.Subtree>
   >();
-  private readonly loadedHierarchyPageIds = new Set<string>();
+  private readonly loadedHierarchyPages = new Map<
+    string,
+    HierarchyPageCacheEntry
+  >();
   private readonly hierarchyNodePageIds = new Map<string, string>();
   private readonly hierarchyPendingPageIds = new Map<string, string>();
   private readonly nodePointSampleCache = new Map<
@@ -77,6 +87,7 @@ export class CopcSource {
     PointSampleCacheEntry
   >();
   private cachedPointSampleBytes = 0;
+  private hierarchyPageCacheEvictionCount = 0;
   private pointSampleCacheHitCount = 0;
   private pointSampleCacheMissCount = 0;
   private pointSampleCacheEvictionCount = 0;
@@ -135,7 +146,7 @@ export class CopcSource {
       summarizeHierarchy(
         hierarchy,
         copc.info.cube,
-        this.loadedHierarchyPageIds.size,
+        this.loadedHierarchyPages.size,
         this.hierarchyNodePageIds,
         this.hierarchyPendingPageIds,
       ),
@@ -151,10 +162,12 @@ export class CopcSource {
 
     if (!page) {
       if (hierarchy.nodes[pageKey]) {
+        this.touchLoadedHierarchyPage(this.hierarchyNodePageIds.get(pageKey));
+
         return summarizeHierarchy(
           hierarchy,
           copc.info.cube,
-          this.loadedHierarchyPageIds.size,
+          this.loadedHierarchyPages.size,
           this.hierarchyNodePageIds,
           this.hierarchyPendingPageIds,
         );
@@ -164,16 +177,21 @@ export class CopcSource {
     }
 
     const subtree = await this.loadHierarchyPageData(page);
-    this.loadedHierarchyPageIds.add(hierarchyPageId(page));
+    const parentPageId = this.hierarchyPendingPageIds.get(pageKey);
     delete hierarchy.pages[pageKey];
     this.hierarchyPendingPageIds.delete(pageKey);
     this.recordHierarchyProvenance(subtree, page);
     mergeHierarchy(hierarchy, subtree);
+    this.rememberLoadedHierarchyPage(page, {
+      pageKey,
+      parentPageId,
+    });
+    this.evictHierarchyPagesIfNeeded(hierarchy);
 
     return summarizeHierarchy(
       hierarchy,
       copc.info.cube,
-      this.loadedHierarchyPageIds.size,
+      this.loadedHierarchyPages.size,
       this.hierarchyNodePageIds,
       this.hierarchyPendingPageIds,
     );
@@ -220,13 +238,14 @@ export class CopcSource {
 
   getHierarchyCacheStats(): CopcHierarchyCacheStats {
     return {
-      loadedPageCount: this.loadedHierarchyPageIds.size,
+      loadedPageCount: this.loadedHierarchyPages.size,
       maxCachedPageCount: this.maxCachedHierarchyPages,
       pendingPageCount: this.hierarchyPendingPageIds.size,
       trackedNodeCount: this.hierarchyNodePageIds.size,
       trackedPendingPageCount: this.hierarchyPendingPageIds.size,
+      cacheEvictionCount: this.hierarchyPageCacheEvictionCount,
       isOverLimit:
-        this.loadedHierarchyPageIds.size > this.maxCachedHierarchyPages,
+        this.loadedHierarchyPages.size > this.maxCachedHierarchyPages,
     };
   }
 
@@ -342,9 +361,9 @@ export class CopcSource {
         copc.info.rootHierarchyPage,
       );
       this.recordHierarchyProvenance(subtree, copc.info.rootHierarchyPage);
-      this.loadedHierarchyPageIds.add(
-        hierarchyPageId(copc.info.rootHierarchyPage),
-      );
+      this.rememberLoadedHierarchyPage(copc.info.rootHierarchyPage, {
+        isRoot: true,
+      });
       return subtree;
     });
 
@@ -382,6 +401,112 @@ export class CopcSource {
         this.hierarchyPendingPageIds.set(pageKey, pageId);
       }
     }
+  }
+
+  private rememberLoadedHierarchyPage(
+    page: Hierarchy.Page,
+    options: {
+      readonly pageKey?: string;
+      readonly parentPageId?: string;
+      readonly isRoot?: boolean;
+    } = {},
+  ): void {
+    const pageId = hierarchyPageId(page);
+
+    this.loadedHierarchyPages.delete(pageId);
+    this.loadedHierarchyPages.set(pageId, {
+      page,
+      pageKey: options.pageKey,
+      parentPageId: options.parentPageId,
+      isRoot: options.isRoot ?? false,
+    });
+  }
+
+  private touchLoadedHierarchyPage(pageId: string | undefined): void {
+    if (!pageId) {
+      return;
+    }
+
+    const entry = this.loadedHierarchyPages.get(pageId);
+
+    if (!entry) {
+      return;
+    }
+
+    this.loadedHierarchyPages.delete(pageId);
+    this.loadedHierarchyPages.set(pageId, entry);
+  }
+
+  private evictHierarchyPagesIfNeeded(hierarchy: Hierarchy.Subtree): void {
+    while (this.loadedHierarchyPages.size > this.maxCachedHierarchyPages) {
+      const pageId = this.findEvictableHierarchyPageId();
+
+      if (!pageId) {
+        return;
+      }
+
+      this.deleteHierarchyPageCacheEntry(hierarchy, pageId);
+    }
+  }
+
+  private findEvictableHierarchyPageId(): string | undefined {
+    for (const [pageId, entry] of this.loadedHierarchyPages) {
+      if (entry.isRoot || this.hasLoadedHierarchyPageChild(pageId)) {
+        continue;
+      }
+
+      return pageId;
+    }
+
+    return undefined;
+  }
+
+  private hasLoadedHierarchyPageChild(pageId: string): boolean {
+    for (const entry of this.loadedHierarchyPages.values()) {
+      if (entry.parentPageId === pageId) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private deleteHierarchyPageCacheEntry(
+    hierarchy: Hierarchy.Subtree,
+    pageId: string,
+  ): void {
+    const entry = this.loadedHierarchyPages.get(pageId);
+
+    if (!entry || entry.isRoot || !entry.pageKey) {
+      return;
+    }
+
+    this.loadedHierarchyPages.delete(pageId);
+    this.hierarchyPagePromises.delete(pageId);
+
+    for (const [nodeKey, sourcePageId] of [
+      ...this.hierarchyNodePageIds.entries(),
+    ]) {
+      if (sourcePageId === pageId) {
+        delete hierarchy.nodes[nodeKey];
+        this.hierarchyNodePageIds.delete(nodeKey);
+      }
+    }
+
+    for (const [pageKey, sourcePageId] of [
+      ...this.hierarchyPendingPageIds.entries(),
+    ]) {
+      if (sourcePageId === pageId) {
+        delete hierarchy.pages[pageKey];
+        this.hierarchyPendingPageIds.delete(pageKey);
+      }
+    }
+
+    hierarchy.pages[entry.pageKey] = entry.page;
+    if (entry.parentPageId) {
+      this.hierarchyPendingPageIds.set(entry.pageKey, entry.parentPageId);
+    }
+    this.hierarchyPageCacheEvictionCount += 1;
   }
 
   private evictPointSampleCacheIfNeeded(): void {
@@ -437,6 +562,8 @@ export class CopcSource {
     if (!node) {
       throw new Error(`COPC hierarchy node was not found: ${nodeKey}`);
     }
+
+    this.touchLoadedHierarchyPage(this.hierarchyNodePageIds.get(nodeKey));
 
     const view = await Copc.loadPointDataView(this.getter, copc, node, {
       lazPerf: await getSharedLazPerf(),

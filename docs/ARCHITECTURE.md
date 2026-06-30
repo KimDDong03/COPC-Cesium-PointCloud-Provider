@@ -54,7 +54,7 @@ In this prototype, streaming means loading COPC hierarchy and point-data byte ra
 The current implementation includes:
 
 - `CopcSource.loadHierarchyPage` and `loadNextHierarchyPage` for on-demand COPC hierarchy page range reads.
-- Hierarchy node and pending-page provenance tracking via the source hierarchy page ID, plus cache stats that report loaded-page count, configured page limit, tracked nodes, and over-limit state.
+- Hierarchy node and pending-page provenance tracking via the source hierarchy page ID, plus bounded hierarchy page eviction that restores evicted non-root leaf pages back to pending page references.
 - `selectHierarchyPagesForTarget` for choosing nearby pending hierarchy pages from their octree bounds.
 - `CopcSource` point sample caching by node key and sample count, with bounded LRU sample-set and estimated decoded-byte limits.
 - `selectHierarchyNodesForCamera` for camera-based node selection using per-depth nearest-node screen-size estimates and COPC spacing-derived point spacing screen estimates, with optional point-count and point-data byte budgets.
@@ -83,7 +83,7 @@ Camera-based selection requires both directions:
 ## Current Limitations
 
 - Hierarchy page expansion and node selection are camera-targeted but still conservative; node selection now uses COPC spacing-derived screen estimates, but it is not yet calibrated against Cesium frustum parameters or point-density metrics.
-- Hierarchy page cache stats can report over-limit state, but loaded hierarchy pages are not evicted yet.
+- Hierarchy page eviction is page-count based and deliberately keeps the root hierarchy page loaded; it is not byte-aware yet.
 - Point rendering uses Cesium point primitives, not a custom optimized WebGL primitive.
 - Point sample cache byte usage is estimated from decoded sample fields, not from JavaScript object heap size.
 - Camera streaming is prototype-oriented; it expands a small number of hierarchy pages per update while keeping the example's automatic render depth shallow.
@@ -92,6 +92,6 @@ Camera-based selection requires both directions:
 ## Near-Term Roadmap
 
 1. Calibrate screen-space error estimates against Cesium camera frustum parameters and point-density metrics.
-2. Add bounded hierarchy cache eviction using the tracked hierarchy page provenance.
+2. Tune hierarchy cache policy with byte-aware limits and camera-priority hints.
 3. Move heavy point decoding/preparation work into Web Workers.
 4. Replace point primitive rendering with a more scalable Cesium-native primitive path when the basic API stabilizes.

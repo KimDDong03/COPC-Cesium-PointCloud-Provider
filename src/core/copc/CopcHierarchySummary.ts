@@ -38,5 +38,6 @@ export interface CopcHierarchyCacheStats {
   readonly pendingPageCount: number;
   readonly trackedNodeCount: number;
   readonly trackedPendingPageCount: number;
+  readonly cacheEvictionCount: number;
   readonly isOverLimit: boolean;
 }

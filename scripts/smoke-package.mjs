@@ -171,7 +171,15 @@ const exportedConstructors = [
 ] as const;
 const inspection: CopcInspection | undefined = undefined;
 const transformStatus: CopcCoordinateTransformStatus | undefined = undefined;
-const hierarchyCacheStats: CopcHierarchyCacheStats | undefined = undefined;
+const hierarchyCacheStats: CopcHierarchyCacheStats = {
+  loadedPageCount: 1,
+  maxCachedPageCount: 3,
+  pendingPageCount: 0,
+  trackedNodeCount: 1,
+  trackedPendingPageCount: 0,
+  cacheEvictionCount: 0,
+  isOverLimit: false,
+};
 const cacheStats: CopcPointSampleCacheStats | undefined = undefined;
 const sourceOptions: CopcSourceOptions = {
   maxCachedHierarchyPages: 3,
@@ -201,7 +209,7 @@ if (app) {
     String(Boolean(depthEstimate)),
     String(Boolean(inspection)),
     String(Boolean(transformStatus)),
-    String(Boolean(hierarchyCacheStats)),
+    String(hierarchyCacheStats.cacheEvictionCount),
     String(Boolean(cacheStats)),
     String(Boolean(hierarchyPage)),
     String(Boolean(pageSelection)),

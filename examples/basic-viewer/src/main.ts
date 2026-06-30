@@ -1013,9 +1013,12 @@ function formatHierarchyPageStats(
   const limitSummary = stats
     ? ` / ${stats.maxCachedPageCount.toLocaleString()} page cache limit, ${stats.trackedNodeCount.toLocaleString()} tracked nodes`
     : "";
+  const evictionSummary = stats
+    ? `, ${stats.cacheEvictionCount.toLocaleString()} evictions`
+    : "";
   const overLimitSummary = stats?.isOverLimit ? ", over limit" : "";
 
-  return `${loadedPageCount.toLocaleString()} loaded${limitSummary}, ${pendingPageCount.toLocaleString()} pending${overLimitSummary}`;
+  return `${loadedPageCount.toLocaleString()} loaded${limitSummary}, ${pendingPageCount.toLocaleString()} pending${evictionSummary}${overLimitSummary}`;
 }
 
 function formatLoadedHierarchyPages(pageKeys: readonly string[]): string {
