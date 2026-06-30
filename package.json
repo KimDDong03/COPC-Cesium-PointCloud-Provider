@@ -30,6 +30,7 @@
     "build:example": "tsc && vite build examples/basic-viewer --config vite.config.ts --outDir ../../dist/example --emptyOutDir",
     "build:lib": "vite build --config vite.lib.config.ts && tsc -p tsconfig.lib.json",
     "preview": "vite preview examples/basic-viewer --config vite.config.ts --host localhost --port 3000 --outDir ../../dist/example",
+    "smoke:package": "node scripts/smoke-package.mjs",
     "test": "vitest run"
   },
   "dependencies": {
