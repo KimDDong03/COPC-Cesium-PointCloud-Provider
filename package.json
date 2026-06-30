@@ -3,6 +3,11 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./core": "./src/core/index.ts",
+    "./cesium": "./src/cesium/index.ts"
+  },
   "scripts": {
     "dev": "vite examples/basic-viewer --config vite.config.ts --host localhost --port 3000",
     "build": "tsc && vite build examples/basic-viewer --config vite.config.ts --outDir ../../dist --emptyOutDir",

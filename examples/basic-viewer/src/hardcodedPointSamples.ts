@@ -1,4 +1,4 @@
-import type { PointSample } from "./PointSample";
+import type { PointSample } from "copc-viewer";
 
 export function createHardcodedPointSamples(): PointSample[] {
   return [

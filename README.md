@@ -30,6 +30,7 @@ npm run dev
 Open `http://localhost:3000`.
 
 The runnable prototype lives in `examples/basic-viewer`. The root `src` folder contains reusable COPC and Cesium integration code used by that example.
+Reusable source entry points are `src/index.ts`, `src/core/index.ts`, and `src/cesium/index.ts`; package exports expose them as `copc-viewer`, `copc-viewer/core`, and `copc-viewer/cesium`.
 
 The default example URL loads the public Autzen COPC sample, reads the root hierarchy node, samples up to 5,000 points, and renders them in CesiumJS.
 The hierarchy node selector lists nodes from the root hierarchy page and lets the example render one selected node at a time.
@@ -42,6 +43,7 @@ The Auto LOD button selects a few nearby root-hierarchy nodes from the current c
 ## Planned Shape
 
 ```text
+src/index.ts           Public source entry point
 src/core/              COPC loading and point data preparation
 src/cesium/            CesiumJS rendering and coordinate conversion
 examples/basic-viewer/ Minimal runnable example
