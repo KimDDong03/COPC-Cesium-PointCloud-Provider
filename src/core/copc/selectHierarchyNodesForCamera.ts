@@ -37,6 +37,7 @@ export interface CopcHierarchyNodeCameraSelection {
   readonly maxViewAngleDegrees: number | undefined;
   readonly spacing: number | undefined;
   readonly depthEstimates: readonly CopcHierarchyNodeDepthEstimate[];
+  readonly skippedByFrustumCount: number;
   readonly skippedByViewCount: number;
   readonly skippedByBudgetCount: number;
   readonly reason: string;
@@ -218,6 +219,7 @@ export function selectHierarchyNodesForCamera(
     maxViewAngleDegrees,
     spacing: options.spacing,
     depthEstimates,
+    skippedByFrustumCount: 0,
     skippedByViewCount: candidateNodes.skippedByViewCount,
     skippedByBudgetCount: selection.skippedByBudgetCount,
     reason: createSelectionReason(

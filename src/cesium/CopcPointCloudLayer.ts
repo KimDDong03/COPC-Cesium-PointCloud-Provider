@@ -1,6 +1,8 @@
 import {
+  BoundingSphere,
   Cartesian3,
   Cartographic,
+  Intersect,
   Math as CesiumMath,
   type Camera,
   type Scene,
@@ -414,8 +416,12 @@ export class CopcPointCloudLayer {
     throwIfAborted(signal);
     this.assertNotDestroyed();
     const target = this.cameraPositionToCopc(camera, inspection);
-
-    return selectHierarchyNodesForCamera(hierarchy.nodes, {
+    const frustumFiltered = this.filterNodesForCameraFrustum(
+      hierarchy.nodes,
+      camera,
+      inspection,
+    );
+    const selection = selectHierarchyNodesForCamera(frustumFiltered.nodes, {
       ...selectionOptions,
       spacing: spacing ?? inspection.spacing,
       target,
@@ -423,6 +429,19 @@ export class CopcPointCloudLayer {
       viewportHeightPixels:
         viewportHeightPixels ?? this.scene.canvas.clientHeight,
     });
+
+    if (!selection) {
+      return undefined;
+    }
+
+    return {
+      ...selection,
+      skippedByFrustumCount: frustumFiltered.skippedByFrustumCount,
+      reason: appendFrustumSelectionReason(
+        selection.reason,
+        frustumFiltered.skippedByFrustumCount,
+      ),
+    };
   }
 
   suggestNodeForCamera(
@@ -566,6 +585,44 @@ export class CopcPointCloudLayer {
     return vector;
   }
 
+  private filterNodesForCameraFrustum(
+    nodes: readonly CopcHierarchyNodeSummary[],
+    camera: Camera,
+    inspection: CopcInspection,
+  ): {
+    readonly nodes: readonly CopcHierarchyNodeSummary[];
+    readonly skippedByFrustumCount: number;
+  } {
+    if (
+      !camera.frustum ||
+      !camera.directionWC ||
+      !camera.upWC ||
+      !camera.positionWC
+    ) {
+      return {
+        nodes,
+        skippedByFrustumCount: 0,
+      };
+    }
+
+    const toCesium = this.getCoordinateTransforms(inspection).toCesium;
+    const cullingVolume = camera.frustum.computeCullingVolume(
+      camera.positionWC,
+      camera.directionWC,
+      camera.upWC,
+    );
+    const visibleNodes = nodes.filter((node) => {
+      const boundingSphere = createCesiumBoundsSphere(node, toCesium);
+
+      return cullingVolume.computeVisibility(boundingSphere) !== Intersect.OUTSIDE;
+    });
+
+    return {
+      nodes: visibleNodes,
+      skippedByFrustumCount: nodes.length - visibleNodes.length,
+    };
+  }
+
   private shouldShowBounds(showBounds: boolean | undefined): boolean {
     return showBounds ?? this.defaultShowBounds;
   }
@@ -609,6 +666,53 @@ function normalizeCoordinateTransformStatus(
     label: transforms.status?.label ?? "Custom coordinate transform",
     supportsCameraSelection: Boolean(transforms.toCopc),
   };
+}
+
+function createCesiumBoundsSphere(
+  node: CopcHierarchyNodeSummary,
+  transform: CopcToCesiumTransform,
+): BoundingSphere {
+  return BoundingSphere.fromPoints(
+    createCesiumBoundsCorners(node, transform),
+  );
+}
+
+type CopcToCesiumTransform = CopcCoordinateTransformSet["toCesium"];
+
+function createCesiumBoundsCorners(
+  node: CopcHierarchyNodeSummary,
+  transform: CopcToCesiumTransform,
+): Cartesian3[] {
+  const { minX, minY, minZ, maxX, maxY, maxZ } = node.bounds;
+  const corners: Cartesian3[] = [];
+
+  for (const x of [minX, maxX]) {
+    for (const y of [minY, maxY]) {
+      for (const z of [minZ, maxZ]) {
+        const coordinate = transform(x, y, z);
+        corners.push(
+          Cartesian3.fromDegrees(
+            coordinate.longitudeDegrees,
+            coordinate.latitudeDegrees,
+            coordinate.heightMeters,
+          ),
+        );
+      }
+    }
+  }
+
+  return corners;
+}
+
+function appendFrustumSelectionReason(
+  reason: string,
+  skippedByFrustumCount: number,
+): string {
+  if (skippedByFrustumCount === 0) {
+    return reason;
+  }
+
+  return `${reason} Frustum-culled ${skippedByFrustumCount.toLocaleString()} off-screen candidate nodes.`;
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {

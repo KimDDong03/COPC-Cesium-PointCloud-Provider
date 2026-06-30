@@ -145,6 +145,7 @@ await writeFile(
   createDefaultCopcCoordinateTransforms,
   createProj4CoordinateTransforms,
   selectHierarchyPagesForTarget,
+  type CopcHierarchyNodeCameraSelection,
   type CopcHierarchyNodeDepthEstimate,
   type CopcPointCloudLayerCameraSelectionOptions,
   type CopcCoordinateTransformStatus,
@@ -213,6 +214,12 @@ const cameraSelectionOptions:
     camera: {} as CopcPointCloudLayerCameraSelectionOptions["camera"],
     maxViewAngleDegrees: 80,
   };
+const cameraSelectionStats:
+  | Pick<
+      CopcHierarchyNodeCameraSelection,
+      "skippedByFrustumCount" | "skippedByViewCount"
+    >
+  | undefined = undefined;
 const app = document.querySelector<HTMLDivElement>("#app");
 
 if (app) {
@@ -235,6 +242,7 @@ if (app) {
     String(Boolean(pageSelection)),
     String(Boolean(hierarchyExpansionOptions)),
     String(Boolean(cameraSelectionOptions)),
+    String(Boolean(cameraSelectionStats)),
   ].join(" | ");
 }
 `,

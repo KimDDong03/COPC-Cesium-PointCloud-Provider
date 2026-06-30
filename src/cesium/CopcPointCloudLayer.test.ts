@@ -1,4 +1,4 @@
-import { Cartesian3, type Camera, type Scene } from "cesium";
+import { Cartesian3, Intersect, type Camera, type Scene } from "cesium";
 import { describe, expect, it } from "vitest";
 import type {
   CopcHierarchySummary,
@@ -229,6 +229,54 @@ describe("CopcPointCloudLayer hierarchy loading", () => {
       selection?.estimatedSelectedDepthPointSpacingScreenPixels,
     ).toBeCloseTo(115.2);
   });
+
+  it("filters camera node selection through the Cesium frustum", async () => {
+    const layer = new CopcPointCloudLayer(createSceneStub(), {
+      url: "https://example.com/sample.copc.laz",
+      coordinateTransforms: () => ({
+        toCesium: (x, y, z) => ({
+          longitudeDegrees: x,
+          latitudeDegrees: y,
+          heightMeters: z,
+        }),
+        toCopc: () => ({
+          x: 0,
+          y: 0,
+          z: 0,
+        }),
+      }),
+    });
+
+    layer.source.inspect = async () => createInspection();
+    layer.source.loadHierarchySummary = async () =>
+      createHierarchy(
+        [
+          createHierarchyNodeWithBounds("0-0-0-0", 0, -2, 0, 5),
+          createHierarchyNodeWithBounds("1-0-0-0", 1, -2, 0, 1),
+          createHierarchyNodeWithBounds("1-1-0-0", 1, 1, 0, 1),
+          createHierarchyNodeWithBounds("1-1-1-0", 1, 2, 0, 1),
+        ],
+        [],
+      );
+
+    const selection = await layer.selectNodesForCamera({
+      camera: createFrustumCameraStub(),
+      viewportHeightPixels: 720,
+      minDepth: 1,
+      maxDepth: 1,
+      maxNodes: 4,
+      targetNodeScreenPixels: 10_000,
+    });
+
+    expect(selection?.skippedByFrustumCount).toBe(1);
+    expect(selection?.nodes.map((node) => node.key)).toEqual([
+      "1-1-0-0",
+      "1-1-1-0",
+    ]);
+    expect(selection?.reason).toContain(
+      "Frustum-culled 1 off-screen candidate nodes.",
+    );
+  });
 });
 
 function patchLayerSource(layer: CopcPointCloudLayer): void {
@@ -306,6 +354,20 @@ function createSceneStub(): Scene {
       remove: () => true,
     },
   } as unknown as Scene;
+}
+
+function createFrustumCameraStub(): Camera {
+  return {
+    positionWC: Cartesian3.fromDegrees(0, 0, 1_000),
+    directionWC: new Cartesian3(0, 1, 0),
+    upWC: new Cartesian3(0, 0, 1),
+    frustum: {
+      computeCullingVolume: () => ({
+        computeVisibility: (boundingSphere: { readonly center: Cartesian3 }) =>
+          boundingSphere.center.y >= 0 ? Intersect.INSIDE : Intersect.OUTSIDE,
+      }),
+    },
+  } as unknown as Camera;
 }
 
 function createInspection(

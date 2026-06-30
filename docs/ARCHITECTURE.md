@@ -57,7 +57,7 @@ The current implementation includes:
 - Hierarchy node and pending-page provenance tracking via the source hierarchy page ID, plus bounded hierarchy page eviction that restores evicted non-root leaf pages back to pending page references.
 - `selectHierarchyPagesForTarget` for choosing nearby pending hierarchy pages from their octree bounds.
 - `CopcSource` point sample caching by node key and sample count, with bounded LRU sample-set and estimated decoded-byte limits.
-- `selectHierarchyNodesForCamera` for camera-based node selection using per-depth nearest-node screen-size estimates, COPC spacing-derived point spacing screen estimates, camera view-direction culling, and optional point-count and point-data byte budgets.
+- `CopcPointCloudLayer.selectNodesForCamera` first culls hierarchy node bounds with the Cesium camera frustum, then `selectHierarchyNodesForCamera` applies per-depth nearest-node screen-size estimates, COPC spacing-derived point spacing screen estimates, broad view-direction fallback culling, and optional point-count and point-data byte budgets.
 - `CopcPointCloudLayer.expandHierarchyForCamera` for camera-targeted hierarchy expansion.
 - `CopcPointCloudLayer.renderAutomatic` for selecting and rendering nodes in one call.
 - `CopcPointCloudLayer.selectNodesForCamera` for selecting nodes without immediately rendering.
@@ -85,7 +85,7 @@ Camera-based selection requires both directions:
 
 ## Current Limitations
 
-- Hierarchy page expansion and node selection are camera-targeted but still conservative; node selection now uses COPC spacing-derived screen estimates and a broad camera view cone, but it is not yet calibrated against the full Cesium frustum or point-density metrics.
+- Hierarchy page expansion and node selection are camera-targeted but still conservative; node selection now uses COPC spacing-derived screen estimates and Cesium frustum culling, but the screen-space error estimate is not yet calibrated against point-density metrics.
 - Hierarchy page eviction is page-count based and deliberately keeps the root hierarchy page loaded; it is not byte-aware yet.
 - Point rendering uses Cesium point primitives, not a custom optimized WebGL primitive.
 - Point sample cache byte usage is estimated from decoded sample fields, not from JavaScript object heap size.
@@ -96,7 +96,7 @@ Camera-based selection requires both directions:
 
 ## Near-Term Roadmap
 
-1. Calibrate screen-space error estimates and view-cone filtering against full Cesium camera frustum parameters and point-density metrics.
+1. Calibrate screen-space error estimates against Cesium camera frustum parameters and point-density metrics.
 2. Tune hierarchy cache policy with byte-aware limits and camera-priority hints.
 3. Tune worker concurrency defaults and add worker-pool support if one worker becomes a bottleneck.
 4. Replace point primitive rendering with a more scalable Cesium-native primitive path when the basic API stabilizes.
