@@ -99,6 +99,41 @@ describe("selectHierarchyNodesForCamera", () => {
     ]);
   });
 
+  it("uses COPC spacing as a point-spacing screen-space threshold", () => {
+    const selection = selectHierarchyNodesForCamera(createProgressiveDepthNodes(), {
+      target: { x: 200, y: 10, z: 10 },
+      viewportHeightPixels: 720,
+      maxNodes: 2,
+      spacing: 64,
+      targetNodeScreenPixels: 1_000,
+      targetPointSpacingScreenPixels: 120,
+    });
+
+    expect(selection?.targetDepth).toBe(2);
+    expect(selection?.selectedDepth).toBe(2);
+    expect(selection?.spacing).toBe(64);
+    expect(selection?.targetPointSpacingScreenPixels).toBe(120);
+    expect(
+      selection?.estimatedSelectedDepthPointSpacingScreenPixels,
+    ).toBeCloseTo(115.2);
+    expect(selection?.depthEstimates.map((estimate) => estimate.depth)).toEqual([
+      0,
+      1,
+      2,
+      3,
+    ]);
+    expect(selection?.depthEstimates[0]?.pointSpacing).toBe(64);
+    expect(selection?.depthEstimates[1]?.pointSpacing).toBe(32);
+    expect(selection?.depthEstimates[2]?.pointSpacing).toBe(16);
+    expect(selection?.depthEstimates[3]?.pointSpacing).toBe(8);
+    expect(
+      selection?.depthEstimates[1]?.estimatedPointSpacingScreenPixels,
+    ).toBeCloseTo(230.4);
+    expect(
+      selection?.depthEstimates[2]?.estimatedPointSpacingScreenPixels,
+    ).toBeCloseTo(115.2);
+  });
+
   it("falls back to a nearby depth when target-depth nodes exceed the node budget", () => {
     const selection = selectHierarchyNodesForCamera(createBudgetedDepthNodes(), {
       target: { x: 80, y: 80, z: 10 },
@@ -146,6 +181,37 @@ describe("selectHierarchyNodesForCamera", () => {
         maxNodePointDataLength: 0,
       }),
     ).toThrow("maxNodePointDataLength must be a positive finite number.");
+  });
+
+  it("rejects invalid spacing options", () => {
+    expect(() =>
+      selectHierarchyNodesForCamera(createSparseDepthNodes(), {
+        target: { x: 0, y: 0, z: 0 },
+        viewportHeightPixels: 720,
+        spacing: 0,
+      }),
+    ).toThrow("spacing must be a positive finite number.");
+
+    expect(() =>
+      selectHierarchyNodesForCamera(createSparseDepthNodes(), {
+        target: { x: 0, y: 0, z: 0 },
+        viewportHeightPixels: 720,
+        targetPointSpacingScreenPixels: 0,
+      }),
+    ).toThrow(
+      "spacing is required when targetPointSpacingScreenPixels is provided.",
+    );
+
+    expect(() =>
+      selectHierarchyNodesForCamera(createSparseDepthNodes(), {
+        target: { x: 0, y: 0, z: 0 },
+        viewportHeightPixels: 720,
+        spacing: 64,
+        targetPointSpacingScreenPixels: 0,
+      }),
+    ).toThrow(
+      "targetPointSpacingScreenPixels must be a positive finite number.",
+    );
   });
 });
 

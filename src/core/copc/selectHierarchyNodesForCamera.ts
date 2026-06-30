@@ -13,6 +13,8 @@ export interface SelectHierarchyNodesForCameraOptions {
   readonly maxTotalPointCount?: number;
   readonly maxTotalPointDataLength?: number;
   readonly targetNodeScreenPixels?: number;
+  readonly spacing?: number;
+  readonly targetPointSpacingScreenPixels?: number;
 }
 
 export interface CopcHierarchyNodeCameraSelection {
@@ -22,6 +24,9 @@ export interface CopcHierarchyNodeCameraSelection {
   readonly estimatedRootScreenPixels: number;
   readonly estimatedSelectedDepthScreenPixels: number;
   readonly targetNodeScreenPixels: number;
+  readonly estimatedSelectedDepthPointSpacingScreenPixels: number | undefined;
+  readonly targetPointSpacingScreenPixels: number | undefined;
+  readonly spacing: number | undefined;
   readonly depthEstimates: readonly CopcHierarchyNodeDepthEstimate[];
   readonly skippedByBudgetCount: number;
   readonly reason: string;
@@ -32,10 +37,13 @@ export interface CopcHierarchyNodeDepthEstimate {
   readonly nodeCount: number;
   readonly nearestNodeKey: string;
   readonly estimatedNodeScreenPixels: number;
+  readonly pointSpacing: number | undefined;
+  readonly estimatedPointSpacingScreenPixels: number | undefined;
 }
 
 const DEFAULT_MAX_NODES = 4;
 const DEFAULT_TARGET_NODE_SCREEN_PIXELS = 220;
+const DEFAULT_TARGET_POINT_SPACING_SCREEN_PIXELS = 4;
 
 export function selectHierarchyNodesForCamera(
   nodes: readonly CopcHierarchyNodeSummary[],
@@ -51,6 +59,11 @@ export function selectHierarchyNodesForCamera(
   const viewportHeightPixels = options.viewportHeightPixels;
   const targetNodeScreenPixels =
     options.targetNodeScreenPixels ?? DEFAULT_TARGET_NODE_SCREEN_PIXELS;
+  const targetPointSpacingScreenPixels =
+    options.spacing === undefined
+      ? undefined
+      : options.targetPointSpacingScreenPixels ??
+        DEFAULT_TARGET_POINT_SPACING_SCREEN_PIXELS;
 
   if (!Number.isSafeInteger(maxNodes) || maxNodes <= 0) {
     throw new Error("maxNodes must be a positive integer.");
@@ -64,6 +77,23 @@ export function selectHierarchyNodesForCamera(
     throw new Error("targetNodeScreenPixels must be a positive finite number.");
   }
 
+  if (options.spacing !== undefined) {
+    validatePositiveFiniteBudget(options.spacing, "spacing");
+  }
+
+  if (
+    options.targetPointSpacingScreenPixels !== undefined &&
+    options.spacing === undefined
+  ) {
+    throw new Error(
+      "spacing is required when targetPointSpacingScreenPixels is provided.",
+    );
+  }
+
+  validatePositiveFiniteBudget(
+    options.targetPointSpacingScreenPixels,
+    "targetPointSpacingScreenPixels",
+  );
   validatePositiveFiniteBudget(
     options.maxNodePointCount,
     "maxNodePointCount",
@@ -116,10 +146,12 @@ export function selectHierarchyNodesForCamera(
     availableDepths,
     options.target,
     viewportHeightPixels,
+    options.spacing,
   );
   const targetDepth = chooseTargetDepth(
     depthEstimates,
     targetNodeScreenPixels,
+    targetPointSpacingScreenPixels,
   );
   const selection = selectBudgetedNodes(nodes, availableDepths, targetDepth, {
     target: options.target,
@@ -147,9 +179,18 @@ export function selectHierarchyNodesForCamera(
     estimatedSelectedDepthScreenPixels:
       selectedDepthEstimate.estimatedNodeScreenPixels,
     targetNodeScreenPixels,
+    estimatedSelectedDepthPointSpacingScreenPixels:
+      selectedDepthEstimate.estimatedPointSpacingScreenPixels,
+    targetPointSpacingScreenPixels,
+    spacing: options.spacing,
     depthEstimates,
     skippedByBudgetCount: selection.skippedByBudgetCount,
-    reason: `Selected ${selection.nodes.length} nearest depth ${selection.selectedDepth} nodes; nearest depth ${selection.selectedDepth} node is estimated at ${selectedDepthEstimate.estimatedNodeScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 0 })} px against a ${targetNodeScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 0 })} px target.`,
+    reason: createSelectionReason(
+      selection,
+      selectedDepthEstimate,
+      targetNodeScreenPixels,
+      targetPointSpacingScreenPixels,
+    ),
   };
 }
 
@@ -182,6 +223,7 @@ function estimateAvailableDepthsScreenSize(
   availableDepths: readonly number[],
   target: CopcTargetPoint,
   viewportHeightPixels: number,
+  spacing: number | undefined,
 ): CopcHierarchyNodeDepthEstimate[] {
   return availableDepths.map((depth) => {
     const nodesAtDepth = nodes.filter((node) => node.depth === depth);
@@ -201,6 +243,18 @@ function estimateAvailableDepthsScreenSize(
       throw new Error(`No COPC hierarchy nodes were found at depth ${depth}.`);
     }
 
+    const pointSpacing =
+      spacing === undefined ? undefined : spacing / 2 ** depth;
+    const estimatedPointSpacingScreenPixels =
+      pointSpacing === undefined
+        ? undefined
+        : estimateLinearScreenPixels(
+            pointSpacing,
+            nearestNode.bounds,
+            target,
+            viewportHeightPixels,
+          );
+
     return {
       depth,
       nodeCount: nodesAtDepth.length,
@@ -210,6 +264,8 @@ function estimateAvailableDepthsScreenSize(
         target,
         viewportHeightPixels,
       ),
+      pointSpacing,
+      estimatedPointSpacingScreenPixels,
     };
   });
 }
@@ -217,11 +273,13 @@ function estimateAvailableDepthsScreenSize(
 function chooseTargetDepth(
   depthEstimates: readonly CopcHierarchyNodeDepthEstimate[],
   targetNodeScreenPixels: number,
+  targetPointSpacingScreenPixels: number | undefined,
 ): number {
   const satisfyingDepth = [...depthEstimates]
     .filter(
       (estimate) =>
-        estimate.estimatedNodeScreenPixels <= targetNodeScreenPixels,
+        estimate.estimatedNodeScreenPixels <= targetNodeScreenPixels &&
+        satisfiesPointSpacingTarget(estimate, targetPointSpacingScreenPixels),
     )
     .sort((left, right) => left.depth - right.depth)[0];
 
@@ -232,6 +290,21 @@ function chooseTargetDepth(
   return [...depthEstimates].sort(
     (left, right) => right.depth - left.depth,
   )[0].depth;
+}
+
+function satisfiesPointSpacingTarget(
+  estimate: CopcHierarchyNodeDepthEstimate,
+  targetPointSpacingScreenPixels: number | undefined,
+): boolean {
+  if (targetPointSpacingScreenPixels === undefined) {
+    return true;
+  }
+
+  return (
+    estimate.estimatedPointSpacingScreenPixels !== undefined &&
+    estimate.estimatedPointSpacingScreenPixels <=
+      targetPointSpacingScreenPixels
+  );
 }
 
 function findDepthEstimate(
@@ -245,6 +318,21 @@ function findDepthEstimate(
   }
 
   return estimate;
+}
+
+function createSelectionReason(
+  selection: BudgetedNodeSelection,
+  selectedDepthEstimate: CopcHierarchyNodeDepthEstimate,
+  targetNodeScreenPixels: number,
+  targetPointSpacingScreenPixels: number | undefined,
+): string {
+  const pointSpacingReason =
+    targetPointSpacingScreenPixels === undefined ||
+    selectedDepthEstimate.estimatedPointSpacingScreenPixels === undefined
+      ? ""
+      : ` and point spacing ${selectedDepthEstimate.estimatedPointSpacingScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 1 })} px against a ${targetPointSpacingScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 1 })} px target`;
+
+  return `Selected ${selection.nodes.length} nearest depth ${selection.selectedDepth} nodes; nearest depth ${selection.selectedDepth} node is estimated at ${selectedDepthEstimate.estimatedNodeScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 0 })} px against a ${targetNodeScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 0 })} px target${pointSpacingReason}.`;
 }
 
 interface SelectBudgetedNodesOptions {
@@ -425,10 +513,24 @@ function estimateBoundsScreenPixels(
   target: CopcTargetPoint,
   viewportHeightPixels: number,
 ): number {
-  const span = Math.max(horizontalSpan(bounds), Number.EPSILON);
-  const distance = Math.max(distanceToBounds3d(target, bounds), span);
+  return estimateLinearScreenPixels(
+    horizontalSpan(bounds),
+    bounds,
+    target,
+    viewportHeightPixels,
+  );
+}
 
-  return (span / distance) * viewportHeightPixels;
+function estimateLinearScreenPixels(
+  size: number,
+  bounds: CopcBounds,
+  target: CopcTargetPoint,
+  viewportHeightPixels: number,
+): number {
+  const safeSize = Math.max(size, Number.EPSILON);
+  const distance = Math.max(distanceToBounds3d(target, bounds), safeSize);
+
+  return (safeSize / distance) * viewportHeightPixels;
 }
 
 function distanceToBounds3d(target: CopcTargetPoint, bounds: CopcBounds): number {

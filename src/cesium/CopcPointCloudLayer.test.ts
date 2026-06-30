@@ -175,6 +175,50 @@ describe("CopcPointCloudLayer hierarchy loading", () => {
     expect(requestedPageKeys).toEqual(["2-3-3-0"]);
     expect(layer.hierarchy).toBe(expandedHierarchy);
   });
+
+  it("passes inspection spacing into camera node selection", async () => {
+    const layer = new CopcPointCloudLayer(createSceneStub(), {
+      url: "https://example.com/sample.copc.laz",
+      coordinateTransforms: () => ({
+        toCesium: (x, y, z) => ({
+          longitudeDegrees: x,
+          latitudeDegrees: y,
+          heightMeters: z,
+        }),
+        toCopc: () => ({
+          x: 200,
+          y: 10,
+          z: 10,
+        }),
+      }),
+    });
+
+    layer.source.inspect = async () => createInspection({ spacing: 64 });
+    layer.source.loadHierarchySummary = async () =>
+      createHierarchy([
+        createHierarchyNodeWithBounds("0-0-0-0", 0, 0, 0, 100),
+        createHierarchyNodeWithBounds("1-1-0-0", 1, 50, 0, 50),
+        createHierarchyNodeWithBounds("2-3-0-0", 2, 75, 0, 25),
+        createHierarchyNodeWithBounds("3-7-0-0", 3, 87.5, 0, 12.5),
+      ]);
+
+    const selection = await layer.selectNodesForCamera({
+      camera: {
+        positionWC: Cartesian3.fromDegrees(0, 0, 100),
+      } as unknown as Camera,
+      viewportHeightPixels: 720,
+      maxNodes: 2,
+      targetNodeScreenPixels: 1_000,
+      targetPointSpacingScreenPixels: 120,
+    });
+
+    expect(selection?.spacing).toBe(64);
+    expect(selection?.targetDepth).toBe(2);
+    expect(selection?.selectedDepth).toBe(2);
+    expect(
+      selection?.estimatedSelectedDepthPointSpacingScreenPixels,
+    ).toBeCloseTo(115.2);
+  });
 });
 
 function patchLayerSource(layer: CopcPointCloudLayer): void {
@@ -254,7 +298,11 @@ function createSceneStub(): Scene {
   } as unknown as Scene;
 }
 
-function createInspection(): CopcInspection {
+function createInspection(
+  options: {
+    readonly spacing?: number;
+  } = {},
+): CopcInspection {
   return {
     sourceUrl: "https://example.com/sample.copc.laz",
     pointCount: 1,
@@ -265,7 +313,7 @@ function createInspection(): CopcInspection {
     cube: createBounds(),
     scale: [1, 1, 1],
     offset: [0, 0, 0],
-    spacing: 1,
+    spacing: options.spacing ?? 1,
     gpsTimeRange: [0, 0],
     rootHierarchyPage: {
       pageOffset: 0,
@@ -303,6 +351,36 @@ function createHierarchyNode(key: string): CopcHierarchySummary["nodes"][number]
     y: y ?? 0,
     z: z ?? 0,
     bounds: createBounds(),
+    pointCount: 1,
+    pointDensity: 1,
+    pointDataOffset: 0,
+    pointDataLength: 10,
+  };
+}
+
+function createHierarchyNodeWithBounds(
+  key: string,
+  depth: number,
+  minX: number,
+  minY: number,
+  size: number,
+): CopcHierarchySummary["nodes"][number] {
+  const [, x, y, z] = key.split("-").map(Number);
+
+  return {
+    key,
+    depth,
+    x: x ?? 0,
+    y: y ?? 0,
+    z: z ?? 0,
+    bounds: {
+      minX,
+      minY,
+      minZ: 0,
+      maxX: minX + size,
+      maxY: minY + size,
+      maxZ: size,
+    },
     pointCount: 1,
     pointDensity: 1,
     pointDataOffset: 0,

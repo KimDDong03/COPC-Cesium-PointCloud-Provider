@@ -369,12 +369,13 @@ export class CopcPointCloudLayer {
   ): Promise<CopcHierarchyNodeCameraSelection | undefined> {
     this.assertNotDestroyed();
 
-    const { camera, viewportHeightPixels, ...selectionOptions } = options;
+    const { camera, viewportHeightPixels, spacing, ...selectionOptions } = options;
     const { inspection, hierarchy } = await this.load();
     this.assertNotDestroyed();
 
     return selectHierarchyNodesForCamera(hierarchy.nodes, {
       ...selectionOptions,
+      spacing: spacing ?? inspection.spacing,
       target: this.cameraPositionToCopc(camera, inspection),
       viewportHeightPixels:
         viewportHeightPixels ?? this.scene.canvas.clientHeight,
