@@ -24,7 +24,7 @@ The current prototype is intentionally small:
 5. Display sampled COPC hierarchy-node points in CesiumJS.
 6. Load nearby COPC hierarchy pages progressively and reuse a bounded in-memory node sample cache.
 
-Full LOD, byte-based persistent cache management, workers, custom primitives, packaging, and advanced styling come later.
+Full LOD, persistent cache management, workers, custom primitives, packaging, and advanced styling come later.
 
 ## Run
 
@@ -60,7 +60,7 @@ The default example URL loads the public Autzen COPC sample, reads the root hier
 The example keeps sample COPC URLs and their transform factories in a small preset list while still allowing direct custom URL entry.
 For custom URLs, the example can also accept a source CRS and optional proj4 definition before loading the COPC file.
 The hierarchy node selector lists currently loaded nodes and lets the example render one selected node at a time.
-`CopcSource` keeps the opened COPC metadata, loaded hierarchy pages, pending hierarchy page references with bounds, and a bounded LRU cache of sampled node point data in memory for the active URL.
+`CopcSource` keeps the opened COPC metadata, loaded hierarchy pages, pending hierarchy page references with bounds, and a bounded LRU cache of sampled node point data in memory for the active URL. The point sample cache is limited by both sample-set count and estimated decoded sample bytes.
 The Load next page button range-reads the next pending COPC hierarchy page and refreshes the available node list without converting the file to 3D Tiles.
 The example also computes the selected node bounds and renders a yellow debug bounding box in CesiumJS.
 It can suggest the nearest loaded hierarchy node to the current camera position and apply that suggestion on demand.
@@ -84,6 +84,7 @@ import {
 const layer = new CopcPointCloudLayer(viewer.scene, {
   url,
   maxCachedSampleSets: 32,
+  maxCachedPointSampleBytes: 32 * 1024 * 1024,
   coordinateTransforms: createDefaultCopcCoordinateTransforms,
 });
 const { hierarchy, coordinateTransform } = await layer.load();

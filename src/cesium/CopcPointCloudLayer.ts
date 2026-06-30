@@ -43,6 +43,7 @@ export interface CopcPointCloudLayerOptions {
   readonly url: string;
   readonly maxPointCountPerNode?: number;
   readonly maxCachedSampleSets?: number;
+  readonly maxCachedPointSampleBytes?: number;
   readonly showBounds?: boolean;
   readonly coordinateTransforms?: CopcCoordinateTransformFactory;
 }
@@ -136,6 +137,7 @@ export class CopcPointCloudLayer {
     this.scene = scene;
     this.source = new CopcSource(options.url, {
       maxCachedSampleSets: options.maxCachedSampleSets,
+      maxCachedPointSampleBytes: options.maxCachedPointSampleBytes,
     });
     this.pointRenderer = new CesiumPointRenderer(scene);
     this.boundsRenderer = new CesiumBoundsRenderer(scene);

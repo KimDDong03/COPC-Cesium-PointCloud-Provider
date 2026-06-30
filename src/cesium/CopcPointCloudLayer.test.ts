@@ -16,10 +16,14 @@ describe("CopcPointCloudLayer coordinate transforms", () => {
     const layer = new CopcPointCloudLayer(createSceneStub(), {
       url: "https://example.com/sample.copc.laz",
       maxCachedSampleSets: 3,
+      maxCachedPointSampleBytes: 1024,
     });
 
-    expect(layer.source.getPointSampleCacheStats().maxCachedSampleSetCount).toBe(
-      3,
+    expect(layer.source.getPointSampleCacheStats()).toEqual(
+      expect.objectContaining({
+        maxCachedSampleSetCount: 3,
+        maxCachedPointSampleBytes: 1024,
+      }),
     );
 
     layer.destroy();

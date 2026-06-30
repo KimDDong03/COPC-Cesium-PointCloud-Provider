@@ -45,6 +45,8 @@ describe("CopcSource point sample cache", () => {
     expect(source.getPointSampleCacheStats()).toEqual({
       cachedSampleSetCount: 2,
       maxCachedSampleSetCount: 32,
+      cachedPointSampleBytes: 0,
+      maxCachedPointSampleBytes: 33_554_432,
       cacheHitCount: 1,
       cacheMissCount: 2,
       cacheEvictionCount: 0,
@@ -92,8 +94,57 @@ describe("CopcSource point sample cache", () => {
     expect(source.getPointSampleCacheStats()).toEqual({
       cachedSampleSetCount: 2,
       maxCachedSampleSetCount: 2,
+      cachedPointSampleBytes: 0,
+      maxCachedPointSampleBytes: 33_554_432,
       cacheHitCount: 1,
       cacheMissCount: 4,
+      cacheEvictionCount: 2,
+    });
+  });
+
+  it("evicts least recently used sampled node caches when the byte limit is reached", async () => {
+    const source = new CopcSource("https://example.com/sample.copc.laz", {
+      maxCachedSampleSets: 10,
+      maxCachedPointSampleBytes: 60,
+    });
+    const mutableSource = source as unknown as {
+      loadNodePointSamplesWithoutCache: (
+        nodeKey: string,
+        maxPointCount: number,
+      ) => Promise<CopcNodePointSampleResult>;
+    };
+    const loadedCacheKeys: string[] = [];
+
+    mutableSource.loadNodePointSamplesWithoutCache = async (
+      nodeKey,
+      maxPointCount,
+    ) => {
+      loadedCacheKeys.push(`${nodeKey}:${maxPointCount}`);
+
+      return {
+        nodeKey,
+        nodePointCount: 10,
+        sampledPointCount: 2,
+        points: createSamplePoints(2),
+      };
+    };
+
+    await source.loadNodePointSamples({ nodeKey: "0-0-0-0", maxPointCount: 5 });
+    await source.loadNodePointSamples({ nodeKey: "1-0-0-0", maxPointCount: 5 });
+    await source.loadNodePointSamples({ nodeKey: "0-0-0-0", maxPointCount: 5 });
+
+    expect(loadedCacheKeys).toEqual([
+      "0-0-0-0:5",
+      "1-0-0-0:5",
+      "0-0-0-0:5",
+    ]);
+    expect(source.getPointSampleCacheStats()).toEqual({
+      cachedSampleSetCount: 1,
+      maxCachedSampleSetCount: 10,
+      cachedPointSampleBytes: 54,
+      maxCachedPointSampleBytes: 60,
+      cacheHitCount: 0,
+      cacheMissCount: 3,
       cacheEvictionCount: 2,
     });
   });
@@ -123,6 +174,8 @@ describe("CopcSource point sample cache", () => {
     expect(source.getPointSampleCacheStats()).toEqual({
       cachedSampleSetCount: 0,
       maxCachedSampleSetCount: 32,
+      cachedPointSampleBytes: 0,
+      maxCachedPointSampleBytes: 33_554_432,
       cacheHitCount: 0,
       cacheMissCount: 1,
       cacheEvictionCount: 0,
@@ -136,6 +189,13 @@ describe("CopcSource point sample cache", () => {
           maxCachedSampleSets: 0,
         }),
     ).toThrow("maxCachedSampleSets must be a positive integer.");
+
+    expect(
+      () =>
+        new CopcSource("https://example.com/sample.copc.laz", {
+          maxCachedPointSampleBytes: 0,
+        }),
+    ).toThrow("maxCachedPointSampleBytes must be a positive integer.");
   });
 
   it("loads and merges additional hierarchy pages on demand", async () => {
@@ -243,4 +303,19 @@ function createNode(pointCount: number): Hierarchy.Node {
     pointDataOffset: pointCount,
     pointDataLength: pointCount * 10,
   };
+}
+
+function createSamplePoints(
+  pointCount: number,
+): CopcNodePointSampleResult["points"] {
+  return Array.from({ length: pointCount }, (_, index) => ({
+    x: index,
+    y: index,
+    z: index,
+    color: {
+      red: 1,
+      green: 2,
+      blue: 3,
+    },
+  }));
 }

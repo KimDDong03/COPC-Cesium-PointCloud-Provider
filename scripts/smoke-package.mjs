@@ -171,7 +171,10 @@ const exportedConstructors = [
 const inspection: CopcInspection | undefined = undefined;
 const transformStatus: CopcCoordinateTransformStatus | undefined = undefined;
 const cacheStats: CopcPointSampleCacheStats | undefined = undefined;
-const sourceOptions: CopcSourceOptions = { maxCachedSampleSets: 2 };
+const sourceOptions: CopcSourceOptions = {
+  maxCachedSampleSets: 2,
+  maxCachedPointSampleBytes: 1024,
+};
 const createSource = (): CopcSource =>
   new CopcSource("https://example.com/sample.copc.laz", sourceOptions);
 const depthEstimate: CopcHierarchyNodeDepthEstimate | undefined = undefined;
@@ -190,6 +193,7 @@ if (app) {
     exportedConstructors.map((constructor) => constructor.name).join(", "),
     String(Boolean(createSource)),
     String(sourceOptions.maxCachedSampleSets),
+    String(sourceOptions.maxCachedPointSampleBytes),
     String(Boolean(depthEstimate)),
     String(Boolean(inspection)),
     String(Boolean(transformStatus)),

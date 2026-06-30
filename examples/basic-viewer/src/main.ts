@@ -38,6 +38,7 @@ const CAMERA_STREAM_MAX_HIERARCHY_PAGES = 1;
 const CAMERA_STREAM_MAX_NODES = 1;
 const CAMERA_STREAM_MAX_DEPTH = 0;
 const POINT_SAMPLE_CACHE_LIMIT = 32;
+const POINT_SAMPLE_CACHE_BYTE_LIMIT = 32 * 1024 * 1024;
 
 const elements = getPrototypeElements();
 let currentLayer: CopcPointCloudLayer | undefined;
@@ -179,6 +180,7 @@ async function inspectSource(source: CopcSourceConfig): Promise<void> {
   const layer = new CopcPointCloudLayer(viewer.scene, {
     url: activeSource.url,
     maxCachedSampleSets: POINT_SAMPLE_CACHE_LIMIT,
+    maxCachedPointSampleBytes: POINT_SAMPLE_CACHE_BYTE_LIMIT,
     coordinateTransforms: activeSource.coordinateTransforms,
   });
   currentLayer = layer;
@@ -988,7 +990,7 @@ function formatRenderSetSummary(): string {
 function formatPointSampleCacheStats(
   stats: CopcPointSampleCacheStats,
 ): string {
-  return `${stats.cachedSampleSetCount.toLocaleString()} / ${stats.maxCachedSampleSetCount.toLocaleString()} sample sets, ${stats.cacheHitCount.toLocaleString()} hits, ${stats.cacheMissCount.toLocaleString()} misses, ${stats.cacheEvictionCount.toLocaleString()} evictions`;
+  return `${stats.cachedSampleSetCount.toLocaleString()} / ${stats.maxCachedSampleSetCount.toLocaleString()} sample sets, ${formatBytes(stats.cachedPointSampleBytes)} / ${formatBytes(stats.maxCachedPointSampleBytes)}, ${stats.cacheHitCount.toLocaleString()} hits, ${stats.cacheMissCount.toLocaleString()} misses, ${stats.cacheEvictionCount.toLocaleString()} evictions`;
 }
 
 function formatHierarchyPageStats(hierarchy: CopcHierarchySummary): string {

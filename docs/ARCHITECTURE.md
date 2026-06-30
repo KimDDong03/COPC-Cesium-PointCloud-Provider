@@ -55,7 +55,7 @@ The current implementation includes:
 
 - `CopcSource.loadHierarchyPage` and `loadNextHierarchyPage` for on-demand COPC hierarchy page range reads.
 - `selectHierarchyPagesForTarget` for choosing nearby pending hierarchy pages from their octree bounds.
-- `CopcSource` point sample caching by node key and sample count, with a bounded LRU sample-set limit.
+- `CopcSource` point sample caching by node key and sample count, with bounded LRU sample-set and estimated decoded-byte limits.
 - `selectHierarchyNodesForCamera` for camera-based node selection using per-depth nearest-node screen-size estimates and COPC spacing-derived point spacing screen estimates, with optional point-count and point-data byte budgets.
 - `CopcPointCloudLayer.expandHierarchyForCamera` for camera-targeted hierarchy expansion.
 - `CopcPointCloudLayer.renderAutomatic` for selecting and rendering nodes in one call.
@@ -83,13 +83,13 @@ Camera-based selection requires both directions:
 
 - Hierarchy page expansion and node selection are camera-targeted but still conservative; node selection now uses COPC spacing-derived screen estimates, but it is not yet calibrated against Cesium frustum parameters or point-density metrics.
 - Point rendering uses Cesium point primitives, not a custom optimized WebGL primitive.
-- Point sample cache is bounded by sample-set count, but not yet by decoded byte size.
+- Point sample cache byte usage is estimated from decoded sample fields, not from JavaScript object heap size.
 - Camera streaming is prototype-oriented; it expands a small number of hierarchy pages per update while keeping the example's automatic render depth shallow.
 - CRS detection is not complete; projected CRS data should pass explicit transform options.
 
 ## Near-Term Roadmap
 
 1. Calibrate screen-space error estimates against Cesium camera frustum parameters and point-density metrics.
-2. Add bounded hierarchy cache eviction and byte-aware point cache budgeting.
+2. Add bounded hierarchy cache eviction.
 3. Move heavy point decoding/preparation work into Web Workers.
 4. Replace point primitive rendering with a more scalable Cesium-native primitive path when the basic API stabilizes.
