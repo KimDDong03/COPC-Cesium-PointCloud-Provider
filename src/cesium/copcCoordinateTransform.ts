@@ -3,6 +3,8 @@ import type { CopcInspection } from "../core/copc/CopcInspection";
 
 const EPSG_2992 = "EPSG:2992";
 const WGS84 = "EPSG:4326";
+const UNSUPPORTED_CRS_MESSAGE =
+  "This prototype can only render geographic coordinates or the sample EPSG:2992 COPC CRS.";
 const US_SURVEY_FOOT_TO_METER = 0.304800609601219;
 
 let projectionsConfigured = false;
@@ -31,9 +33,21 @@ export type CesiumToCopcCoordinateTransform = (
   heightMeters: number,
 ) => CopcCoordinate;
 
+export type CopcCoordinateTransformKind = "geographic" | "epsg:2992" | "custom";
+
+export interface CopcCoordinateTransformStatus {
+  readonly kind: CopcCoordinateTransformKind;
+  readonly label: string;
+  readonly supportsCameraSelection: boolean;
+}
+
 export interface CopcCoordinateTransformSet {
   readonly toCesium: CopcToCesiumCoordinateTransform;
   readonly toCopc?: CesiumToCopcCoordinateTransform;
+  readonly status?: Omit<
+    CopcCoordinateTransformStatus,
+    "supportsCameraSelection"
+  >;
 }
 
 export type CopcCoordinateTransformFactory = (
@@ -46,6 +60,7 @@ export function createDefaultCopcCoordinateTransforms(
   return {
     toCesium: createCopcCoordinateTransform(inspection),
     toCopc: createCesiumToCopcCoordinateTransform(inspection),
+    status: detectDefaultCoordinateTransformStatus(inspection),
   };
 }
 
@@ -88,14 +103,12 @@ function createHorizontalTransform(
     return (x, y) => [x, y];
   }
 
-  if (inspection.wkt?.includes('AUTHORITY["EPSG","2992"]')) {
+  if (isEpsg2992(inspection)) {
     configureKnownProjections();
     return (x, y) => proj4(EPSG_2992, WGS84, [x, y]) as [number, number];
   }
 
-  throw new Error(
-    "This prototype can only render geographic coordinates or the sample EPSG:2992 COPC CRS.",
-  );
+  throw new Error(UNSUPPORTED_CRS_MESSAGE);
 }
 
 function createInverseHorizontalTransform(
@@ -108,7 +121,7 @@ function createInverseHorizontalTransform(
     ];
   }
 
-  if (inspection.wkt?.includes('AUTHORITY["EPSG","2992"]')) {
+  if (isEpsg2992(inspection)) {
     configureKnownProjections();
     return (longitudeDegrees, latitudeDegrees) =>
       proj4(WGS84, EPSG_2992, [longitudeDegrees, latitudeDegrees]) as [
@@ -117,9 +130,7 @@ function createInverseHorizontalTransform(
       ];
   }
 
-  throw new Error(
-    "This prototype can only render geographic coordinates or the sample EPSG:2992 COPC CRS.",
-  );
+  throw new Error(UNSUPPORTED_CRS_MESSAGE);
 }
 
 function configureKnownProjections(): void {
@@ -143,6 +154,30 @@ function isLikelyGeographic(inspection: CopcInspection): boolean {
     bounds.minY >= -90 &&
     bounds.maxY <= 90
   );
+}
+
+function isEpsg2992(inspection: CopcInspection): boolean {
+  return inspection.wkt?.includes('AUTHORITY["EPSG","2992"]') ?? false;
+}
+
+function detectDefaultCoordinateTransformStatus(
+  inspection: CopcInspection,
+): Omit<CopcCoordinateTransformStatus, "supportsCameraSelection"> {
+  if (isLikelyGeographic(inspection)) {
+    return {
+      kind: "geographic",
+      label: "Geographic coordinates",
+    };
+  }
+
+  if (isEpsg2992(inspection)) {
+    return {
+      kind: "epsg:2992",
+      label: "EPSG:2992 to WGS84",
+    };
+  }
+
+  throw new Error(UNSUPPORTED_CRS_MESSAGE);
 }
 
 function heightToMeters(z: number, inspection: CopcInspection): number {

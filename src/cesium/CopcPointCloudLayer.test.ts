@@ -6,9 +6,52 @@ import type {
   PointSample,
 } from "../core";
 import { CopcPointCloudLayer } from "./CopcPointCloudLayer";
-import type { CopcToCesiumCoordinateTransform } from "./copcCoordinateTransform";
+import type {
+  CopcCoordinateTransformStatus,
+  CopcToCesiumCoordinateTransform,
+} from "./copcCoordinateTransform";
 
 describe("CopcPointCloudLayer coordinate transforms", () => {
+  it("reports the default geographic transform status from load", async () => {
+    const layer = new CopcPointCloudLayer(createSceneStub(), {
+      url: "https://example.com/sample.copc.laz",
+    });
+
+    patchLayerSource(layer);
+
+    const result = await layer.load();
+
+    expect(result.coordinateTransform).toEqual({
+      kind: "geographic",
+      label: "Geographic coordinates",
+      supportsCameraSelection: true,
+    } satisfies CopcCoordinateTransformStatus);
+    expect(layer.coordinateTransform).toEqual(result.coordinateTransform);
+  });
+
+  it("reports a custom transform status when no explicit status is provided", async () => {
+    const layer = new CopcPointCloudLayer(createSceneStub(), {
+      url: "https://example.com/sample.copc.laz",
+      coordinateTransforms: () => ({
+        toCesium: (x, y, z) => ({
+          longitudeDegrees: x,
+          latitudeDegrees: y,
+          heightMeters: z,
+        }),
+      }),
+    });
+
+    patchLayerSource(layer);
+
+    const result = await layer.load();
+
+    expect(result.coordinateTransform).toEqual({
+      kind: "custom",
+      label: "Custom coordinate transform",
+      supportsCameraSelection: false,
+    } satisfies CopcCoordinateTransformStatus);
+  });
+
   it("applies the configured transform before sending points and bounds to renderers", async () => {
     const layer = new CopcPointCloudLayer(createSceneStub(), {
       url: "https://example.com/sample.copc.laz",

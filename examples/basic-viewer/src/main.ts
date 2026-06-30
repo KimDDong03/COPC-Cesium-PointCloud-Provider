@@ -8,6 +8,7 @@ import {
   CopcPointCloudLayer,
   createDefaultCopcCoordinateTransforms,
   type CopcBounds,
+  type CopcCoordinateTransformStatus,
   type CopcHierarchyNodeCameraSelection,
   type CopcHierarchyNodeSuggestion,
   type CopcHierarchyNodeSummary,
@@ -24,6 +25,7 @@ const elements = getPrototypeElements();
 let currentLayer: CopcPointCloudLayer | undefined;
 let currentInspection: CopcInspection | undefined;
 let currentHierarchy: CopcHierarchySummary | undefined;
+let currentCoordinateTransform: CopcCoordinateTransformStatus | undefined;
 let currentSuggestion: CopcHierarchyNodeSuggestion | undefined;
 const renderNodeSet = new Set<string>();
 
@@ -122,13 +124,14 @@ async function inspectUrl(url: string): Promise<void> {
   currentLayer = layer;
   currentInspection = undefined;
   currentHierarchy = undefined;
+  currentCoordinateTransform = undefined;
   currentSuggestion = undefined;
   renderNodeSet.clear();
   renderSuggestion(undefined);
   renderRenderSetControls();
 
   try {
-    const { inspection, hierarchy } = await layer.load();
+    const { inspection, hierarchy, coordinateTransform } = await layer.load();
 
     if (layer !== currentLayer) {
       return;
@@ -136,6 +139,7 @@ async function inspectUrl(url: string): Promise<void> {
 
     currentInspection = inspection;
     currentHierarchy = hierarchy;
+    currentCoordinateTransform = coordinateTransform;
     populateNodeSelect(hierarchy);
     renderInspection(inspection);
     updateSuggestedNode();
@@ -147,6 +151,7 @@ async function inspectUrl(url: string): Promise<void> {
 
     layer.destroy();
     currentLayer = undefined;
+    currentCoordinateTransform = undefined;
     setInspectionError(error);
   }
 }
@@ -200,6 +205,12 @@ function renderInspection(
       `${inspection.rootHierarchyPage.pageLength.toLocaleString()} bytes at ${inspection.rootHierarchyPage.pageOffset.toLocaleString()}`,
     ),
     metadataRow("GPS time", formatVector(inspection.gpsTimeRange)),
+    metadataRow(
+      "Coordinate transform",
+      currentCoordinateTransform
+        ? formatCoordinateTransform(currentCoordinateTransform)
+        : "Not loaded yet",
+    ),
     metadataRow(
       "Selected node",
       pointResult
@@ -304,6 +315,12 @@ async function renderAutomaticNodeSet(): Promise<void> {
     return;
   }
 
+  if (!currentCoordinateTransform?.supportsCameraSelection) {
+    elements.statusText.textContent =
+      "Auto LOD unavailable: coordinateTransforms.toCopc is required.";
+    return;
+  }
+
   const layer = currentLayer;
 
   try {
@@ -389,15 +406,22 @@ function updateSuggestedNode(): void {
     return;
   }
 
+  if (!currentCoordinateTransform?.supportsCameraSelection) {
+    renderSuggestionUnavailable(
+      "Suggested node unavailable: coordinateTransforms.toCopc is required.",
+    );
+    return;
+  }
+
   try {
     currentSuggestion = currentLayer.suggestNodeForCamera(viewer.camera);
     renderSuggestion(currentSuggestion);
   } catch (error) {
-    elements.suggestionText.textContent =
+    renderSuggestionUnavailable(
       error instanceof Error
         ? `Suggested node unavailable: ${error.message}`
-        : "Suggested node unavailable.";
-    elements.applySuggestionButton.disabled = true;
+        : "Suggested node unavailable.",
+    );
   }
 }
 
@@ -416,6 +440,11 @@ function renderSuggestion(
   renderRenderSetControls();
 }
 
+function renderSuggestionUnavailable(message: string): void {
+  elements.suggestionText.textContent = message;
+  elements.applySuggestionButton.disabled = true;
+}
+
 function addNodeToRenderSet(nodeKey: string): void {
   renderNodeSet.add(nodeKey);
   renderRenderSetControls();
@@ -426,6 +455,11 @@ function renderRenderSetControls(): void {
   const hasNodes = nodeKeys.length > 0;
   const selectedNodeKey = elements.nodeSelect.value;
   const suggestedNodeKey = currentSuggestion?.node.key;
+  const canUseCameraSelection = Boolean(
+    currentInspection &&
+      currentHierarchy &&
+      currentCoordinateTransform?.supportsCameraSelection,
+  );
 
   elements.renderSetText.textContent = hasNodes
     ? `Render set: ${nodeKeys.join(", ")}`
@@ -434,7 +468,10 @@ function renderRenderSetControls(): void {
     !selectedNodeKey || renderNodeSet.has(selectedNodeKey);
   elements.addSuggestionButton.disabled =
     !suggestedNodeKey || renderNodeSet.has(suggestedNodeKey);
-  elements.autoLodButton.disabled = !currentInspection || !currentHierarchy;
+  elements.autoLodButton.disabled = !canUseCameraSelection;
+  elements.autoLodButton.title = canUseCameraSelection
+    ? ""
+    : "Auto LOD requires coordinateTransforms.toCopc.";
   elements.renderSetButton.disabled = !hasNodes;
   elements.clearSetButton.disabled = !hasNodes;
 }
@@ -584,6 +621,14 @@ function formatCameraSelection(
   selection: CopcHierarchyNodeCameraSelection,
 ): string {
   return `${selection.nodes.length.toLocaleString()} nodes at depth ${selection.selectedDepth.toLocaleString()} (target depth ${selection.targetDepth.toLocaleString()}, root span ${selection.estimatedRootScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 0 })} px)`;
+}
+
+function formatCoordinateTransform(
+  status: CopcCoordinateTransformStatus,
+): string {
+  return `${status.label} (${status.kind}, camera selection ${
+    status.supportsCameraSelection ? "supported" : "unavailable"
+  })`;
 }
 
 function formatSuggestionDistance(value: number): string {

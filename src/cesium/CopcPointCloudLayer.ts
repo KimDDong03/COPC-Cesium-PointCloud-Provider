@@ -31,6 +31,7 @@ import {
   createDefaultCopcCoordinateTransforms,
   type CopcCoordinateTransformFactory,
   type CopcCoordinateTransformSet,
+  type CopcCoordinateTransformStatus,
 } from "./copcCoordinateTransform";
 import { createPointSamplesFromCopc } from "./createPointSamplesFromCopc";
 
@@ -44,6 +45,7 @@ export interface CopcPointCloudLayerOptions {
 export interface CopcPointCloudLayerLoadResult {
   readonly inspection: CopcInspection;
   readonly hierarchy: CopcHierarchySummary;
+  readonly coordinateTransform: CopcCoordinateTransformStatus;
 }
 
 export interface CopcPointCloudLayerRenderNodeOptions {
@@ -96,6 +98,7 @@ export class CopcPointCloudLayer {
   private readonly defaultShowBounds: boolean;
   private readonly coordinateTransformFactory: CopcCoordinateTransformFactory;
   private coordinateTransforms: CopcCoordinateTransformSet | undefined;
+  private coordinateTransformStatus: CopcCoordinateTransformStatus | undefined;
   private loadPromise: Promise<CopcPointCloudLayerLoadResult> | undefined;
   private loadedInspection: CopcInspection | undefined;
   private loadedHierarchy: CopcHierarchySummary | undefined;
@@ -120,6 +123,10 @@ export class CopcPointCloudLayer {
     return this.loadedHierarchy;
   }
 
+  get coordinateTransform(): CopcCoordinateTransformStatus | undefined {
+    return this.coordinateTransformStatus;
+  }
+
   async load(): Promise<CopcPointCloudLayerLoadResult> {
     this.assertNotDestroyed();
 
@@ -130,8 +137,10 @@ export class CopcPointCloudLayer {
       this.assertNotDestroyed();
       this.loadedInspection = inspection;
       this.loadedHierarchy = hierarchy;
+      const coordinateTransform =
+        this.getCoordinateTransformStatus(inspection);
 
-      return { inspection, hierarchy };
+      return { inspection, hierarchy, coordinateTransform };
     });
 
     return this.loadPromise;
@@ -298,6 +307,7 @@ export class CopcPointCloudLayer {
     this.loadedInspection = undefined;
     this.loadedHierarchy = undefined;
     this.coordinateTransforms = undefined;
+    this.coordinateTransformStatus = undefined;
     this.pointRenderer.destroy();
     this.boundsRenderer.destroy();
   }
@@ -305,9 +315,26 @@ export class CopcPointCloudLayer {
   private getCoordinateTransforms(
     inspection: CopcInspection,
   ): CopcCoordinateTransformSet {
-    this.coordinateTransforms ??= this.coordinateTransformFactory(inspection);
+    if (!this.coordinateTransforms) {
+      this.coordinateTransforms = this.coordinateTransformFactory(inspection);
+      this.coordinateTransformStatus = normalizeCoordinateTransformStatus(
+        this.coordinateTransforms,
+      );
+    }
 
     return this.coordinateTransforms;
+  }
+
+  private getCoordinateTransformStatus(
+    inspection: CopcInspection,
+  ): CopcCoordinateTransformStatus {
+    this.getCoordinateTransforms(inspection);
+
+    if (!this.coordinateTransformStatus) {
+      throw new Error("COPC coordinate transform status was not initialized.");
+    }
+
+    return this.coordinateTransformStatus;
   }
 
   private cameraPositionToCopc(
@@ -339,6 +366,16 @@ export class CopcPointCloudLayer {
       throw new Error("CopcPointCloudLayer has been destroyed.");
     }
   }
+}
+
+function normalizeCoordinateTransformStatus(
+  transforms: CopcCoordinateTransformSet,
+): CopcCoordinateTransformStatus {
+  return {
+    kind: transforms.status?.kind ?? "custom",
+    label: transforms.status?.label ?? "Custom coordinate transform",
+    supportsCameraSelection: Boolean(transforms.toCopc),
+  };
 }
 
 function findRequiredNode(

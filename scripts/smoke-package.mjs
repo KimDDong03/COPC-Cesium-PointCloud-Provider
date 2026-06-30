@@ -143,6 +143,7 @@ await writeFile(
   `import {
   CopcPointCloudLayer,
   createDefaultCopcCoordinateTransforms,
+  type CopcCoordinateTransformStatus,
   type CopcInspection,
 } from "copc-viewer";
 import { CopcSource } from "copc-viewer/core";
@@ -155,12 +156,14 @@ const exportedConstructors = [
   createDefaultCopcCoordinateTransforms,
 ] as const;
 const inspection: CopcInspection | undefined = undefined;
+const transformStatus: CopcCoordinateTransformStatus | undefined = undefined;
 const app = document.querySelector<HTMLDivElement>("#app");
 
 if (app) {
   app.textContent = [
     exportedConstructors.map((constructor) => constructor.name).join(", "),
     String(Boolean(inspection)),
+    String(Boolean(transformStatus)),
   ].join(" | ");
 }
 `,

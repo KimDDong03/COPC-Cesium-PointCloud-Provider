@@ -19,7 +19,9 @@ export {
   type CesiumToCopcCoordinateTransform,
   type CopcCoordinate,
   type CopcCoordinateTransformFactory,
+  type CopcCoordinateTransformKind,
   type CopcCoordinateTransformSet,
+  type CopcCoordinateTransformStatus,
   type CopcToCesiumCoordinateTransform,
 } from "./copcCoordinateTransform";
 export { createPointSamplesFromCopc } from "./createPointSamplesFromCopc";
