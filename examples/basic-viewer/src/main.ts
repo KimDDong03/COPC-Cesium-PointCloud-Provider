@@ -1,18 +1,11 @@
 import {
   Cartesian3,
-  Cartographic,
-  Math as CesiumMath,
   Viewer,
 } from "cesium";
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import {
-  CesiumBoundsRenderer,
   CesiumPointRenderer,
-  CopcSource,
-  createCesiumToCopcCoordinateTransform,
-  createPointSamplesFromCopc,
-  selectHierarchyNodesForCamera,
-  suggestHierarchyNode,
+  CopcPointCloudLayer,
   type CopcBounds,
   type CopcHierarchyNodeCameraSelection,
   type CopcHierarchyNodeSuggestion,
@@ -21,14 +14,13 @@ import {
   type CopcInspection,
   type CopcMultiNodePointSampleResult,
   type CopcNodePointSampleResult,
-  type CopcTargetPoint,
   type PointSample,
 } from "copc-viewer";
 import { createHardcodedPointSamples } from "./hardcodedPointSamples";
 import "./style.css";
 
 const elements = getPrototypeElements();
-let currentSource: CopcSource | undefined;
+let currentLayer: CopcPointCloudLayer | undefined;
 let currentInspection: CopcInspection | undefined;
 let currentHierarchy: CopcHierarchySummary | undefined;
 let currentSuggestion: CopcHierarchyNodeSuggestion | undefined;
@@ -49,9 +41,8 @@ const viewer = new Viewer(elements.container, {
 });
 
 const points = createHardcodedPointSamples();
-const renderer = new CesiumPointRenderer(viewer.scene);
-const boundsRenderer = new CesiumBoundsRenderer(viewer.scene);
-renderer.setPoints(points);
+const previewRenderer = new CesiumPointRenderer(viewer.scene);
+previewRenderer.setPoints(points);
 
 viewer.camera.flyTo({
   destination: cameraTargetForPoints(points),
@@ -119,23 +110,21 @@ void inspectUrl(elements.urlInput.value);
 
 async function inspectUrl(url: string): Promise<void> {
   setInspectionLoading();
-  const source = new CopcSource(url);
-  currentSource = source;
+  currentLayer?.clear();
+  previewRenderer.setPoints([]);
+  const layer = new CopcPointCloudLayer(viewer.scene, { url });
+  currentLayer = layer;
   currentInspection = undefined;
   currentHierarchy = undefined;
   currentSuggestion = undefined;
   renderNodeSet.clear();
-  boundsRenderer.clear();
   renderSuggestion(undefined);
   renderRenderSetControls();
 
   try {
-    const [inspection, hierarchy] = await Promise.all([
-      source.inspect(),
-      source.loadHierarchySummary(),
-    ]);
+    const { inspection, hierarchy } = await layer.load();
 
-    if (source !== currentSource) {
+    if (layer !== currentLayer) {
       return;
     }
 
@@ -155,7 +144,7 @@ function setInspectionLoading(): void {
   elements.metadataList.replaceChildren();
   elements.nodeSelect.disabled = true;
   elements.nodeSelect.replaceChildren(new Option("Loading hierarchy...", ""));
-  boundsRenderer.clear();
+  currentLayer?.clear();
   renderSuggestion(undefined);
   renderRenderSetControls();
 }
@@ -167,7 +156,7 @@ function setInspectionError(error: unknown): void {
       : "COPC inspection failed.";
   elements.metadataList.replaceChildren();
   elements.nodeSelect.disabled = true;
-  boundsRenderer.clear();
+  currentLayer?.clear();
   renderSuggestion(undefined);
   renderRenderSetControls();
 }
@@ -262,42 +251,27 @@ elements.nodeSelect.addEventListener("change", () => {
 });
 
 async function renderSelectedHierarchyNode(): Promise<void> {
-  if (!currentInspection || !currentSource || !elements.nodeSelect.value) {
+  if (!currentInspection || !currentLayer || !elements.nodeSelect.value) {
     return;
   }
 
-  const source = currentSource;
-  const inspection = currentInspection;
+  const layer = currentLayer;
   const nodeKey = elements.nodeSelect.value;
-  const selectedNode = findNode(nodeKey);
-
-  if (!selectedNode) {
-    setInspectionError(new Error(`COPC hierarchy node was not found: ${nodeKey}`));
-    return;
-  }
-
   elements.statusText.textContent = `Reading COPC node ${nodeKey}...`;
 
   try {
-    const pointSamples = await source.loadNodePointSamples({ nodeKey });
+    const result = await layer.renderNode(nodeKey);
 
-    if (source !== currentSource) {
+    if (layer !== currentLayer) {
       return;
     }
 
-    const cesiumPoints = createPointSamplesFromCopc(
-      pointSamples.points,
-      inspection,
-    );
-
-    renderer.setPoints(cesiumPoints);
-    boundsRenderer.setBounds(selectedNode.bounds, inspection);
     viewer.camera.flyTo({
-      destination: cameraTargetForPointCloud(cesiumPoints),
+      destination: cameraTargetForPointCloud(result.points),
       duration: 0,
     });
-    renderInspection(inspection, pointSamples, selectedNode);
-    elements.statusText.textContent = `Rendered ${pointSamples.sampledPointCount.toLocaleString()} real COPC points from node ${nodeKey}.`;
+    renderInspection(result.inspection, result.pointSamples, result.node);
+    elements.statusText.textContent = `Rendered ${result.pointSamples.sampledPointCount.toLocaleString()} real COPC points from node ${nodeKey}.`;
     updateSuggestedNode();
     renderRenderSetControls();
   } catch (error) {
@@ -310,73 +284,72 @@ async function renderSelectedNodeSet(): Promise<void> {
 }
 
 async function renderAutomaticNodeSet(): Promise<void> {
-  if (!currentInspection || !currentHierarchy) {
+  if (!currentInspection || !currentHierarchy || !currentLayer) {
     return;
   }
 
-  const selection = selectHierarchyNodesForCamera(currentHierarchy.nodes, {
-    target: cameraPositionToCopc(currentInspection),
-    viewportHeightPixels: viewer.scene.canvas.clientHeight,
-    maxNodes: 4,
-  });
+  const layer = currentLayer;
 
-  if (!selection || selection.nodes.length === 0) {
-    return;
+  try {
+    const result = await layer.renderAutomatic({
+      camera: viewer.camera,
+      maxNodes: 4,
+    });
+
+    if (!result || layer !== currentLayer) {
+      return;
+    }
+
+    renderNodeSet.clear();
+    result.nodes.forEach((node) => renderNodeSet.add(node.key));
+    renderRenderSetControls();
+    viewer.camera.flyTo({
+      destination: cameraTargetForPointCloud(result.points),
+      duration: 0,
+    });
+    renderInspection(
+      result.inspection,
+      undefined,
+      undefined,
+      result.pointSamples,
+      result.cameraSelection,
+    );
+    elements.statusText.textContent = `Auto LOD rendered ${result.pointSamples.sampledPointCount.toLocaleString()} points from ${result.pointSamples.nodeKeys.length.toLocaleString()} COPC nodes.`;
+    updateSuggestedNode();
+    renderRenderSetControls();
+  } catch (error) {
+    setInspectionError(error);
   }
-
-  renderNodeSet.clear();
-  selection.nodes.forEach((node) => renderNodeSet.add(node.key));
-  renderRenderSetControls();
-  await renderNodeKeySet(
-    selection.nodes.map((node) => node.key),
-    selection,
-  );
 }
 
 async function renderNodeKeySet(
   nodeKeys: readonly string[],
-  cameraSelection?: CopcHierarchyNodeCameraSelection,
 ): Promise<void> {
-  if (!currentInspection || !currentSource || nodeKeys.length === 0) {
+  if (!currentInspection || !currentLayer || nodeKeys.length === 0) {
     return;
   }
 
-  const source = currentSource;
-  const inspection = currentInspection;
-  const nodes = nodeKeys.map(findRequiredNode);
+  const layer = currentLayer;
   elements.statusText.textContent = `Reading ${nodeKeys.length.toLocaleString()} COPC nodes...`;
 
   try {
-    const pointSamples = await source.loadNodesPointSamples({ nodeKeys });
+    const result = await layer.renderNodes(nodeKeys);
 
-    if (source !== currentSource) {
+    if (layer !== currentLayer) {
       return;
     }
 
-    const cesiumPoints = createPointSamplesFromCopc(
-      pointSamples.points,
-      inspection,
-    );
-
-    renderer.setPoints(cesiumPoints);
-    boundsRenderer.setBoundsList(
-      nodes.map((node) => node.bounds),
-      inspection,
-    );
     viewer.camera.flyTo({
-      destination: cameraTargetForPointCloud(cesiumPoints),
+      destination: cameraTargetForPointCloud(result.points),
       duration: 0,
     });
     renderInspection(
-      inspection,
+      result.inspection,
       undefined,
       undefined,
-      pointSamples,
-      cameraSelection,
+      result.pointSamples,
     );
-    elements.statusText.textContent = cameraSelection
-      ? `Auto LOD rendered ${pointSamples.sampledPointCount.toLocaleString()} points from ${pointSamples.nodeKeys.length.toLocaleString()} COPC nodes.`
-      : `Rendered ${pointSamples.sampledPointCount.toLocaleString()} points from ${pointSamples.nodeKeys.length.toLocaleString()} COPC nodes.`;
+    elements.statusText.textContent = `Rendered ${result.pointSamples.sampledPointCount.toLocaleString()} points from ${result.pointSamples.nodeKeys.length.toLocaleString()} COPC nodes.`;
     updateSuggestedNode();
     renderRenderSetControls();
   } catch (error) {
@@ -387,15 +360,13 @@ async function renderNodeKeySet(
 function updateSuggestedNode(): void {
   currentSuggestion = undefined;
 
-  if (!currentInspection || !currentHierarchy) {
+  if (!currentInspection || !currentHierarchy || !currentLayer) {
     renderSuggestion(undefined);
     return;
   }
 
   try {
-    currentSuggestion = suggestHierarchyNode(currentHierarchy.nodes, {
-      target: cameraPositionToCopc(currentInspection),
-    });
+    currentSuggestion = currentLayer.suggestNodeForCamera(viewer.camera);
     renderSuggestion(currentSuggestion);
   } catch (error) {
     elements.suggestionText.textContent =
@@ -404,17 +375,6 @@ function updateSuggestedNode(): void {
         : "Suggested node unavailable.";
     elements.applySuggestionButton.disabled = true;
   }
-}
-
-function cameraPositionToCopc(inspection: CopcInspection): CopcTargetPoint {
-  const cartographic = Cartographic.fromCartesian(viewer.camera.positionWC);
-  const transform = createCesiumToCopcCoordinateTransform(inspection);
-
-  return transform(
-    CesiumMath.toDegrees(cartographic.longitude),
-    CesiumMath.toDegrees(cartographic.latitude),
-    cartographic.height,
-  );
 }
 
 function renderSuggestion(
@@ -430,20 +390,6 @@ function renderSuggestion(
   elements.suggestionText.textContent = `Suggested node: ${suggestion.node.key} (${formatSuggestionDistance(suggestion.distanceToBounds)})`;
   elements.applySuggestionButton.disabled = isSelected;
   renderRenderSetControls();
-}
-
-function findNode(nodeKey: string): CopcHierarchyNodeSummary | undefined {
-  return currentHierarchy?.nodes.find((node) => node.key === nodeKey);
-}
-
-function findRequiredNode(nodeKey: string): CopcHierarchyNodeSummary {
-  const node = findNode(nodeKey);
-
-  if (!node) {
-    throw new Error(`COPC hierarchy node was not found: ${nodeKey}`);
-  }
-
-  return node;
 }
 
 function addNodeToRenderSet(nodeKey: string): void {

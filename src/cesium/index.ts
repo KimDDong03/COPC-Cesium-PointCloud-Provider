@@ -1,3 +1,14 @@
+export {
+  CopcPointCloudLayer,
+  type CopcPointCloudLayerAutomaticRenderOptions,
+  type CopcPointCloudLayerAutomaticRenderResult,
+  type CopcPointCloudLayerLoadResult,
+  type CopcPointCloudLayerNodeRenderResult,
+  type CopcPointCloudLayerNodesRenderResult,
+  type CopcPointCloudLayerOptions,
+  type CopcPointCloudLayerRenderNodeOptions,
+  type CopcPointCloudLayerRenderNodesOptions,
+} from "./CopcPointCloudLayer";
 export { CesiumBoundsRenderer } from "./CesiumBoundsRenderer";
 export { CesiumPointRenderer } from "./CesiumPointRenderer";
 export {

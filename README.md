@@ -31,6 +31,7 @@ Open `http://localhost:3000`.
 
 The runnable prototype lives in `examples/basic-viewer`. The root `src` folder contains reusable COPC and Cesium integration code used by that example.
 Reusable source entry points are `src/index.ts`, `src/core/index.ts`, and `src/cesium/index.ts`; package exports expose them as `copc-viewer`, `copc-viewer/core`, and `copc-viewer/cesium`.
+`CopcPointCloudLayer` is the first thin Cesium-facing API: it owns a `CopcSource`, point renderer, bounds renderer, and simple camera-based node rendering helpers.
 
 The default example URL loads the public Autzen COPC sample, reads the root hierarchy node, samples up to 5,000 points, and renders them in CesiumJS.
 The hierarchy node selector lists nodes from the root hierarchy page and lets the example render one selected node at a time.
@@ -39,6 +40,18 @@ The example also computes the selected node bounds and renders a yellow debug bo
 It can suggest the nearest loaded hierarchy node to the current camera position and apply that suggestion on demand.
 The manual render set can combine multiple hierarchy nodes and render their sampled points together.
 The Auto LOD button selects a few nearby root-hierarchy nodes from the current camera position and viewport height, then renders them through the same multi-node path.
+
+## API Sketch
+
+```ts
+import { CopcPointCloudLayer } from "copc-viewer";
+
+const layer = new CopcPointCloudLayer(viewer.scene, { url });
+const { hierarchy } = await layer.load();
+
+await layer.renderNode(hierarchy.nodes[0].key);
+await layer.renderAutomatic({ camera: viewer.camera, maxNodes: 4 });
+```
 
 ## Planned Shape
 
