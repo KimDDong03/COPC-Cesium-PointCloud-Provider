@@ -6,7 +6,6 @@ import "cesium/Build/Cesium/Widgets/widgets.css";
 import {
   CesiumPointRenderer,
   CopcPointCloudLayer,
-  createDefaultCopcCoordinateTransforms,
   type CopcBounds,
   type CopcCoordinateTransformStatus,
   type CopcHierarchyNodeCameraSelection,
@@ -20,8 +19,10 @@ import {
 } from "copc-viewer";
 import { createHardcodedPointSamples } from "./hardcodedPointSamples";
 import {
+  createCustomCopcSource,
   DEFAULT_SAMPLE_COPC_SOURCE,
   SAMPLE_COPC_SOURCES,
+  type CopcSourceConfig,
   type SampleCopcSource,
 } from "./sampleCopcSources";
 import "./style.css";
@@ -34,7 +35,7 @@ let currentInspection: CopcInspection | undefined;
 let currentHierarchy: CopcHierarchySummary | undefined;
 let currentCoordinateTransform: CopcCoordinateTransformStatus | undefined;
 let currentSuggestion: CopcHierarchyNodeSuggestion | undefined;
-let currentSourceLabel: string = DEFAULT_SAMPLE_COPC_SOURCE.label;
+let currentSource: CopcSourceConfig = DEFAULT_SAMPLE_COPC_SOURCE;
 const renderNodeSet = new Set<string>();
 
 const viewer = new Viewer(elements.container, {
@@ -76,7 +77,7 @@ function cameraTargetForPoints(pointSamples: readonly PointSample[]): Cartesian3
 
 elements.form.addEventListener("submit", (event) => {
   event.preventDefault();
-  void inspectUrl(elements.urlInput.value);
+  void inspectSource(createSourceConfigFromUrl(elements.urlInput.value));
 });
 
 elements.sampleSelect.addEventListener("change", () => {
@@ -88,7 +89,7 @@ elements.sampleSelect.addEventListener("change", () => {
   }
 
   elements.urlInput.value = sample.url;
-  void inspectUrl(sample.url);
+  void inspectSource(sample);
 });
 
 elements.urlInput.addEventListener("input", () => {
@@ -134,27 +135,27 @@ viewer.camera.moveEnd.addEventListener(() => {
 });
 
 populateSampleSelect();
-void inspectUrl(DEFAULT_SAMPLE_COPC_SOURCE.url);
+void inspectSource(DEFAULT_SAMPLE_COPC_SOURCE);
 
-async function inspectUrl(url: string): Promise<void> {
-  const normalizedUrl = url.trim();
+async function inspectSource(source: CopcSourceConfig): Promise<void> {
+  const activeSource = normalizeSourceConfig(source);
   const previousLayer = currentLayer;
   currentLayer = undefined;
   previousLayer?.destroy();
   setInspectionLoading();
   previewRenderer.clear();
   const layer = new CopcPointCloudLayer(viewer.scene, {
-    url: normalizedUrl,
-    coordinateTransforms: createDefaultCopcCoordinateTransforms,
+    url: activeSource.url,
+    coordinateTransforms: activeSource.coordinateTransforms,
   });
   currentLayer = layer;
   currentInspection = undefined;
   currentHierarchy = undefined;
   currentCoordinateTransform = undefined;
   currentSuggestion = undefined;
-  currentSourceLabel = formatActiveSourceLabel(normalizedUrl);
-  elements.urlInput.value = normalizedUrl;
-  syncSampleSelectWithUrl(normalizedUrl);
+  currentSource = activeSource;
+  elements.urlInput.value = activeSource.url;
+  syncSampleSelectWithUrl(activeSource.url);
   renderNodeSet.clear();
   renderSuggestion(undefined);
   renderRenderSetControls();
@@ -217,7 +218,8 @@ function renderInspection(
   elements.statusText.textContent = "COPC metadata loaded.";
   elements.metadataList.replaceChildren(
     metadataRow("Point count", inspection.pointCount.toLocaleString()),
-    metadataRow("Source preset", currentSourceLabel),
+    metadataRow("Source preset", currentSource.label),
+    metadataRow("Source note", currentSource.description),
     metadataRow("LAS version", inspection.lasVersion),
     metadataRow(
       "Point format",
@@ -532,10 +534,18 @@ function findSampleByUrl(url: string): SampleCopcSource | undefined {
   return SAMPLE_COPC_SOURCES.find((sample) => sample.url === url);
 }
 
-function formatActiveSourceLabel(url: string): string {
-  const sample = findSampleByUrl(url);
+function createSourceConfigFromUrl(url: string): CopcSourceConfig {
+  const normalizedUrl = url.trim();
+  const sample = findSampleByUrl(normalizedUrl);
 
-  return sample ? sample.label : "Custom URL";
+  return sample ?? createCustomCopcSource(normalizedUrl);
+}
+
+function normalizeSourceConfig(source: CopcSourceConfig): CopcSourceConfig {
+  return {
+    ...source,
+    url: source.url.trim(),
+  };
 }
 
 function populateNodeSelect(hierarchy: CopcHierarchySummary): void {

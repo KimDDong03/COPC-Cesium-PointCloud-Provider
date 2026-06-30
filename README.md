@@ -50,7 +50,7 @@ Reusable source entry points are `src/index.ts`, `src/core/index.ts`, and `src/c
 `CopcPointCloudLayer` is the first thin Cesium-facing API: it owns a `CopcSource`, point renderer, bounds renderer, and simple camera-based node rendering helpers.
 
 The default example URL loads the public Autzen COPC sample, reads the root hierarchy node, samples up to 5,000 points, and renders them in CesiumJS.
-The example keeps sample COPC URLs in a small preset list while still allowing direct custom URL entry.
+The example keeps sample COPC URLs and their transform factories in a small preset list while still allowing direct custom URL entry.
 The hierarchy node selector lists nodes from the root hierarchy page and lets the example render one selected node at a time.
 `CopcSource` keeps the opened COPC metadata, hierarchy page, and sampled node point data in memory for the active URL.
 The example also computes the selected node bounds and renders a yellow debug bounding box in CesiumJS.
