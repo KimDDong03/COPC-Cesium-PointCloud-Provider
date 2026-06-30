@@ -6,6 +6,7 @@ import "cesium/Build/Cesium/Widgets/widgets.css";
 import {
   CesiumPointRenderer,
   CopcPointCloudLayer,
+  createDefaultCopcCoordinateTransforms,
   type CopcBounds,
   type CopcHierarchyNodeCameraSelection,
   type CopcHierarchyNodeSuggestion,
@@ -114,7 +115,10 @@ async function inspectUrl(url: string): Promise<void> {
   previousLayer?.destroy();
   setInspectionLoading();
   previewRenderer.clear();
-  const layer = new CopcPointCloudLayer(viewer.scene, { url });
+  const layer = new CopcPointCloudLayer(viewer.scene, {
+    url,
+    coordinateTransforms: createDefaultCopcCoordinateTransforms,
+  });
   currentLayer = layer;
   currentInspection = undefined;
   currentHierarchy = undefined;

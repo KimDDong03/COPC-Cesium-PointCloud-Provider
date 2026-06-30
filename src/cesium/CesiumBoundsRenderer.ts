@@ -6,7 +6,10 @@ import {
   type Scene,
 } from "cesium";
 import type { CopcBounds, CopcInspection } from "../core/copc/CopcInspection";
-import { createCopcCoordinateTransform } from "./copcCoordinateTransform";
+import {
+  createCopcCoordinateTransform,
+  type CopcToCesiumCoordinateTransform,
+} from "./copcCoordinateTransform";
 
 const EDGE_INDEXES = [
   [0, 1],
@@ -33,15 +36,24 @@ export class CesiumBoundsRenderer {
     this.collection = scene.primitives.add(new PolylineCollection());
   }
 
-  setBounds(bounds: CopcBounds, inspection: CopcInspection): void {
-    this.setBoundsList([bounds], inspection);
+  setBounds(
+    bounds: CopcBounds,
+    inspection: CopcInspection,
+    coordinateTransform?: CopcToCesiumCoordinateTransform,
+  ): void {
+    this.setBoundsList([bounds], inspection, coordinateTransform);
   }
 
-  setBoundsList(boundsList: readonly CopcBounds[], inspection: CopcInspection): void {
+  setBoundsList(
+    boundsList: readonly CopcBounds[],
+    inspection: CopcInspection,
+    coordinateTransform?: CopcToCesiumCoordinateTransform,
+  ): void {
     this.assertNotDestroyed();
     this.clear();
 
-    const transform = createCopcCoordinateTransform(inspection);
+    const transform =
+      coordinateTransform ?? createCopcCoordinateTransform(inspection);
     for (const bounds of boundsList) {
       this.addBounds(bounds, transform);
     }
@@ -67,7 +79,7 @@ export class CesiumBoundsRenderer {
 
   private addBounds(
     bounds: CopcBounds,
-    transform: ReturnType<typeof createCopcCoordinateTransform>,
+    transform: CopcToCesiumCoordinateTransform,
   ): void {
     const corners = createBoundsCorners(bounds).map(([x, y, z]) => {
       const coordinate = transform(x, y, z);

@@ -27,13 +27,18 @@ import {
 import type { PointSample } from "../core/PointSample";
 import { CesiumBoundsRenderer } from "./CesiumBoundsRenderer";
 import { CesiumPointRenderer } from "./CesiumPointRenderer";
-import { createCesiumToCopcCoordinateTransform } from "./copcCoordinateTransform";
+import {
+  createDefaultCopcCoordinateTransforms,
+  type CopcCoordinateTransformFactory,
+  type CopcCoordinateTransformSet,
+} from "./copcCoordinateTransform";
 import { createPointSamplesFromCopc } from "./createPointSamplesFromCopc";
 
 export interface CopcPointCloudLayerOptions {
   readonly url: string;
   readonly maxPointCountPerNode?: number;
   readonly showBounds?: boolean;
+  readonly coordinateTransforms?: CopcCoordinateTransformFactory;
 }
 
 export interface CopcPointCloudLayerLoadResult {
@@ -89,6 +94,8 @@ export class CopcPointCloudLayer {
   private readonly boundsRenderer: CesiumBoundsRenderer;
   private readonly defaultMaxPointCountPerNode: number | undefined;
   private readonly defaultShowBounds: boolean;
+  private readonly coordinateTransformFactory: CopcCoordinateTransformFactory;
+  private coordinateTransforms: CopcCoordinateTransformSet | undefined;
   private loadPromise: Promise<CopcPointCloudLayerLoadResult> | undefined;
   private loadedInspection: CopcInspection | undefined;
   private loadedHierarchy: CopcHierarchySummary | undefined;
@@ -101,6 +108,8 @@ export class CopcPointCloudLayer {
     this.boundsRenderer = new CesiumBoundsRenderer(scene);
     this.defaultMaxPointCountPerNode = options.maxPointCountPerNode;
     this.defaultShowBounds = options.showBounds ?? true;
+    this.coordinateTransformFactory =
+      options.coordinateTransforms ?? createDefaultCopcCoordinateTransforms;
   }
 
   get inspection(): CopcInspection | undefined {
@@ -145,11 +154,20 @@ export class CopcPointCloudLayer {
     });
     this.assertNotDestroyed();
 
-    const points = createPointSamplesFromCopc(pointSamples.points, inspection);
+    const coordinateTransforms = this.getCoordinateTransforms(inspection);
+    const points = createPointSamplesFromCopc(
+      pointSamples.points,
+      inspection,
+      coordinateTransforms.toCesium,
+    );
 
     this.pointRenderer.setPoints(points);
     if (this.shouldShowBounds(options.showBounds)) {
-      this.boundsRenderer.setBounds(node.bounds, inspection);
+      this.boundsRenderer.setBounds(
+        node.bounds,
+        inspection,
+        coordinateTransforms.toCesium,
+      );
     } else {
       this.boundsRenderer.clear();
     }
@@ -182,13 +200,19 @@ export class CopcPointCloudLayer {
     });
     this.assertNotDestroyed();
 
-    const points = createPointSamplesFromCopc(pointSamples.points, inspection);
+    const coordinateTransforms = this.getCoordinateTransforms(inspection);
+    const points = createPointSamplesFromCopc(
+      pointSamples.points,
+      inspection,
+      coordinateTransforms.toCesium,
+    );
 
     this.pointRenderer.setPoints(points);
     if (this.shouldShowBounds(options.showBounds)) {
       this.boundsRenderer.setBoundsList(
         nodes.map((node) => node.bounds),
         inspection,
+        coordinateTransforms.toCesium,
       );
     } else {
       this.boundsRenderer.clear();
@@ -273,8 +297,17 @@ export class CopcPointCloudLayer {
     this.destroyed = true;
     this.loadedInspection = undefined;
     this.loadedHierarchy = undefined;
+    this.coordinateTransforms = undefined;
     this.pointRenderer.destroy();
     this.boundsRenderer.destroy();
+  }
+
+  private getCoordinateTransforms(
+    inspection: CopcInspection,
+  ): CopcCoordinateTransformSet {
+    this.coordinateTransforms ??= this.coordinateTransformFactory(inspection);
+
+    return this.coordinateTransforms;
   }
 
   private cameraPositionToCopc(
@@ -282,7 +315,13 @@ export class CopcPointCloudLayer {
     inspection: CopcInspection,
   ): CopcTargetPoint {
     const cartographic = Cartographic.fromCartesian(camera.positionWC);
-    const transform = createCesiumToCopcCoordinateTransform(inspection);
+    const transform = this.getCoordinateTransforms(inspection).toCopc;
+
+    if (!transform) {
+      throw new Error(
+        "Camera-based COPC node selection requires coordinateTransforms to provide toCopc.",
+      );
+    }
 
     return transform(
       CesiumMath.toDegrees(cartographic.longitude),

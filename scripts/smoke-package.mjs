@@ -140,7 +140,11 @@ await writeFile(
 
 await writeFile(
   path.join(consumerRoot, "src", "main.ts"),
-  `import { CopcPointCloudLayer, type CopcInspection } from "copc-viewer";
+  `import {
+  CopcPointCloudLayer,
+  createDefaultCopcCoordinateTransforms,
+  type CopcInspection,
+} from "copc-viewer";
 import { CopcSource } from "copc-viewer/core";
 import { CesiumPointRenderer } from "copc-viewer/cesium";
 
@@ -148,6 +152,7 @@ const exportedConstructors = [
   CopcPointCloudLayer,
   CopcSource,
   CesiumPointRenderer,
+  createDefaultCopcCoordinateTransforms,
 ] as const;
 const inspection: CopcInspection | undefined = undefined;
 const app = document.querySelector<HTMLDivElement>("#app");

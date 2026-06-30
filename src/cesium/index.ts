@@ -12,9 +12,14 @@ export {
 export { CesiumBoundsRenderer } from "./CesiumBoundsRenderer";
 export { CesiumPointRenderer } from "./CesiumPointRenderer";
 export {
+  createDefaultCopcCoordinateTransforms,
   createCesiumToCopcCoordinateTransform,
   createCopcCoordinateTransform,
   type CesiumCoordinate,
+  type CesiumToCopcCoordinateTransform,
   type CopcCoordinate,
+  type CopcCoordinateTransformFactory,
+  type CopcCoordinateTransformSet,
+  type CopcToCesiumCoordinateTransform,
 } from "./copcCoordinateTransform";
 export { createPointSamplesFromCopc } from "./createPointSamplesFromCopc";

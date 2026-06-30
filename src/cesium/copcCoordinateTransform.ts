@@ -19,9 +19,39 @@ export interface CopcCoordinate {
   readonly z: number;
 }
 
+export type CopcToCesiumCoordinateTransform = (
+  x: number,
+  y: number,
+  z: number,
+) => CesiumCoordinate;
+
+export type CesiumToCopcCoordinateTransform = (
+  longitudeDegrees: number,
+  latitudeDegrees: number,
+  heightMeters: number,
+) => CopcCoordinate;
+
+export interface CopcCoordinateTransformSet {
+  readonly toCesium: CopcToCesiumCoordinateTransform;
+  readonly toCopc?: CesiumToCopcCoordinateTransform;
+}
+
+export type CopcCoordinateTransformFactory = (
+  inspection: CopcInspection,
+) => CopcCoordinateTransformSet;
+
+export function createDefaultCopcCoordinateTransforms(
+  inspection: CopcInspection,
+): CopcCoordinateTransformSet {
+  return {
+    toCesium: createCopcCoordinateTransform(inspection),
+    toCopc: createCesiumToCopcCoordinateTransform(inspection),
+  };
+}
+
 export function createCopcCoordinateTransform(
   inspection: CopcInspection,
-): (x: number, y: number, z: number) => CesiumCoordinate {
+): CopcToCesiumCoordinateTransform {
   const horizontalTransform = createHorizontalTransform(inspection);
 
   return (x, y, z) => {
@@ -37,11 +67,7 @@ export function createCopcCoordinateTransform(
 
 export function createCesiumToCopcCoordinateTransform(
   inspection: CopcInspection,
-): (
-  longitudeDegrees: number,
-  latitudeDegrees: number,
-  heightMeters: number,
-) => CopcCoordinate {
+): CesiumToCopcCoordinateTransform {
   const horizontalTransform = createInverseHorizontalTransform(inspection);
 
   return (longitudeDegrees, latitudeDegrees, heightMeters) => {

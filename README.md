@@ -60,9 +60,15 @@ The Auto LOD button selects a few nearby root-hierarchy nodes from the current c
 ## API Sketch
 
 ```ts
-import { CopcPointCloudLayer } from "copc-viewer";
+import {
+  CopcPointCloudLayer,
+  createDefaultCopcCoordinateTransforms,
+} from "copc-viewer";
 
-const layer = new CopcPointCloudLayer(viewer.scene, { url });
+const layer = new CopcPointCloudLayer(viewer.scene, {
+  url,
+  coordinateTransforms: createDefaultCopcCoordinateTransforms,
+});
 const { hierarchy } = await layer.load();
 
 await layer.renderNode(hierarchy.nodes[0].key);
@@ -70,6 +76,12 @@ await layer.renderAutomatic({ camera: viewer.camera, maxNodes: 4 });
 
 layer.destroy();
 ```
+
+## Coordinate Transforms
+
+`core` keeps COPC point samples in their source XYZ coordinates. Cesium-facing code converts those coordinates through a `coordinateTransforms` hook on `CopcPointCloudLayer`.
+
+The prototype default transform supports geographic coordinates and the public Autzen EPSG:2992 sample. Other CRS values should pass a custom transform factory that returns `toCesium`; camera-based node suggestion and Auto LOD also require `toCopc`.
 
 ## Planned Shape
 

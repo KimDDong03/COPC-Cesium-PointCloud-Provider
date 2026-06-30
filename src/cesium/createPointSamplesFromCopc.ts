@@ -1,16 +1,19 @@
 import type { CopcInspection } from "../core/copc/CopcInspection";
 import type { CopcPointDataSample } from "../core/copc/CopcPointDataSample";
 import type { PointSample } from "../core/PointSample";
-import { createCopcCoordinateTransform } from "./copcCoordinateTransform";
+import {
+  createCopcCoordinateTransform,
+  type CopcToCesiumCoordinateTransform,
+} from "./copcCoordinateTransform";
 
 export function createPointSamplesFromCopc(
   points: readonly CopcPointDataSample[],
   inspection: CopcInspection,
+  coordinateTransform: CopcToCesiumCoordinateTransform =
+    createCopcCoordinateTransform(inspection),
 ): PointSample[] {
-  const transform = createCopcCoordinateTransform(inspection);
-
   return points.map((point) => {
-    const coordinate = transform(point.x, point.y, point.z);
+    const coordinate = coordinateTransform(point.x, point.y, point.z);
 
     return {
       longitudeDegrees: coordinate.longitudeDegrees,
