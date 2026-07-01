@@ -225,7 +225,7 @@ new CopcPointCloudLayer(viewer.scene, {
   url,
   createPointRenderer: (scene) =>
     new CesiumPointPrimitiveRenderer(scene, {
-      pixelSize: 3,
+      pixelSize: 2,
       outlineWidth: 0,
     }),
 });
@@ -242,7 +242,7 @@ new CopcPointCloudLayer(viewer.scene, {
   url,
   createPointRenderer: (scene) =>
     new CesiumBufferPointRenderer(scene, {
-      pointSize: 3,
+      pointSize: 2,
       outlineWidth: 0,
     }),
 });

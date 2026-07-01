@@ -38,36 +38,46 @@ import {
 import "./style.css";
 
 const CUSTOM_SAMPLE_OPTION_VALUE = "custom";
-const AUTO_LOD_MAX_HIERARCHY_PAGES = 2;
-const AUTO_LOD_MAX_NODE_POINT_DATA_LENGTH = 1_000_000;
-const AUTO_LOD_MAX_TOTAL_POINT_DATA_LENGTH = 2_000_000;
-const AUTO_LOD_MAX_RENDERED_POINT_COUNT = 20_000;
-const CAMERA_STREAM_MAX_HIERARCHY_PAGES = 1;
-const CAMERA_STREAM_MAX_NODES = 2;
-const CAMERA_STREAM_MAX_DEPTH = 2;
-const CAMERA_STREAM_MIN_RENDERED_POINT_COUNT = 1_000;
-const CAMERA_STREAM_SLOW_RENDER_MILLISECONDS = 32;
-const CAMERA_STREAM_SLOW_TOTAL_MILLISECONDS = 50;
-const CAMERA_STREAM_RECOVERY_TOTAL_MILLISECONDS = 24;
-const CAMERA_STREAM_RECOVERY_RENDER_MILLISECONDS = 18;
+const AUTO_LOD_MAX_HIERARCHY_PAGES = 3;
+const AUTO_LOD_MAX_NODES = 24;
+const AUTO_LOD_MAX_NODE_POINT_DATA_LENGTH = 1_500_000;
+const AUTO_LOD_MAX_TOTAL_POINT_DATA_LENGTH = 12_000_000;
+const CAMERA_STREAM_MAX_HIERARCHY_PAGES = 3;
+const CAMERA_STREAM_MAX_NODES = 16;
+const CAMERA_STREAM_MAX_DEPTH = 3;
+const CAMERA_STREAM_MIN_RENDERED_POINT_COUNT = 10_000;
+const CAMERA_STREAM_SLOW_RENDER_MILLISECONDS = 80;
+const CAMERA_STREAM_SLOW_TOTAL_MILLISECONDS = 140;
+const CAMERA_STREAM_RECOVERY_TOTAL_MILLISECONDS = 70;
+const CAMERA_STREAM_RECOVERY_RENDER_MILLISECONDS = 45;
 const CAMERA_STREAM_RECOVERY_STREAK = 3;
 const RENDER_QUALITY_SETTINGS = {
   preview: {
-    maxPointCountPerNode: 5_000,
-    cameraStreamMaxRenderedPointCount: 5_000,
-    pointPixelSize: 5,
-    pointOutlineWidth: 0,
-  },
-  balanced: {
     maxPointCountPerNode: 20_000,
     cameraStreamMaxRenderedPointCount: 10_000,
+    autoLodMaxRenderedPointCount: 20_000,
     pointPixelSize: 3,
     pointOutlineWidth: 0,
   },
-  detail: {
-    maxPointCountPerNode: 50_000,
-    cameraStreamMaxRenderedPointCount: 25_000,
+  balanced: {
+    maxPointCountPerNode: 120_000,
+    cameraStreamMaxRenderedPointCount: 80_000,
+    autoLodMaxRenderedPointCount: 160_000,
     pointPixelSize: 2,
+    pointOutlineWidth: 0,
+  },
+  detail: {
+    maxPointCountPerNode: 250_000,
+    cameraStreamMaxRenderedPointCount: 150_000,
+    autoLodMaxRenderedPointCount: 250_000,
+    pointPixelSize: 1,
+    pointOutlineWidth: 0,
+  },
+  ultra: {
+    maxPointCountPerNode: 500_000,
+    cameraStreamMaxRenderedPointCount: 250_000,
+    autoLodMaxRenderedPointCount: 400_000,
+    pointPixelSize: 1,
     pointOutlineWidth: 0,
   },
 } as const;
@@ -474,6 +484,13 @@ async function inspectSource(source: CopcSourceConfig): Promise<void> {
     renderInspection(inspection);
     updateSuggestedNode();
     await renderSelectedHierarchyNode();
+
+    if (
+      layer === currentLayer &&
+      currentCoordinateTransform?.supportsCameraSelection
+    ) {
+      await renderAutomaticNodeSet();
+    }
   } catch (error) {
     if (layer !== currentLayer) {
       return;
@@ -746,11 +763,12 @@ async function renderAutomaticNodeSet(): Promise<void> {
     const result = await layer.renderAutomatic({
       camera: viewer.camera,
       expandHierarchy: true,
-      maxNodes: 4,
+      maxNodes: AUTO_LOD_MAX_NODES,
       maxHierarchyPages: AUTO_LOD_MAX_HIERARCHY_PAGES,
       maxNodePointDataLength: AUTO_LOD_MAX_NODE_POINT_DATA_LENGTH,
       maxTotalPointDataLength: AUTO_LOD_MAX_TOTAL_POINT_DATA_LENGTH,
-      maxRenderedPointCount: AUTO_LOD_MAX_RENDERED_POINT_COUNT,
+      maxRenderedPointCount:
+        readRenderQualitySettings().autoLodMaxRenderedPointCount,
     });
 
     if (!result || layer !== currentLayer) {
@@ -1595,16 +1613,22 @@ function formatRendererPayload(stats: CopcPointCloudLayerRenderStats): string {
 
 function formatRenderQuality(quality: RenderQuality): string {
   const settings = RENDER_QUALITY_SETTINGS[quality];
+  const autoLodPointCount =
+    settings.autoLodMaxRenderedPointCount.toLocaleString();
 
   if (quality === "preview") {
-    return `Fast preview (${settings.maxPointCountPerNode.toLocaleString()} pts/node, ${settings.pointPixelSize}px points)`;
+    return `Fast preview (${autoLodPointCount} Auto LOD pts, ${settings.pointPixelSize}px points)`;
   }
 
   if (quality === "detail") {
-    return `High detail (${settings.maxPointCountPerNode.toLocaleString()} pts/node, ${settings.pointPixelSize}px points)`;
+    return `High detail (${autoLodPointCount} Auto LOD pts, ${settings.pointPixelSize}px points)`;
   }
 
-  return `Balanced detail (${settings.maxPointCountPerNode.toLocaleString()} pts/node, ${settings.pointPixelSize}px points)`;
+  if (quality === "ultra") {
+    return `Ultra density (${autoLodPointCount} Auto LOD pts, ${settings.pointPixelSize}px points)`;
+  }
+
+  return `Balanced detail (${autoLodPointCount} Auto LOD pts, ${settings.pointPixelSize}px points)`;
 }
 
 function formatCameraStreamBudget(): string {

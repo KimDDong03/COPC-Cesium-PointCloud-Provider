@@ -153,7 +153,8 @@ function createSmokeFlow(baseUrl) {
     pageErrors.push(error.message);
   });
 
-  const expectedStatus = "Rendered 20,000 real COPC points";
+  const expectedStatus = "Auto LOD rendered";
+  const minDefaultAutoLodPointCount = 100_000;
   const sofiUrl = "https://s3.amazonaws.com/hobu-lidar/sofi.copc.laz";
   const sofiDefinition =
     "+proj=utm +zone=11 +datum=WGS84 +units=m +no_defs +type=crs";
@@ -172,6 +173,12 @@ function createSmokeFlow(baseUrl) {
 
   async function waitForRenderedStatus() {
     await waitForStatusIncludes(expectedStatus);
+  }
+
+  function parsePointCount(text) {
+    const match = text.match(/(?:rendered\\s+)?([\\d,]+)\\s+(?:pts|points)/i);
+
+    return match ? Number(match[1].replaceAll(",", "")) : 0;
   }
 
   async function waitForStatusIncludes(statusText) {
@@ -215,8 +222,8 @@ function createSmokeFlow(baseUrl) {
   primitiveRendererTiming = (await metadataValue("Renderer timing")) ?? "";
   primitiveRendererPayload = (await metadataValue("Renderer payload")) ?? "";
   await check(
-    async () => primitiveRendererTiming.includes("20,000 pts"),
-    "Default renderer timing did not report the rendered point count.",
+    async () => parsePointCount(primitiveRendererTiming) >= minDefaultAutoLodPointCount,
+    "Default renderer timing did not report the upgraded Auto LOD point count.",
   );
   await check(
     async () => primitiveRendererPayload.includes("estimated coordinate/color payload"),
@@ -238,8 +245,8 @@ function createSmokeFlow(baseUrl) {
     "Experimental buffer point renderer was not reported.",
   );
   await check(
-    async () => bufferRendererTiming.includes("20,000 pts"),
-    "Buffer renderer timing did not report the rendered point count.",
+    async () => parsePointCount(bufferRendererTiming) >= minDefaultAutoLodPointCount,
+    "Buffer renderer timing did not report the upgraded Auto LOD point count.",
   );
   await check(
     async () => bufferRendererPayload.includes("estimated coordinate/color payload"),
@@ -310,7 +317,7 @@ function createSmokeFlow(baseUrl) {
   await check(
     async () =>
       (await page.locator("#copc-status").textContent())?.includes(expectedStatus),
-    "Custom URL did not render the expected COPC point sample count.",
+    "Custom URL did not render the expected COPC Auto LOD result.",
   );
   await check(
     async () => (await page.locator("canvas").count()) > 0,
