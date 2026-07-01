@@ -26,6 +26,7 @@ const smoothnessSampleCaseById = {
     sampleId: "autzen-classified",
     expectedSourcePreset: "Autzen classified",
     expectedCoordinateTransformText: "EPSG:2992",
+    expectedMinSelectedDepth: 2,
   },
   "sofi-stadium": {
     id: "sofi-stadium",
@@ -34,6 +35,7 @@ const smoothnessSampleCaseById = {
     sampleId: "sofi-stadium",
     expectedSourcePreset: "SoFi Stadium",
     expectedCoordinateTransformText: "EPSG:32611",
+    expectedMinSelectedDepth: 2,
   },
   "custom-sofi": {
     id: "custom-sofi",
@@ -45,6 +47,7 @@ const smoothnessSampleCaseById = {
       "+proj=utm +zone=11 +datum=WGS84 +units=m +no_defs +type=crs",
     expectedSourcePreset: "Custom URL",
     expectedCoordinateTransformText: "EPSG:32611 to EPSG:4326",
+    expectedMinSelectedDepth: 2,
   },
 };
 const benchmarkSampleCases = readSampleCasesEnv(
@@ -67,6 +70,10 @@ const benchmarkCameraSteps = readPositiveIntegerEnv(
 const benchmarkMoveMeters = readPositiveIntegerEnv(
   "COPC_SMOOTHNESS_MOVE_METERS",
   25,
+);
+const benchmarkMinSelectedDepthOverride = readNonNegativeIntegerEnv(
+  "COPC_SMOOTHNESS_MIN_SELECTED_DEPTH",
+  undefined,
 );
 
 if (benchmarkMaxPointCountPerNode < Math.max(...benchmarkStreamPointBudgets)) {
@@ -111,6 +118,22 @@ function readPositiveIntegerListEnv(name, fallback) {
   }
 
   return [...new Set(values)];
+}
+
+function readNonNegativeIntegerEnv(name, fallback) {
+  const rawValue = process.env[name];
+
+  if (!rawValue) {
+    return fallback;
+  }
+
+  const value = Number(rawValue);
+
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative integer.`);
+  }
+
+  return value;
 }
 
 function readSampleCasesEnv(name, fallbackIds) {
@@ -323,6 +346,7 @@ function createSmoothnessFlow(
   durationMilliseconds,
   cameraSteps,
   moveMeters,
+  minSelectedDepthOverride,
 ) {
   return `async (page) => {
   const maxPointCountPerNode = ${JSON.stringify(maxPointCountPerNode)};
@@ -332,6 +356,7 @@ function createSmoothnessFlow(
   const durationMilliseconds = ${JSON.stringify(durationMilliseconds)};
   const cameraSteps = ${JSON.stringify(cameraSteps)};
   const moveMeters = ${JSON.stringify(moveMeters)};
+  const minSelectedDepthOverride = ${JSON.stringify(minSelectedDepthOverride)};
   const failures = [];
   const consoleProblems = [];
   const pageErrors = [];
@@ -520,6 +545,7 @@ function createSmoothnessFlow(
       sourcePreset: loadedSourcePreset,
       coordinateTransform: loadedCoordinateTransform,
       pointRenderer: await metadataValue("Point renderer"),
+      expectedMinSelectedDepth: sampleCase.expectedMinSelectedDepth,
     };
   }
 
@@ -682,6 +708,18 @@ function createSmoothnessFlow(
 
     if (!cameraStreamDiagnostics) {
       failures.push(\`run \${runIndex} did not expose camera stream diagnostics.\`);
+    } else {
+      const expectedMinSelectedDepth =
+        minSelectedDepthOverride ?? sampleSnapshot.expectedMinSelectedDepth;
+
+      if (
+        expectedMinSelectedDepth !== undefined &&
+        cameraStreamDiagnostics.selectedDepth < expectedMinSelectedDepth
+      ) {
+        failures.push(
+          \`run \${runIndex} selected depth \${cameraStreamDiagnostics.selectedDepth}; expected at least \${expectedMinSelectedDepth}.\`,
+        );
+      }
     }
 
     return {
@@ -736,6 +774,8 @@ function createSmoothnessFlow(
       id: sampleCase.id,
       label: sampleCase.label,
       kind: sampleCase.kind,
+      expectedMinSelectedDepth:
+        minSelectedDepthOverride ?? sampleCase.expectedMinSelectedDepth,
     })),
     repeatCount,
     durationMilliseconds,
@@ -760,7 +800,11 @@ function printBenchmarkSummary(result) {
   );
 
   for (const sampleCase of result.sampleCases) {
-    console.log(`- ${sampleCase.label}`);
+    const depthTarget =
+      sampleCase.expectedMinSelectedDepth === undefined
+        ? ""
+        : `, min selected depth ${sampleCase.expectedMinSelectedDepth}`;
+    console.log(`- ${sampleCase.label}${depthTarget}`);
 
     for (const streamPointBudget of result.streamPointBudgets) {
       const runs = result.results.filter(
@@ -885,6 +929,7 @@ try {
       benchmarkDurationMilliseconds,
       benchmarkCameraSteps,
       benchmarkMoveMeters,
+      benchmarkMinSelectedDepthOverride,
     ),
   );
 
@@ -897,7 +942,10 @@ try {
         .join("/")} stream budgets,`,
       `${benchmarkSampleCases.map((sample) => sample.id).join("/")} samples,`,
       `${benchmarkRepeats.toLocaleString()} repeats,`,
-      `${benchmarkCameraSteps.toLocaleString()} camera steps`,
+      `${benchmarkCameraSteps.toLocaleString()} camera steps,`,
+      benchmarkMinSelectedDepthOverride === undefined
+        ? "sample depth targets"
+        : `min selected depth ${benchmarkMinSelectedDepthOverride}`,
     ].join(" "),
   );
   runPlaywrightCli(["open", "about:blank"]);

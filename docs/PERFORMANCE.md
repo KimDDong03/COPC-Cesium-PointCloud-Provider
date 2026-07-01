@@ -28,8 +28,14 @@ Useful overrides:
 $env:COPC_SMOOTHNESS_SAMPLES="autzen-classified,sofi-stadium"
 $env:COPC_SMOOTHNESS_POINT_BUDGETS="2500,5000,10000"
 $env:COPC_SMOOTHNESS_REPEATS="5"
+$env:COPC_SMOOTHNESS_MIN_SELECTED_DEPTH="2"
 npm run benchmark:smoothness
 ```
+
+The bundled smoothness sample cases expect camera streaming to select at least
+depth 2, so a run does not pass just because it fell back to a shallower and
+cheaper LOD. `COPC_SMOOTHNESS_MIN_SELECTED_DEPTH` can raise, lower, or disable
+that global threshold for local experiments.
 
 ## Current Local Result
 

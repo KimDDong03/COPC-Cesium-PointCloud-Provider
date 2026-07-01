@@ -272,6 +272,10 @@ function createSmokeFlow(baseUrl) {
     async () => (await metadataValue("Hierarchy pages"))?.includes("evictions"),
     "Hierarchy page cache stats were not reported after camera streaming.",
   );
+  await check(
+    async () => (await metadataValue("Camera stream diagnostics"))?.includes("depth"),
+    "Camera stream diagnostics did not report selected depth.",
+  );
   await page.getByRole("checkbox", { name: "Stream on camera move" }).uncheck();
 
   await page.getByRole("textbox", { name: "COPC URL" }).fill(sofiUrl);
