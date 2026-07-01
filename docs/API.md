@@ -116,11 +116,14 @@ draws the node bounds.
 ```ts
 const result = await layer.renderNodes(["0-0-0-0", "0-0-0-1"], {
   maxPointCountPerNode: 5_000,
+  maxRenderedPointCount: 8_000,
 });
 ```
 
 `renderNodes()` deduplicates node keys, reads each selected node, and renders
-one combined point set.
+one combined point set. `maxRenderedPointCount` caps the total sampled points
+submitted to Cesium across all selected nodes, which helps camera-driven
+rendering avoid sudden point-count spikes.
 
 ### Camera Selection
 
@@ -154,6 +157,7 @@ const result = await layer.renderAutomatic({
   maxHierarchyPages: 2,
   maxNodes: 4,
   maxPointCountPerNode: 5_000,
+  maxRenderedPointCount: 20_000,
 });
 ```
 
@@ -197,6 +201,18 @@ Fields:
   the layer.
 
 These numbers are prototype comparison metrics, not GPU frame-time profiling.
+
+## Render Budgets
+
+There are two related budgets:
+
+- `maxPointCountPerNode`: maximum samples read from each individual hierarchy
+  node.
+- `maxRenderedPointCount`: maximum samples submitted to Cesium across a
+  multi-node render call.
+
+Use `maxRenderedPointCount` for camera streaming and Auto LOD paths where the
+number of selected nodes may change as the camera moves.
 
 ## Renderers
 

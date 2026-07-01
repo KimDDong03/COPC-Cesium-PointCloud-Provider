@@ -360,6 +360,58 @@ describe("CopcSource point sample cache", () => {
     expect(result.sampledPointCount).toBe(3);
   });
 
+  it("distributes a total sampled point budget across multiple nodes", async () => {
+    const source = new CopcSource("https://example.com/sample.copc.laz");
+    const mutableSource = source as unknown as {
+      loadNodePointSamplesWithoutCache: (
+        nodeKey: string,
+        maxPointCount: number,
+      ) => Promise<CopcNodePointSampleResult>;
+    };
+    const loadedCacheKeys: string[] = [];
+
+    mutableSource.loadNodePointSamplesWithoutCache = async (
+      nodeKey,
+      maxPointCount,
+    ) => {
+      loadedCacheKeys.push(`${nodeKey}:${maxPointCount}`);
+
+      return {
+        nodeKey,
+        nodePointCount: 100,
+        sampledPointCount: maxPointCount,
+        points: createSamplePoints(maxPointCount),
+      };
+    };
+
+    const result = await source.loadNodesPointSamples({
+      nodeKeys: ["0-0-0-0", "1-0-0-0", "1-1-0-0"],
+      maxPointCountPerNode: 5,
+      maxTotalSampledPointCount: 8,
+    });
+
+    expect(loadedCacheKeys).toEqual([
+      "0-0-0-0:3",
+      "1-0-0-0:3",
+      "1-1-0-0:2",
+    ]);
+    expect(result.sampledPointCount).toBe(8);
+    expect(result.points).toHaveLength(8);
+  });
+
+  it("rejects a total sampled point budget smaller than the node count", async () => {
+    const source = new CopcSource("https://example.com/sample.copc.laz");
+
+    await expect(
+      source.loadNodesPointSamples({
+        nodeKeys: ["0-0-0-0", "1-0-0-0", "1-1-0-0"],
+        maxTotalSampledPointCount: 2,
+      }),
+    ).rejects.toThrow(
+      "maxTotalSampledPointCount must be greater than or equal to the number of COPC hierarchy nodes.",
+    );
+  });
+
   it("does not send queued worker point sample requests after abort", async () => {
     const worker = new FakePointSampleWorker();
     const abortController = new AbortController();

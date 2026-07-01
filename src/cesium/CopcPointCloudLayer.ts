@@ -86,6 +86,7 @@ export interface CopcPointCloudLayerRenderNodeOptions {
 
 export interface CopcPointCloudLayerRenderNodesOptions {
   readonly maxPointCountPerNode?: number;
+  readonly maxRenderedPointCount?: number;
   readonly showBounds?: boolean;
   readonly signal?: AbortSignal;
 }
@@ -111,6 +112,7 @@ export interface CopcPointCloudLayerHierarchyExpansionOptions {
 export interface CopcPointCloudLayerAutomaticRenderOptions
   extends CopcPointCloudLayerCameraSelectionOptions {
   readonly maxPointCountPerNode?: number;
+  readonly maxRenderedPointCount?: number;
   readonly showBounds?: boolean;
   readonly expandHierarchy?: boolean;
   readonly maxHierarchyPages?: number;
@@ -335,6 +337,7 @@ export class CopcPointCloudLayer {
       nodeKeys: normalizedNodeKeys,
       maxPointCountPerNode:
         options.maxPointCountPerNode ?? this.defaultMaxPointCountPerNode,
+      maxTotalSampledPointCount: options.maxRenderedPointCount,
       signal: options.signal,
     });
     this.assertNotDestroyed();
@@ -371,6 +374,7 @@ export class CopcPointCloudLayer {
       maxHierarchyPages,
       maxHierarchyPageDepth,
       maxPointCountPerNode,
+      maxRenderedPointCount,
       signal,
       showBounds,
       ...selectionOptions
@@ -398,6 +402,7 @@ export class CopcPointCloudLayer {
       cameraSelection.nodes.map((node) => node.key),
       {
         maxPointCountPerNode,
+        maxRenderedPointCount,
         signal,
         showBounds,
       },

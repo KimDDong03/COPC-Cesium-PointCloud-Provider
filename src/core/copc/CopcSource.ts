@@ -35,6 +35,7 @@ export interface LoadNodePointSamplesOptions {
 export interface LoadNodesPointSamplesOptions {
   readonly nodeKeys: readonly string[];
   readonly maxPointCountPerNode?: number;
+  readonly maxTotalSampledPointCount?: number;
   readonly signal?: AbortSignal;
 }
 
@@ -405,11 +406,17 @@ export class CopcSource {
       throw new Error("At least one COPC hierarchy node key is required.");
     }
 
+    const maxPointCounts = allocateNodeSampleBudgets(
+      nodeKeys.length,
+      options.maxPointCountPerNode,
+      options.maxTotalSampledPointCount,
+    );
+
     const nodeResults = await Promise.all(
-      nodeKeys.map((nodeKey) =>
+      nodeKeys.map((nodeKey, index) =>
         this.loadNodePointSamples({
           nodeKey,
-          maxPointCount: options.maxPointCountPerNode,
+          maxPointCount: maxPointCounts?.[index] ?? options.maxPointCountPerNode,
           signal: options.signal,
         }),
       ),
@@ -920,6 +927,42 @@ function withAbortSignal<T>(
       },
     );
   });
+}
+
+function allocateNodeSampleBudgets(
+  nodeCount: number,
+  maxPointCountPerNode: number | undefined,
+  maxTotalSampledPointCount: number | undefined,
+): readonly number[] | undefined {
+  if (maxTotalSampledPointCount === undefined) {
+    return undefined;
+  }
+
+  const perNodeLimit = maxPointCountPerNode ?? DEFAULT_MAX_POINT_COUNT;
+
+  if (!Number.isSafeInteger(perNodeLimit) || perNodeLimit <= 0) {
+    throw new Error("maxPointCountPerNode must be a positive integer.");
+  }
+
+  if (
+    !Number.isSafeInteger(maxTotalSampledPointCount) ||
+    maxTotalSampledPointCount <= 0
+  ) {
+    throw new Error("maxTotalSampledPointCount must be a positive integer.");
+  }
+
+  if (maxTotalSampledPointCount < nodeCount) {
+    throw new Error(
+      "maxTotalSampledPointCount must be greater than or equal to the number of COPC hierarchy nodes.",
+    );
+  }
+
+  const baseBudget = Math.floor(maxTotalSampledPointCount / nodeCount);
+  const remainder = maxTotalSampledPointCount % nodeCount;
+
+  return Array.from({ length: nodeCount }, (_value, index) =>
+    Math.min(perNodeLimit, baseBudget + (index < remainder ? 1 : 0)),
+  );
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {

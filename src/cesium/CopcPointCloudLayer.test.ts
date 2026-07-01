@@ -160,6 +160,48 @@ describe("CopcPointCloudLayer hierarchy loading", () => {
     expect(loadResult.hierarchy).toBe(expandedHierarchy);
   });
 
+  it("passes the rendered point budget to multi-node point sampling", async () => {
+    const pointRendering = createRecordingPointRenderer();
+    const layer = new CopcPointCloudLayer(createSceneStub(), {
+      url: "https://example.com/sample.copc.laz",
+      createPointRenderer: () => pointRendering.renderer,
+    });
+    let capturedOptions:
+      | Parameters<typeof layer.source.loadNodesPointSamples>[0]
+      | undefined;
+
+    layer.source.inspect = async () => createInspection();
+    layer.source.loadHierarchySummary = async () =>
+      createHierarchy([
+        createHierarchyNode("0-0-0-0"),
+        createHierarchyNode("1-0-0-0"),
+      ]);
+    layer.source.loadNodesPointSamples = async (options) => {
+      capturedOptions = options;
+
+      return {
+        nodeKeys: options.nodeKeys,
+        nodeResults: [],
+        nodePointCount: 0,
+        sampledPointCount: 0,
+        points: [],
+      };
+    };
+
+    await layer.renderNodes(["0-0-0-0", "1-0-0-0"], {
+      maxPointCountPerNode: 5,
+      maxRenderedPointCount: 7,
+      showBounds: false,
+    });
+
+    expect(capturedOptions).toEqual({
+      nodeKeys: ["0-0-0-0", "1-0-0-0"],
+      maxPointCountPerNode: 5,
+      maxTotalSampledPointCount: 7,
+      signal: undefined,
+    });
+  });
+
   it("expands hierarchy pages near the current camera", async () => {
     const layer = new CopcPointCloudLayer(createSceneStub(), {
       url: "https://example.com/sample.copc.laz",

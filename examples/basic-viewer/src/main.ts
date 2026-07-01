@@ -38,9 +38,11 @@ const CUSTOM_SAMPLE_OPTION_VALUE = "custom";
 const AUTO_LOD_MAX_HIERARCHY_PAGES = 2;
 const AUTO_LOD_MAX_NODE_POINT_DATA_LENGTH = 1_000_000;
 const AUTO_LOD_MAX_TOTAL_POINT_DATA_LENGTH = 2_000_000;
+const AUTO_LOD_MAX_RENDERED_POINT_COUNT = 20_000;
 const CAMERA_STREAM_MAX_HIERARCHY_PAGES = 1;
 const CAMERA_STREAM_MAX_NODES = 1;
 const CAMERA_STREAM_MAX_DEPTH = 0;
+const CAMERA_STREAM_MAX_RENDERED_POINT_COUNT = 5_000;
 const DEFAULT_MAX_POINT_COUNT_PER_NODE = 5_000;
 const HIERARCHY_PAGE_CACHE_LIMIT = 64;
 const POINT_SAMPLE_CACHE_LIMIT = 32;
@@ -516,6 +518,7 @@ async function renderAutomaticNodeSet(): Promise<void> {
       maxHierarchyPages: AUTO_LOD_MAX_HIERARCHY_PAGES,
       maxNodePointDataLength: AUTO_LOD_MAX_NODE_POINT_DATA_LENGTH,
       maxTotalPointDataLength: AUTO_LOD_MAX_TOTAL_POINT_DATA_LENGTH,
+      maxRenderedPointCount: AUTO_LOD_MAX_RENDERED_POINT_COUNT,
     });
 
     if (!result || layer !== currentLayer) {
@@ -614,7 +617,10 @@ async function renderAutomaticNodeSetForCameraMove(
 
     elements.statusText.textContent = `Streaming ${nodeKeys.length.toLocaleString()} COPC nodes for camera position...`;
 
-    const result = await layer.renderNodes(nodeKeys, { signal });
+    const result = await layer.renderNodes(nodeKeys, {
+      maxRenderedPointCount: CAMERA_STREAM_MAX_RENDERED_POINT_COUNT,
+      signal,
+    });
 
     if (
       signal.aborted ||
@@ -667,7 +673,9 @@ async function renderNodeKeySet(
   elements.statusText.textContent = `Reading ${nodeKeys.length.toLocaleString()} COPC nodes...`;
 
   try {
-    const result = await layer.renderNodes(nodeKeys);
+    const result = await layer.renderNodes(nodeKeys, {
+      maxRenderedPointCount: Math.max(readMaxPointCountPerNode(), nodeKeys.length),
+    });
 
     if (layer !== currentLayer) {
       return;

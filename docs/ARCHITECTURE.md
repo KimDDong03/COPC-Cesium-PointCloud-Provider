@@ -61,6 +61,7 @@ The current implementation includes:
 - `CopcPointCloudLayer.expandHierarchyForCamera` for camera-targeted hierarchy expansion.
 - `CopcPointCloudLayer.renderAutomatic` for selecting and rendering nodes in one call.
 - `CopcPointCloudLayer.selectNodesForCamera` for selecting nodes without immediately rendering.
+- Multi-node render budgets via `maxRenderedPointCount`, which cap total sampled points submitted to Cesium across selected nodes.
 - Optional `pointSampleLoading: "worker"` support that moves COPC point-data reads and LAZ decoding into a Web Worker, with main-thread fallback when a worker cannot be created.
 - A small `maxConcurrentPointSampleWorkerRequests` queue so worker-backed point sampling applies request backpressure before dispatch.
 - `AbortSignal` support for point-sample loading and Cesium render calls so stale camera-stream worker requests can be canceled and late worker responses ignored.
@@ -97,12 +98,13 @@ Camera-based selection requires both directions:
 - Point sample cache byte usage is estimated from decoded sample fields, not from JavaScript object heap size.
 - Worker loading currently targets point data only; hierarchy metadata selection and cache policy remain on the main thread.
 - Worker cancellation is request-level. It prevents stale responses from being applied and drops queued stale work before dispatch, but it does not yet interrupt every in-flight COPC range read inside lower-level dependencies.
-- Camera streaming is prototype-oriented; it expands a small number of hierarchy pages per update while keeping the example's automatic render depth shallow.
+- Camera streaming is prototype-oriented; it expands a small number of hierarchy pages per update and now applies conservative render-point budgets, but the budgets still need calibration against larger COPC samples and measured frame time.
 - CRS detection is not complete; projected CRS data should pass explicit transform options.
 
 ## Near-Term Roadmap
 
-1. Calibrate screen-space error estimates against Cesium camera frustum parameters and point-density metrics.
-2. Tune hierarchy cache policy with byte-aware limits and camera-priority hints.
-3. Tune worker concurrency defaults and add worker-pool support if one worker becomes a bottleneck.
-4. Compare repeatable larger-point-count benchmark results across more COPC samples and decide whether a fully custom WebGL primitive is still needed.
+1. Add browser frame-time and camera-move smoothness benchmarks for larger COPC samples.
+2. Calibrate screen-space error estimates and render-point budgets against measured frame time.
+3. Tune hierarchy cache policy with byte-aware limits and camera-priority hints.
+4. Tune worker concurrency defaults and add worker-pool support if one worker becomes a bottleneck.
+5. Compare repeatable larger-point-count benchmark results across more COPC samples and decide whether a fully custom WebGL primitive is still needed.
