@@ -41,6 +41,7 @@ Open `http://localhost:3000`.
 npm run build:lib
 npm run build:example
 npm run build
+npm run benchmark:renderers
 npm run smoke:example
 npm run smoke:package
 ```
@@ -50,6 +51,7 @@ npm run smoke:package
 `npm pack --dry-run` can be used after `npm run build` to inspect the package contents without publishing.
 `npm run smoke:example` builds the example, starts a temporary preview server, and verifies Autzen, SoFi, and Custom URL + proj4 rendering in a browser. Run `npm run smoke:example:install-browser` once if Playwright reports that Chrome for Testing is missing.
 `npm run smoke:package` packs the local build, installs it into a temporary consumer project, and verifies public imports from `copc-cesium`, `copc-cesium/core`, and `copc-cesium/cesium`.
+`npm run benchmark:renderers` builds the example, starts a temporary preview server, renders the Autzen COPC sample with both point renderers at a larger sample size, repeats each run, and writes browser-measured renderer timing to `output/renderer-benchmark/renderers.json`. The defaults are 10,000 max points per node and 3 repeats. On PowerShell, override them with `$env:COPC_BENCHMARK_POINT_COUNT="20000"; $env:COPC_BENCHMARK_REPEATS="5"; npm run benchmark:renderers`.
 The same browser rendering smoke is available as the manual GitHub Actions workflow `Example Browser Smoke`.
 
 The runnable prototype lives in `examples/basic-viewer`. The root `src` folder contains reusable COPC and Cesium integration code used by that example.
@@ -62,6 +64,7 @@ The example keeps sample COPC URLs and their transform factories in a small pres
 For custom URLs, the example can also accept a source CRS and optional proj4 definition before loading the COPC file.
 The hierarchy node selector lists currently loaded nodes and lets the example render one selected node at a time.
 The renderer selector can switch between the stable point-primitive renderer and the experimental buffer-backed renderer.
+The Max points / node input controls the active `CopcPointCloudLayer` sample budget, which makes manual and automated renderer comparison possible without changing source code.
 `CopcSource` keeps the opened COPC metadata, loaded hierarchy pages, pending hierarchy page references with bounds and source-page provenance, hierarchy cache stats, and bounded in-memory caches for hierarchy pages and sampled node point data for the active URL. The hierarchy page cache evicts loaded non-root leaf pages back to pending page references when the configured page limit is reached. The point sample cache is limited by both sample-set count and estimated decoded sample bytes.
 The Load next page button range-reads the next pending COPC hierarchy page and refreshes the available node list without converting the file to 3D Tiles.
 The example also computes the selected node bounds and renders a yellow debug bounding box in CesiumJS.

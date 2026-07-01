@@ -49,6 +49,7 @@
     "build:example": "tsc && vite build examples/basic-viewer --config vite.config.ts --outDir ../../dist/example --emptyOutDir",
     "build:lib": "vite build --config vite.lib.config.ts && tsc -p tsconfig.lib.json",
     "preview": "vite preview examples/basic-viewer --config vite.config.ts --host localhost --port 3000 --outDir ../../dist/example",
+    "benchmark:renderers": "node scripts/benchmark-renderers.mjs",
     "smoke:example": "node scripts/smoke-example.mjs",
     "smoke:example:install-browser": "npx --yes --package @playwright/cli@0.1.14 playwright-cli install-browser chrome-for-testing",
     "smoke:package": "node scripts/smoke-package.mjs",

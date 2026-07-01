@@ -41,6 +41,7 @@ const AUTO_LOD_MAX_TOTAL_POINT_DATA_LENGTH = 2_000_000;
 const CAMERA_STREAM_MAX_HIERARCHY_PAGES = 1;
 const CAMERA_STREAM_MAX_NODES = 1;
 const CAMERA_STREAM_MAX_DEPTH = 0;
+const DEFAULT_MAX_POINT_COUNT_PER_NODE = 5_000;
 const HIERARCHY_PAGE_CACHE_LIMIT = 64;
 const POINT_SAMPLE_CACHE_LIMIT = 32;
 const POINT_SAMPLE_CACHE_BYTE_LIMIT = 32 * 1024 * 1024;
@@ -52,6 +53,7 @@ const POINT_RENDERER_LABELS = {
 type PointRendererKind = keyof typeof POINT_RENDERER_LABELS;
 
 const elements = getPrototypeElements();
+initializeRendererBenchmarkControls();
 let currentLayer: CopcPointCloudLayer | undefined;
 let currentInspection: CopcInspection | undefined;
 let currentHierarchy: CopcHierarchySummary | undefined;
@@ -129,6 +131,10 @@ elements.rendererSelect.addEventListener("change", () => {
   void inspectSource(createSourceConfigFromForm());
 });
 
+elements.maxPointCountInput.addEventListener("change", () => {
+  void inspectSource(createSourceConfigFromForm());
+});
+
 elements.urlInput.addEventListener("input", () => {
   syncSampleSelectWithUrl(elements.urlInput.value);
 });
@@ -196,6 +202,7 @@ void inspectSource(DEFAULT_SAMPLE_COPC_SOURCE);
 async function inspectSource(source: CopcSourceConfig): Promise<void> {
   const activeSource = normalizeSourceConfig(source);
   const pointRendererKind = readPointRendererKind();
+  const maxPointCountPerNode = readMaxPointCountPerNode();
   const previousLayer = currentLayer;
   automaticStreamAbortController?.abort();
   automaticStreamAbortController = undefined;
@@ -208,6 +215,7 @@ async function inspectSource(source: CopcSourceConfig): Promise<void> {
     maxCachedHierarchyPages: HIERARCHY_PAGE_CACHE_LIMIT,
     maxCachedSampleSets: POINT_SAMPLE_CACHE_LIMIT,
     maxCachedPointSampleBytes: POINT_SAMPLE_CACHE_BYTE_LIMIT,
+    maxPointCountPerNode,
     pointSampleLoading: "worker",
     createPointRenderer: createPointRendererFactory(pointRendererKind),
     coordinateTransforms: activeSource.coordinateTransforms,
@@ -293,6 +301,7 @@ function renderInspection(
     metadataRow("Source preset", currentSource.label),
     metadataRow("Source note", currentSource.description),
     metadataRow("Point renderer", POINT_RENDERER_LABELS[currentPointRendererKind]),
+    metadataRow("Max points / node", readMaxPointCountPerNode().toLocaleString()),
     metadataRow(
       "Renderer timing",
       renderStats ? formatRenderStats(renderStats) : "Not rendered yet",
@@ -872,6 +881,41 @@ function readPointRendererKind(): PointRendererKind {
   return elements.rendererSelect.value === "buffer" ? "buffer" : "primitive";
 }
 
+function initializeRendererBenchmarkControls(): void {
+  const params = new URLSearchParams(window.location.search);
+  const renderer = params.get("renderer");
+
+  if (renderer === "buffer" || renderer === "primitive") {
+    elements.rendererSelect.value = renderer;
+  }
+
+  const maxPointCountParam =
+    params.get("maxPointCountPerNode") ?? params.get("maxPoints");
+
+  if (!maxPointCountParam) {
+    elements.maxPointCountInput.value = String(DEFAULT_MAX_POINT_COUNT_PER_NODE);
+    return;
+  }
+
+  const maxPointCount = Number(maxPointCountParam);
+  elements.maxPointCountInput.value = String(
+    isPositiveSafeInteger(maxPointCount)
+      ? maxPointCount
+      : DEFAULT_MAX_POINT_COUNT_PER_NODE,
+  );
+}
+
+function readMaxPointCountPerNode(): number {
+  const maxPointCount = Number(elements.maxPointCountInput.value);
+  return isPositiveSafeInteger(maxPointCount)
+    ? maxPointCount
+    : DEFAULT_MAX_POINT_COUNT_PER_NODE;
+}
+
+function isPositiveSafeInteger(value: number): boolean {
+  return Number.isSafeInteger(value) && value > 0;
+}
+
 function createPointRendererFactory(
   kind: PointRendererKind,
 ): CopcPointCloudRendererFactory {
@@ -919,6 +963,7 @@ function getPrototypeElements(): {
   readonly form: HTMLFormElement;
   readonly sampleSelect: HTMLSelectElement;
   readonly rendererSelect: HTMLSelectElement;
+  readonly maxPointCountInput: HTMLInputElement;
   readonly urlInput: HTMLInputElement;
   readonly sourceCrsInput: HTMLInputElement;
   readonly sourceDefinitionInput: HTMLTextAreaElement;
@@ -944,6 +989,9 @@ function getPrototypeElements(): {
   );
   const rendererSelect = document.querySelector<HTMLSelectElement>(
     "#copc-renderer-select",
+  );
+  const maxPointCountInput = document.querySelector<HTMLInputElement>(
+    "#copc-max-point-count",
   );
   const urlInput = document.querySelector<HTMLInputElement>("#copc-url");
   const sourceCrsInput = document.querySelector<HTMLInputElement>(
@@ -986,6 +1034,7 @@ function getPrototypeElements(): {
     !form ||
     !sampleSelect ||
     !rendererSelect ||
+    !maxPointCountInput ||
     !urlInput ||
     !sourceCrsInput ||
     !sourceDefinitionInput ||
@@ -1012,6 +1061,7 @@ function getPrototypeElements(): {
     form,
     sampleSelect,
     rendererSelect,
+    maxPointCountInput,
     urlInput,
     sourceCrsInput,
     sourceDefinitionInput,
