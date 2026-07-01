@@ -21,6 +21,7 @@ import {
   type CopcMultiNodePointSampleResult,
   type CopcNodePointSampleResult,
   type CopcPointCloudLayerHierarchyExpansionResult,
+  type CopcPointCloudLayerNodesRenderResult,
   type CopcPointCloudLayerRenderStats,
   type CopcPointCloudRendererFactory,
   type CopcPointSampleCacheStats,
@@ -48,6 +49,10 @@ const CAMERA_STREAM_SLOW_TOTAL_MILLISECONDS = 45_000;
 const CAMERA_STREAM_RECOVERY_TOTAL_MILLISECONDS = 8_000;
 const CAMERA_STREAM_RECOVERY_RENDER_MILLISECONDS = 1_500;
 const CAMERA_STREAM_RECOVERY_STREAK = 3;
+const CAMERA_STREAM_PREVIEW_POINT_BUDGET_RATIO = 0.25;
+const CAMERA_STREAM_PREVIEW_MIN_RENDERED_POINT_COUNT = 20_000;
+const CAMERA_STREAM_PREVIEW_MAX_RENDERED_POINT_COUNT = 80_000;
+const CAMERA_STREAM_MOVE_DEBOUNCE_MILLISECONDS = 180;
 const DEFAULT_AUTO_STREAM_ON_CAMERA_MOVE = true;
 const CAMERA_STREAM_LOD_LEVELS = [
   {
@@ -224,6 +229,7 @@ let lastCameraStreamDiagnostics: CameraStreamDiagnostics | undefined;
 let automaticStreamRequestId = 0;
 let automaticStreamAbortController: AbortController | undefined;
 let automaticStreamPrefetchPromise: Promise<void> | undefined;
+let automaticStreamDebounceTimeout: number | undefined;
 let lastAutomaticStreamNodeKeySignature = "";
 let adaptiveCameraStreamPointBudget: number | undefined;
 let adaptiveCameraStreamFastRunCount = 0;
@@ -362,6 +368,7 @@ elements.autoStreamCheckbox.addEventListener("change", () => {
     automaticStreamAbortController?.abort();
     automaticStreamAbortController = undefined;
     automaticStreamPrefetchPromise = undefined;
+    clearQueuedAutomaticStreamRender();
     resetCameraStreamAdaptiveBudget();
     return;
   }
@@ -389,7 +396,7 @@ viewer.camera.moveEnd.addEventListener(() => {
     return;
   }
 
-  void renderAutomaticNodeSetForCameraMove(false);
+  queueAutomaticStreamRenderForCameraMove(false);
 });
 
 installBasicViewerBenchmarkApi();
@@ -423,7 +430,7 @@ async function moveCameraForSmoothness(
   for (let index = 0; index < steps; index += 1) {
     moveBenchmarkCamera(index, moveMeters);
     updateSuggestedNode();
-    void renderAutomaticNodeSetForCameraMove(false);
+    queueAutomaticStreamRenderForCameraMove(false);
     viewer.scene.requestRender();
     await delayForBenchmark(waitMilliseconds);
   }
@@ -538,6 +545,7 @@ async function inspectSource(source: CopcSourceConfig): Promise<void> {
   automaticStreamRequestId += 1;
   automaticStreamPrefetchPromise = undefined;
   lastAutomaticStreamNodeKeySignature = "";
+  clearQueuedAutomaticStreamRender();
   resetCameraStreamAdaptiveBudget();
   elements.urlInput.value = activeSource.url;
   syncSampleSelectWithSource(activeSource);
@@ -897,6 +905,8 @@ async function renderAutomaticNodeSet(): Promise<void> {
 async function renderAutomaticNodeSetForCameraMove(
   forceRender: boolean,
 ): Promise<void> {
+  clearQueuedAutomaticStreamRender();
+
   if (
     !elements.autoStreamCheckbox.checked ||
     !currentInspection ||
@@ -994,7 +1004,45 @@ async function renderAutomaticNodeSetForCameraMove(
       return;
     }
 
-    elements.statusText.textContent = `Streaming ${nodeKeys.length.toLocaleString()} COPC nodes for ${cameraLodSettings.label} camera position...`;
+    const previewPointBudget =
+      createCameraStreamPreviewPointBudget(streamPointBudget);
+    let previewRenderNodesMilliseconds = 0;
+
+    elements.statusText.textContent = previewPointBudget
+      ? `Streaming ${nodeKeys.length.toLocaleString()} COPC nodes for ${cameraLodSettings.label} camera position, preview first...`
+      : `Streaming ${nodeKeys.length.toLocaleString()} COPC nodes for ${cameraLodSettings.label} camera position...`;
+
+    if (previewPointBudget !== undefined) {
+      const previewRenderNodesStartedAt = performance.now();
+      const previewResult = await layer.renderNodes(nodeKeys, {
+        maxRenderedPointCount: previewPointBudget,
+        signal,
+      });
+      previewRenderNodesMilliseconds =
+        performance.now() - previewRenderNodesStartedAt;
+
+      if (!isCurrentAutomaticStreamRequest(layer, requestId, signal)) {
+        return;
+      }
+
+      applyCameraStreamRenderResult({
+        result: previewResult,
+        cameraSelection,
+        cameraLodSettings,
+        diagnostics: {
+          expandHierarchyMilliseconds,
+          applyHierarchyMilliseconds,
+          selectNodesMilliseconds,
+          renderNodesMilliseconds: previewRenderNodesMilliseconds,
+          totalMilliseconds: performance.now() - streamStartedAt,
+          loadedHierarchyPageCount: loadedPageKeys.length,
+          selectedNodeCount: nodeKeys.length,
+          selectedDepth: cameraSelection.selectedDepth,
+        },
+        renderedPointBudget: previewPointBudget,
+        statusText: `Camera stream preview rendered ${previewResult.pointSamples.sampledPointCount.toLocaleString()} points from ${previewResult.pointSamples.nodeKeys.length.toLocaleString()} COPC nodes (${cameraLodSettings.label}, finalizing detail)${formatLoadedHierarchyPages(loadedPageKeys)}.`,
+      });
+    }
 
     const renderNodesStartedAt = performance.now();
     const result = await layer.renderNodes(nodeKeys, {
@@ -1012,13 +1060,12 @@ async function renderAutomaticNodeSetForCameraMove(
       return;
     }
 
-    lastCameraStreamRenderedPointBudget = streamPointBudget;
-    lastCameraStreamLodSettings = cameraLodSettings;
-    lastCameraStreamDiagnostics = {
+    const finalDiagnostics = {
       expandHierarchyMilliseconds,
       applyHierarchyMilliseconds,
       selectNodesMilliseconds,
-      renderNodesMilliseconds,
+      renderNodesMilliseconds:
+        previewRenderNodesMilliseconds + renderNodesMilliseconds,
       totalMilliseconds: performance.now() - streamStartedAt,
       loadedHierarchyPageCount: loadedPageKeys.length,
       selectedNodeCount: nodeKeys.length,
@@ -1026,26 +1073,24 @@ async function renderAutomaticNodeSetForCameraMove(
     };
     updateCameraStreamAdaptiveBudget(
       streamPointBudgetLimit,
-      lastCameraStreamDiagnostics.totalMilliseconds,
+      finalDiagnostics.totalMilliseconds,
       result.renderStats,
     );
     lastAutomaticStreamNodeKeySignature = renderSignature;
-    renderNodeSet.clear();
-    result.nodes.forEach((node) => renderNodeSet.add(node.key));
-    renderRenderSetControls();
-    renderInspection(
-      result.inspection,
-      undefined,
-      undefined,
-      result.pointSamples,
+    applyCameraStreamRenderResult({
+      result,
       cameraSelection,
-      result.renderStats,
-    );
-    elements.statusText.textContent = `Camera stream rendered ${result.pointSamples.sampledPointCount.toLocaleString()} points from ${result.pointSamples.nodeKeys.length.toLocaleString()} COPC nodes (${cameraLodSettings.label}, depth ${cameraSelection.selectedDepth.toLocaleString()})${formatLoadedHierarchyPages(loadedPageKeys)}.`;
-    updateSuggestedNode();
+      cameraLodSettings,
+      diagnostics: finalDiagnostics,
+      renderedPointBudget: streamPointBudget,
+      statusText: `Camera stream rendered ${result.pointSamples.sampledPointCount.toLocaleString()} points from ${result.pointSamples.nodeKeys.length.toLocaleString()} COPC nodes (${cameraLodSettings.label}, depth ${cameraSelection.selectedDepth.toLocaleString()})${formatLoadedHierarchyPages(loadedPageKeys)}.`,
+    });
     queueCameraHierarchyPrefetch(layer);
   } catch (error) {
-    if (signal.aborted || isAbortError(error)) {
+    if (
+      isAbortError(error) ||
+      !isCurrentAutomaticStreamRequest(layer, requestId, signal)
+    ) {
       return;
     }
 
@@ -1059,6 +1104,83 @@ async function renderAutomaticNodeSetForCameraMove(
       automaticStreamAbortController = undefined;
     }
   }
+}
+
+function queueAutomaticStreamRenderForCameraMove(forceRender: boolean): void {
+  clearQueuedAutomaticStreamRender();
+
+  automaticStreamDebounceTimeout = window.setTimeout(() => {
+    automaticStreamDebounceTimeout = undefined;
+    void renderAutomaticNodeSetForCameraMove(forceRender);
+  }, CAMERA_STREAM_MOVE_DEBOUNCE_MILLISECONDS);
+}
+
+function clearQueuedAutomaticStreamRender(): void {
+  if (automaticStreamDebounceTimeout === undefined) {
+    return;
+  }
+
+  window.clearTimeout(automaticStreamDebounceTimeout);
+  automaticStreamDebounceTimeout = undefined;
+}
+
+function createCameraStreamPreviewPointBudget(
+  finalPointBudget: number,
+): number | undefined {
+  if (finalPointBudget <= CAMERA_STREAM_PREVIEW_MIN_RENDERED_POINT_COUNT * 2) {
+    return undefined;
+  }
+
+  const previewPointBudget = Math.min(
+    CAMERA_STREAM_PREVIEW_MAX_RENDERED_POINT_COUNT,
+    Math.max(
+      CAMERA_STREAM_PREVIEW_MIN_RENDERED_POINT_COUNT,
+      Math.floor(finalPointBudget * CAMERA_STREAM_PREVIEW_POINT_BUDGET_RATIO),
+    ),
+  );
+
+  return previewPointBudget < finalPointBudget
+    ? previewPointBudget
+    : undefined;
+}
+
+function isCurrentAutomaticStreamRequest(
+  layer: CopcPointCloudLayer,
+  requestId: number,
+  signal: AbortSignal,
+): boolean {
+  return (
+    !signal.aborted &&
+    layer === currentLayer &&
+    requestId === automaticStreamRequestId &&
+    elements.autoStreamCheckbox.checked
+  );
+}
+
+function applyCameraStreamRenderResult(options: {
+  readonly result: CopcPointCloudLayerNodesRenderResult;
+  readonly cameraSelection: CopcHierarchyNodeCameraSelection;
+  readonly cameraLodSettings: CameraStreamLodSettings;
+  readonly diagnostics: CameraStreamDiagnostics;
+  readonly renderedPointBudget: number;
+  readonly statusText: string;
+}): void {
+  lastCameraStreamRenderedPointBudget = options.renderedPointBudget;
+  lastCameraStreamLodSettings = options.cameraLodSettings;
+  lastCameraStreamDiagnostics = options.diagnostics;
+  renderNodeSet.clear();
+  options.result.nodes.forEach((node) => renderNodeSet.add(node.key));
+  renderRenderSetControls();
+  renderInspection(
+    options.result.inspection,
+    undefined,
+    undefined,
+    options.result.pointSamples,
+    options.cameraSelection,
+    options.result.renderStats,
+  );
+  elements.statusText.textContent = options.statusText;
+  updateSuggestedNode();
 }
 
 function queueCameraHierarchyPrefetch(layer: CopcPointCloudLayer): void {
