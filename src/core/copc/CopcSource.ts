@@ -96,7 +96,7 @@ export class CopcSource {
   private readonly pointSampleLoading: CopcPointSampleLoadingMode;
   private readonly createPointSampleWorker: () => Worker;
   private readonly getter: Getter;
-  private readonly copcPromise: Promise<CopcData>;
+  private copcPromise: Promise<CopcData> | undefined;
   private hierarchyPromise: Promise<Hierarchy.Subtree> | undefined;
   private inspectionPromise: Promise<CopcInspection> | undefined;
   private readonly hierarchyPagePromises = new Map<
@@ -192,11 +192,10 @@ export class CopcSource {
     this.createPointSampleWorker =
       options.createPointSampleWorker ?? createCopcPointSampleWorker;
     this.getter = createHttpRangeGetter(url);
-    this.copcPromise = Copc.create(this.getter);
   }
 
   inspect(): Promise<CopcInspection> {
-    this.inspectionPromise ??= this.copcPromise.then((copc) =>
+    this.inspectionPromise ??= this.loadCopc().then((copc) =>
       createInspection(this.url, copc),
     );
 
@@ -205,7 +204,7 @@ export class CopcSource {
 
   loadHierarchySummary(): Promise<CopcHierarchySummary> {
     return Promise.all([
-      this.copcPromise,
+      this.loadCopc(),
       this.loadHierarchy(),
     ]).then(([copc, hierarchy]) =>
       summarizeHierarchy(
@@ -220,7 +219,7 @@ export class CopcSource {
 
   async loadHierarchyPage(pageKey: string): Promise<CopcHierarchySummary> {
     const [copc, hierarchy] = await Promise.all([
-      this.copcPromise,
+      this.loadCopc(),
       this.loadHierarchy(),
     ]);
     const page = hierarchy.pages[pageKey];
@@ -438,7 +437,7 @@ export class CopcSource {
   }
 
   private loadHierarchy(): Promise<Hierarchy.Subtree> {
-    this.hierarchyPromise ??= this.copcPromise.then(async (copc) => {
+    this.hierarchyPromise ??= this.loadCopc().then(async (copc) => {
       const subtree = await this.loadHierarchyPageData(
         copc.info.rootHierarchyPage,
       );
@@ -450,6 +449,12 @@ export class CopcSource {
     });
 
     return this.hierarchyPromise;
+  }
+
+  private loadCopc(): Promise<CopcData> {
+    this.copcPromise ??= Copc.create(this.getter);
+
+    return this.copcPromise;
   }
 
   private loadHierarchyPageData(
@@ -842,7 +847,7 @@ export class CopcSource {
     throwIfAborted(signal);
 
     const [copc, hierarchy] = await Promise.all([
-      this.copcPromise,
+      this.loadCopc(),
       this.loadHierarchy(),
     ]);
     throwIfAborted(signal);

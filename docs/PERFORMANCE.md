@@ -65,8 +65,10 @@ Measured on 2026-07-01 with:
 ## Current Default
 
 The basic viewer keeps the camera-stream point budget at 5,000 points by
-default. In the current local benchmark it was reasonable for the Autzen sample,
-but SoFi still produced long frames even at 2,500 points.
+default. The input now acts as a maximum budget: camera streaming can lower the
+effective point budget after slow visible updates and gradually recover it after
+repeated fast updates. This keeps the demo from staying overloaded on heavier
+samples or slower machines.
 
 Additional targeted diagnostics on the SoFi sample with a 2,500-point stream
 budget originally measured average stream-stage timing at
@@ -90,6 +92,13 @@ After allowing camera streaming to select up to two nearby depth-2 nodes, the
 same targeted check measured depth avg `2.0`, expand/apply/select/render/total
 `0.0/0.0/1.5/17.5/19.0 ms`, with 60.0 average FPS, 16.70 ms p95 frame time,
 and 0 frames over 50 ms.
+
+After adding adaptive camera-stream point budgeting, a targeted SoFi run with a
+20,000-point maximum stream budget and 2 repeats kept depth avg `2.0` while
+lowering the effective render count from 2,668 to 1,000 points after a slow
+update. The run measured 59.7 average FPS, 16.80 ms p95 frame time, 33.50 ms
+max frame time, and 0 frames over 50 ms. This improves smoothness by sacrificing
+temporary point density when the visible stream update is too expensive.
 
 Rendering the submitted points was not the dominant cost in these runs. The
 visible camera-stream update is now mostly renderer submission time, while
