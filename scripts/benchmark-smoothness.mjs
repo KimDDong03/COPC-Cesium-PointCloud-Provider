@@ -576,6 +576,26 @@ function createSmoothnessFlow(
     return Number(match[1].replaceAll(",", ""));
   }
 
+  function parseCameraStreamDiagnostics(diagnosticsText) {
+    const match = diagnosticsText?.match(
+      /^expand ([\\d,.]+) ms, apply ([\\d,.]+) ms, select ([\\d,.]+) ms, render ([\\d,.]+) ms, total ([\\d,.]+) ms, ([\\d,]+) pages, ([\\d,]+) nodes$/,
+    );
+
+    if (!match) {
+      return undefined;
+    }
+
+    return {
+      expandHierarchyMilliseconds: Number(match[1].replaceAll(",", "")),
+      applyHierarchyMilliseconds: Number(match[2].replaceAll(",", "")),
+      selectNodesMilliseconds: Number(match[3].replaceAll(",", "")),
+      renderNodesMilliseconds: Number(match[4].replaceAll(",", "")),
+      totalMilliseconds: Number(match[5].replaceAll(",", "")),
+      loadedHierarchyPageCount: Number(match[6].replaceAll(",", "")),
+      selectedNodeCount: Number(match[7].replaceAll(",", "")),
+    };
+  }
+
   async function measureSmoothness(sampleSnapshot, streamPointBudget, runIndex) {
     const measurement = await page.evaluate(
       async ({ durationMilliseconds, cameraSteps, moveMeters }) => {
@@ -647,6 +667,9 @@ function createSmoothnessFlow(
     }
 
     const renderedPointCount = parseCameraStreamPointCount(measurement.status.status);
+    const cameraStreamDiagnostics = parseCameraStreamDiagnostics(
+      measurement.status.cameraStreamDiagnostics,
+    );
 
     if (renderedPointCount === undefined) {
       failures.push(\`run \${runIndex} did not report a camera stream point count.\`);
@@ -654,6 +677,10 @@ function createSmoothnessFlow(
       failures.push(
         \`run \${runIndex} rendered \${renderedPointCount} points with a \${streamPointBudget} point budget.\`,
       );
+    }
+
+    if (!cameraStreamDiagnostics) {
+      failures.push(\`run \${runIndex} did not expose camera stream diagnostics.\`);
     }
 
     return {
@@ -664,6 +691,8 @@ function createSmoothnessFlow(
       runIndex,
       streamPointBudget,
       renderedPointCount,
+      cameraStreamDiagnosticsText: measurement.status.cameraStreamDiagnostics,
+      cameraStreamDiagnostics,
       ...measurement,
       summary: summarizeFrames(measurement.frameDeltas),
     };
@@ -760,6 +789,21 @@ function printBenchmarkSummary(result) {
         0,
       );
       const renderedPoints = runs.map((run) => run.renderedPointCount ?? 0);
+      const diagnostics = runs
+        .map((run) => run.cameraStreamDiagnostics)
+        .filter(Boolean);
+      const averageExpandMilliseconds = average(
+        diagnostics.map((run) => run.expandHierarchyMilliseconds),
+      );
+      const averageSelectMilliseconds = average(
+        diagnostics.map((run) => run.selectNodesMilliseconds),
+      );
+      const averageRenderMilliseconds = average(
+        diagnostics.map((run) => run.renderNodesMilliseconds),
+      );
+      const averageTotalStreamMilliseconds = average(
+        diagnostics.map((run) => run.totalMilliseconds),
+      );
 
       console.log(
         [
@@ -770,6 +814,7 @@ function printBenchmarkSummary(result) {
           `p95 ${averageP95.toFixed(2)} ms`,
           `max ${maxFrame.toFixed(2)} ms`,
           `${over50.toLocaleString()} frames > 50 ms`,
+          `stream avg expand/select/render/total ${averageExpandMilliseconds.toFixed(1)}/${averageSelectMilliseconds.toFixed(1)}/${averageRenderMilliseconds.toFixed(1)}/${averageTotalStreamMilliseconds.toFixed(1)} ms`,
         ].join(", "),
       );
     }

@@ -69,7 +69,7 @@ The current implementation includes:
 - `renderStats` on Cesium layer render results for CPU-side coordinate transform timing, renderer submission timing, bounds submission timing, rendered point count, and estimated coordinate/color payload bytes.
 - Example and benchmark controls for changing `maxPointCountPerNode` so renderer paths can be compared above the default 5,000-point sample size.
 - Example controls for changing the camera-stream point budget independently from the initial node sample budget.
-- `benchmark:smoothness` for moving the Cesium camera while camera streaming is enabled and recording browser frame intervals across multiple samples and stream point budgets.
+- `benchmark:smoothness` for moving the Cesium camera while camera streaming is enabled and recording browser frame intervals plus hierarchy expansion, node selection, point rendering, and total stream-update timing across multiple samples and stream point budgets.
 - Example-only `Stream on camera move` behavior that reruns hierarchy expansion, camera selection, and cached sample rendering.
 
 The current streaming behavior is deliberately conservative. It limits the number of hierarchy pages opened per camera update and keeps example camera-stream rendering shallow so the prototype remains stable in a browser smoke test.
@@ -95,7 +95,7 @@ Camera-based selection requires both directions:
 - Hierarchy page eviction is page-count based and deliberately keeps the root hierarchy page loaded; it is not byte-aware yet.
 - Point rendering defaults to Cesium point primitives. The experimental buffer backend uses Cesium's `BufferPointCollection`, but a fully custom optimized WebGL primitive is not implemented yet.
 - The point renderer boundary exists and has two backends, but the buffer backend still needs larger-dataset validation beyond the repeatable prototype benchmark before it should become the default.
-- Renderer timing currently measures browser CPU-side submission work. The smoothness benchmark measures browser frame intervals during camera movement, but it is still not a full GPU profiler.
+- Renderer timing currently measures browser CPU-side submission work. The smoothness benchmark measures browser frame intervals and stream-stage timing during camera movement, but it is still not a full GPU profiler.
 - Renderer payload bytes are an estimated coordinate/color payload size, not full JavaScript heap or GPU memory usage.
 - Point sample cache byte usage is estimated from decoded sample fields, not from JavaScript object heap size.
 - Worker loading currently targets point data only; hierarchy metadata selection and cache policy remain on the main thread.

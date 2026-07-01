@@ -61,6 +61,12 @@ The basic viewer keeps the camera-stream point budget at 5,000 points by
 default. In the current local benchmark it was reasonable for the Autzen sample,
 but SoFi still produced long frames even at 2,500 points.
 
+Additional targeted diagnostics on the SoFi sample with a 2,500-point stream
+budget measured average stream-stage timing at expand/select/render/total
+`234.3/127.2/10.0/470.0 ms`. Rendering the submitted points was not the dominant
+cost in that run; hierarchy expansion, hierarchy application, and node selection
+were the larger sources of delay.
+
 This means the next performance work should focus on camera-stream scheduling
 and hierarchy expansion cost, not simply lowering the render point count. 10,000
 and 20,000 points are currently best treated as stress cases, not defaults.

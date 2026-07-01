@@ -68,6 +68,7 @@ interface BasicViewerBenchmarkStatus {
   readonly pointRenderer?: string;
   readonly rendererTiming?: string;
   readonly rendererPayload?: string;
+  readonly cameraStreamDiagnostics?: string;
   readonly hierarchyPages?: string;
   readonly pointCache?: string;
   readonly renderSet?: string;
@@ -80,6 +81,16 @@ interface BasicViewerBenchmarkApi {
     options?: BasicViewerBenchmarkCameraOptions,
   ) => Promise<BasicViewerBenchmarkStatus>;
   readonly getStatus: () => BasicViewerBenchmarkStatus;
+}
+
+interface CameraStreamDiagnostics {
+  readonly expandHierarchyMilliseconds: number;
+  readonly applyHierarchyMilliseconds: number;
+  readonly selectNodesMilliseconds: number;
+  readonly renderNodesMilliseconds: number;
+  readonly totalMilliseconds: number;
+  readonly loadedHierarchyPageCount: number;
+  readonly selectedNodeCount: number;
 }
 
 declare global {
@@ -97,6 +108,7 @@ let currentCoordinateTransform: CopcCoordinateTransformStatus | undefined;
 let currentSuggestion: CopcHierarchyNodeSuggestion | undefined;
 let currentSource: CopcSourceConfig = DEFAULT_SAMPLE_COPC_SOURCE;
 let currentPointRendererKind: PointRendererKind = "primitive";
+let lastCameraStreamDiagnostics: CameraStreamDiagnostics | undefined;
 let automaticStreamRequestId = 0;
 let automaticStreamAbortController: AbortController | undefined;
 let lastAutomaticStreamNodeKeySignature = "";
@@ -307,6 +319,7 @@ function readBenchmarkStatus(): BasicViewerBenchmarkStatus {
     pointRenderer: metadata["Point renderer"],
     rendererTiming: metadata["Renderer timing"],
     rendererPayload: metadata["Renderer payload"],
+    cameraStreamDiagnostics: metadata["Camera stream diagnostics"],
     hierarchyPages: metadata["Hierarchy pages"],
     pointCache: metadata["Point cache"],
     renderSet: metadata["Render set"],
@@ -379,6 +392,7 @@ async function inspectSource(source: CopcSourceConfig): Promise<void> {
   currentHierarchy = undefined;
   currentCoordinateTransform = undefined;
   currentSuggestion = undefined;
+  lastCameraStreamDiagnostics = undefined;
   currentSource = activeSource;
   currentPointRendererKind = pointRendererKind;
   automaticStreamRequestId += 1;
@@ -467,6 +481,12 @@ function renderInspection(
     metadataRow(
       "Renderer payload",
       renderStats ? formatRendererPayload(renderStats) : "Not rendered yet",
+    ),
+    metadataRow(
+      "Camera stream diagnostics",
+      lastCameraStreamDiagnostics
+        ? formatCameraStreamDiagnostics(lastCameraStreamDiagnostics)
+        : "Not streamed yet",
     ),
     metadataRow("LAS version", inspection.lasVersion),
     metadataRow(
@@ -728,13 +748,17 @@ async function renderAutomaticNodeSetForCameraMove(
   automaticStreamAbortController = abortController;
   const { signal } = abortController;
   const requestId = (automaticStreamRequestId += 1);
+  const streamStartedAt = performance.now();
 
   try {
+    const expandHierarchyStartedAt = performance.now();
     const hierarchyExpansion = await layer.expandHierarchyForCamera({
       camera: viewer.camera,
       maxPages: CAMERA_STREAM_MAX_HIERARCHY_PAGES,
       signal,
     });
+    const expandHierarchyMilliseconds =
+      performance.now() - expandHierarchyStartedAt;
 
     if (
       signal.aborted ||
@@ -745,13 +769,18 @@ async function renderAutomaticNodeSetForCameraMove(
       return;
     }
 
+    const applyHierarchyStartedAt = performance.now();
     const loadedPageKeys = applyHierarchyExpansion(hierarchyExpansion);
+    const applyHierarchyMilliseconds =
+      performance.now() - applyHierarchyStartedAt;
+    const selectNodesStartedAt = performance.now();
     const cameraSelection = await layer.selectNodesForCamera({
       camera: viewer.camera,
       maxNodes: CAMERA_STREAM_MAX_NODES,
       maxDepth: CAMERA_STREAM_MAX_DEPTH,
       signal,
     });
+    const selectNodesMilliseconds = performance.now() - selectNodesStartedAt;
 
     if (
       signal.aborted ||
@@ -773,10 +802,12 @@ async function renderAutomaticNodeSetForCameraMove(
 
     elements.statusText.textContent = `Streaming ${nodeKeys.length.toLocaleString()} COPC nodes for camera position...`;
 
+    const renderNodesStartedAt = performance.now();
     const result = await layer.renderNodes(nodeKeys, {
       maxRenderedPointCount: readCameraStreamMaxRenderedPointCount(),
       signal,
     });
+    const renderNodesMilliseconds = performance.now() - renderNodesStartedAt;
 
     if (
       signal.aborted ||
@@ -787,6 +818,15 @@ async function renderAutomaticNodeSetForCameraMove(
       return;
     }
 
+    lastCameraStreamDiagnostics = {
+      expandHierarchyMilliseconds,
+      applyHierarchyMilliseconds,
+      selectNodesMilliseconds,
+      renderNodesMilliseconds,
+      totalMilliseconds: performance.now() - streamStartedAt,
+      loadedHierarchyPageCount: loadedPageKeys.length,
+      selectedNodeCount: nodeKeys.length,
+    };
     lastAutomaticStreamNodeKeySignature = nodeKeySignature;
     renderNodeSet.clear();
     result.nodes.forEach((node) => renderNodeSet.add(node.key));
@@ -1340,6 +1380,12 @@ function formatRenderStats(stats: CopcPointCloudLayerRenderStats): string {
 
 function formatRendererPayload(stats: CopcPointCloudLayerRenderStats): string {
   return `${formatBytes(stats.estimatedRenderPayloadBytes)} estimated coordinate/color payload`;
+}
+
+function formatCameraStreamDiagnostics(
+  diagnostics: CameraStreamDiagnostics,
+): string {
+  return `expand ${formatMilliseconds(diagnostics.expandHierarchyMilliseconds)} ms, apply ${formatMilliseconds(diagnostics.applyHierarchyMilliseconds)} ms, select ${formatMilliseconds(diagnostics.selectNodesMilliseconds)} ms, render ${formatMilliseconds(diagnostics.renderNodesMilliseconds)} ms, total ${formatMilliseconds(diagnostics.totalMilliseconds)} ms, ${diagnostics.loadedHierarchyPageCount.toLocaleString()} pages, ${diagnostics.selectedNodeCount.toLocaleString()} nodes`;
 }
 
 function formatHierarchyPageStats(
