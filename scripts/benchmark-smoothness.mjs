@@ -528,14 +528,15 @@ function createSmoothnessFlow(
         throw new Error("Stream on camera move is disabled.");
       }
 
-      if (!checkbox.checked) {
-        if (status) {
-          status.textContent = "Smoothness benchmark camera stream pending...";
-        }
-
-        checkbox.checked = true;
-        checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+      if (status) {
+        status.textContent = "Smoothness benchmark camera stream pending...";
       }
+
+      if (!checkbox.checked) {
+        checkbox.checked = true;
+      }
+
+      checkbox.dispatchEvent(new Event("change", { bubbles: true }));
     });
     await waitForCameraStreamStatus();
 
@@ -623,6 +624,18 @@ function createSmoothnessFlow(
     };
   }
 
+  function parseAppliedCameraStreamBudget(budgetText) {
+    const lastMatch = budgetText?.match(/last ([\\d,]+) points/);
+
+    if (lastMatch) {
+      return Number(lastMatch[1].replaceAll(",", ""));
+    }
+
+    const budgetMatch = budgetText?.match(/^([\\d,]+) points/);
+
+    return budgetMatch ? Number(budgetMatch[1].replaceAll(",", "")) : undefined;
+  }
+
   async function measureSmoothness(sampleSnapshot, streamPointBudget, runIndex) {
     const measurement = await page.evaluate(
       async ({ durationMilliseconds, cameraSteps, moveMeters }) => {
@@ -697,12 +710,15 @@ function createSmoothnessFlow(
     const cameraStreamDiagnostics = parseCameraStreamDiagnostics(
       measurement.status.cameraStreamDiagnostics,
     );
+    const appliedStreamPointBudget =
+      parseAppliedCameraStreamBudget(measurement.status.cameraStreamBudget) ??
+      streamPointBudget;
 
     if (renderedPointCount === undefined) {
       failures.push(\`run \${runIndex} did not report a camera stream point count.\`);
-    } else if (renderedPointCount > streamPointBudget) {
+    } else if (renderedPointCount > appliedStreamPointBudget) {
       failures.push(
-        \`run \${runIndex} rendered \${renderedPointCount} points with a \${streamPointBudget} point budget.\`,
+        \`run \${runIndex} rendered \${renderedPointCount} points with a \${appliedStreamPointBudget} point budget.\`,
       );
     }
 

@@ -265,7 +265,19 @@ function createSmokeFlow(baseUrl) {
       (await metadataValue("Coordinate transform"))?.includes("EPSG:32611"),
     "SoFi coordinate transform was not reported.",
   );
-  await page.getByRole("checkbox", { name: "Stream on camera move" }).check();
+  await page.evaluate(() => {
+    const checkbox = document.querySelector("#copc-auto-stream");
+
+    if (!(checkbox instanceof HTMLInputElement)) {
+      throw new Error("Stream on camera move checkbox was not found.");
+    }
+
+    if (!checkbox.checked) {
+      checkbox.checked = true;
+    }
+
+    checkbox.dispatchEvent(new Event("change", { bubbles: true }));
+  });
   await waitForStatusIncludes("Camera stream rendered");
   await check(
     async () => (await metadataValue("Point cache"))?.includes("hits"),
