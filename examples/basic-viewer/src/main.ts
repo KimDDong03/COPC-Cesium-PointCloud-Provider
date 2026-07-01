@@ -1,6 +1,9 @@
 import {
   Cartesian3,
+  ImageryLayer,
+  TileMapServiceImageryProvider,
   Viewer,
+  buildModuleUrl,
 } from "cesium";
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import {
@@ -127,7 +130,11 @@ const renderNodeSet = new Set<string>();
 
 const viewer = new Viewer(elements.container, {
   animation: false,
-  baseLayer: false,
+  baseLayer: ImageryLayer.fromProviderAsync(
+    TileMapServiceImageryProvider.fromUrl(
+      buildModuleUrl("Assets/Textures/NaturalEarthII"),
+    ),
+  ),
   baseLayerPicker: false,
   fullscreenButton: false,
   geocoder: false,
