@@ -51,6 +51,7 @@ const CAMERA_STREAM_RECOVERY_RENDER_MILLISECONDS = 1_500;
 const CAMERA_STREAM_RECOVERY_STREAK = 3;
 const CAMERA_STREAM_COVERAGE_POINT_BUDGET_RATIOS = [0.5] as const;
 const CAMERA_STREAM_MIN_COVERAGE_POINTS_PER_NODE = 512;
+const CAMERA_STREAM_MIN_FINAL_POINTS_PER_NODE = 8_000;
 const CAMERA_STREAM_MOVE_DEBOUNCE_MILLISECONDS = 180;
 const DEFAULT_AUTO_STREAM_ON_CAMERA_MOVE = true;
 const CAMERA_STREAM_LOD_LEVELS = [
@@ -986,11 +987,16 @@ async function renderAutomaticNodeSetForCameraMove(
       return;
     }
 
-    const nodeKeys = cameraSelection.nodes.map((node) => node.key);
-    const nodeKeySignature = nodeKeys.join("|");
+    const selectedNodeKeys = cameraSelection.nodes.map((node) => node.key);
+    const renderNodeKeys = createCameraStreamRenderNodeKeys(
+      cameraSelection.nodes,
+      layer.hierarchy ?? currentHierarchy,
+    );
+    const nodeKeySignature = renderNodeKeys.join("|");
     const streamPointBudgetLimit = Math.max(
       readCameraStreamMaxRenderedPointCount(),
       cameraLodSettings.maxRenderedPointCount,
+      renderNodeKeys.length * CAMERA_STREAM_MIN_FINAL_POINTS_PER_NODE,
     );
     const streamPointBudget =
       readEffectiveCameraStreamMaxRenderedPointCount(streamPointBudgetLimit);
@@ -1008,7 +1014,7 @@ async function renderAutomaticNodeSetForCameraMove(
     }
 
     const coveragePasses = createCameraStreamCoveragePasses(
-      nodeKeys.length,
+      renderNodeKeys.length,
       streamPointBudget,
     );
     const streamMaxPointCountPerNode = readMaxPointCountPerNode();
@@ -1016,15 +1022,16 @@ async function renderAutomaticNodeSetForCameraMove(
 
     elements.statusText.textContent =
       coveragePasses.length > 1
-        ? `Streaming ${nodeKeys.length.toLocaleString()} COPC nodes covering the current view in ${coveragePasses.length.toLocaleString()} passes...`
-        : `Streaming ${nodeKeys.length.toLocaleString()} COPC nodes for ${cameraLodSettings.label} camera position...`;
+        ? `Streaming ${renderNodeKeys.length.toLocaleString()} COPC nodes covering the current view in ${coveragePasses.length.toLocaleString()} passes...`
+        : `Streaming ${renderNodeKeys.length.toLocaleString()} COPC nodes for ${cameraLodSettings.label} camera position...`;
 
     for (const [passIndex, coveragePass] of coveragePasses.entries()) {
       const isFinalPass = passIndex === coveragePasses.length - 1;
       const renderNodesStartedAt = performance.now();
-      const result = await layer.renderNodes(nodeKeys, {
+      const result = await layer.renderNodes(renderNodeKeys, {
         maxPointCountPerNode: streamMaxPointCountPerNode,
         maxRenderedPointCount: coveragePass.maxRenderedPointCount,
+        showBounds: false,
         signal,
       });
       renderNodesMilliseconds += performance.now() - renderNodesStartedAt;
@@ -1040,7 +1047,7 @@ async function renderAutomaticNodeSetForCameraMove(
         renderNodesMilliseconds,
         totalMilliseconds: performance.now() - streamStartedAt,
         loadedHierarchyPageCount: loadedPageKeys.length,
-        selectedNodeCount: nodeKeys.length,
+        selectedNodeCount: renderNodeKeys.length,
         selectedDepth: cameraSelection.selectedDepth,
       };
 
@@ -1060,8 +1067,8 @@ async function renderAutomaticNodeSetForCameraMove(
         diagnostics,
         renderedPointBudget: coveragePass.maxRenderedPointCount,
         statusText: isFinalPass
-          ? `Camera stream rendered ${result.pointSamples.sampledPointCount.toLocaleString()} points from ${result.pointSamples.nodeKeys.length.toLocaleString()} COPC nodes (${cameraLodSettings.label}, depth ${cameraSelection.selectedDepth.toLocaleString()})${formatLoadedHierarchyPages(loadedPageKeys)}.`
-          : `Camera stream coverage pass rendered ${result.pointSamples.sampledPointCount.toLocaleString()} points across all ${nodeKeys.length.toLocaleString()} visible COPC nodes (${cameraLodSettings.label}, refining detail)${formatLoadedHierarchyPages(loadedPageKeys)}.`,
+          ? `Camera stream rendered ${result.pointSamples.sampledPointCount.toLocaleString()} points from ${result.pointSamples.nodeKeys.length.toLocaleString()} COPC nodes (${cameraLodSettings.label}, ${selectedNodeKeys.length.toLocaleString()} selected detail nodes plus coverage ancestors)${formatLoadedHierarchyPages(loadedPageKeys)}.`
+          : `Camera stream coverage pass rendered ${result.pointSamples.sampledPointCount.toLocaleString()} points across ${renderNodeKeys.length.toLocaleString()} visible COPC coverage nodes (${cameraLodSettings.label}, refining detail)${formatLoadedHierarchyPages(loadedPageKeys)}.`,
       });
     }
     queueCameraHierarchyPrefetch(layer);
@@ -1101,6 +1108,56 @@ function clearQueuedAutomaticStreamRender(): void {
 
   window.clearTimeout(automaticStreamDebounceTimeout);
   automaticStreamDebounceTimeout = undefined;
+}
+
+function createCameraStreamRenderNodeKeys(
+  selectedNodes: readonly CopcHierarchyNodeSummary[],
+  hierarchy: CopcHierarchySummary | undefined,
+): readonly string[] {
+  const availableNodeKeys = new Set(
+    hierarchy?.nodes.map((node) => node.key) ??
+      selectedNodes.map((node) => node.key),
+  );
+  const renderNodeKeys = new Set<string>();
+
+  selectedNodes.forEach((node) => {
+    createNodeAncestorKeys(node.key).forEach((nodeKey) => {
+      if (availableNodeKeys.has(nodeKey)) {
+        renderNodeKeys.add(nodeKey);
+      }
+    });
+
+    if (availableNodeKeys.has(node.key)) {
+      renderNodeKeys.add(node.key);
+    }
+  });
+
+  return [...renderNodeKeys];
+}
+
+function createNodeAncestorKeys(nodeKey: string): readonly string[] {
+  const [depth, x, y, z] = nodeKey.split("-").map(Number);
+
+  if (
+    !Number.isSafeInteger(depth) ||
+    !Number.isSafeInteger(x) ||
+    !Number.isSafeInteger(y) ||
+    !Number.isSafeInteger(z) ||
+    depth < 0
+  ) {
+    return [];
+  }
+
+  return Array.from({ length: depth + 1 }, (_value, ancestorDepth) => {
+    const scale = 2 ** (depth - ancestorDepth);
+
+    return [
+      ancestorDepth,
+      Math.floor(x / scale),
+      Math.floor(y / scale),
+      Math.floor(z / scale),
+    ].join("-");
+  });
 }
 
 function createCameraStreamCoveragePasses(
