@@ -18,7 +18,7 @@ The library is intentionally not a standalone viewer product. The example app ex
 - No COPC-to-3D-Tiles conversion pipeline.
 - No live LiDAR or sensor ingestion.
 - No general point cloud editing/viewer application.
-- No full production LOD, byte-based cache policy, worker pool, or custom WebGL primitive in the first milestone.
+- No full production LOD, byte-based cache policy, worker pool, or low-level custom draw-command engine in the first milestone.
 
 ## Layers
 
@@ -44,7 +44,7 @@ COPC URL
 -> range-read point data
 -> sampled source XYZ points
 -> coordinate transform
--> Cesium PointPrimitiveCollection or experimental BufferPointCollection
+-> Cesium typed-array Primitive, PointPrimitiveCollection, or experimental BufferPointCollection
 ```
 
 ## Streaming Semantics
@@ -65,7 +65,7 @@ The current implementation includes:
 - Optional `pointSampleLoading: "worker"` support that moves COPC point-data reads and LAZ decoding into a Web Worker, with main-thread fallback when a worker cannot be created.
 - A small `maxConcurrentPointSampleWorkerRequests` queue so worker-backed point sampling applies request backpressure before dispatch.
 - `AbortSignal` support for point-sample loading and Cesium render calls so stale camera-stream worker requests can be canceled and late worker responses ignored.
-- A `CopcPointCloudRenderer` interface with `CesiumBufferPointRenderer` as the default experimental GPU-buffer implementation backed by Cesium `BufferPointCollection`, plus `CesiumPointPrimitiveRenderer` as the stable `PointPrimitiveCollection` fallback. `CesiumPointRenderer` remains as a compatibility alias.
+- A `CopcPointCloudRenderer` interface with `CesiumPrimitivePointRenderer` as the default typed-array Cesium `Primitive` implementation, plus `CesiumPointPrimitiveRenderer` as the stable `PointPrimitiveCollection` fallback and `CesiumBufferPointRenderer` as an experimental `BufferPointCollection` comparison backend. `CesiumPointRenderer` remains as a compatibility alias.
 - `renderStats` on Cesium layer render results for CPU-side coordinate transform timing, renderer submission timing, bounds submission timing, rendered point count, and estimated coordinate/color payload bytes.
 - Example quality presets for changing `maxPointCountPerNode`, Auto LOD coverage budget, camera-stream point budget, and renderer point size together, plus manual controls for renderer benchmark runs.
 - Example controls for changing the camera-stream point budget independently from the initial node sample budget.
@@ -93,8 +93,8 @@ Camera-based selection requires both directions:
 
 - Hierarchy page expansion and node selection are camera-targeted; node selection now supports both nearest-node and coverage-oriented ordering, but the screen-space error estimate is not yet calibrated against point-density metrics.
 - Hierarchy page eviction is page-count based and deliberately keeps the root hierarchy page loaded; it is not byte-aware yet.
-- Point rendering defaults to the experimental Cesium buffer backend. A fully custom optimized WebGL primitive is not implemented yet.
-- The point renderer boundary exists and has two backends, but the buffer backend still needs larger-dataset validation beyond the repeatable prototype benchmark before it should be treated as production-stable.
+- Point rendering defaults to a typed-array Cesium `Primitive`, but it still rebuilds one full primitive per submitted point set and still performs coordinate conversion on the main thread.
+- The point renderer boundary exists and has three backends. The typed-array primitive backend now reduces per-point Cesium object submission, but it still needs larger-dataset validation beyond the repeatable prototype benchmark before it should be treated as production-stable.
 - Renderer timing currently measures browser CPU-side submission work. The smoothness benchmark measures browser frame intervals and stream-stage timing during camera movement, but it is still not a full GPU profiler.
 - Renderer payload bytes are an estimated coordinate/color payload size, not full JavaScript heap or GPU memory usage.
 - Point sample cache byte usage is estimated from decoded sample fields, not from JavaScript object heap size.
@@ -109,4 +109,4 @@ Camera-based selection requires both directions:
 2. Validate the higher-density depth-3 camera-stream setting against larger external COPC samples.
 3. Calibrate screen-space error estimates and default render-point budgets against the measured frame-time data.
 4. Tune worker concurrency defaults and add worker-pool support if one worker becomes a bottleneck.
-5. Compare repeatable larger-point-count benchmark results across more COPC samples and decide whether a fully custom WebGL primitive is still needed.
+5. Compare repeatable larger-point-count benchmark results across more COPC samples and decide whether the typed-array primitive should be split into reusable buffers, worker-prepared payloads, or a lower-level custom draw path.

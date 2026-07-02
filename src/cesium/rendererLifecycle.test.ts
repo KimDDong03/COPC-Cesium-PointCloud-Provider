@@ -5,6 +5,7 @@ import { CesiumBoundsRenderer } from "./CesiumBoundsRenderer";
 import { CesiumBufferPointRenderer } from "./CesiumBufferPointRenderer";
 import { CesiumPointPrimitiveRenderer } from "./CesiumPointPrimitiveRenderer";
 import { CesiumPointRenderer } from "./CesiumPointRenderer";
+import { CesiumPrimitivePointRenderer } from "./CesiumPrimitivePointRenderer";
 
 describe("Cesium renderer lifecycle", () => {
   it("removes point primitive collections once when destroyed", () => {
@@ -107,6 +108,62 @@ describe("Cesium renderer lifecycle", () => {
     expect(
       () => new CesiumBufferPointRenderer(scene, { outlineWidth: -1 }),
     ).toThrow("outlineWidth must be a non-negative number.");
+  });
+
+  it("rebuilds typed-array primitives when points change", () => {
+    const { addedPrimitives, removedPrimitives, scene } = createSceneStub();
+    const renderer = new CesiumPrimitivePointRenderer(scene);
+
+    expect(addedPrimitives).toHaveLength(0);
+
+    renderer.setPoints([
+      {
+        longitudeDegrees: 127,
+        latitudeDegrees: 37,
+        heightMeters: 10,
+      },
+    ]);
+
+    expect(addedPrimitives).toHaveLength(1);
+    expect(removedPrimitives).toHaveLength(0);
+
+    renderer.setPoints([
+      {
+        longitudeDegrees: 127,
+        latitudeDegrees: 37,
+        heightMeters: 10,
+      },
+      {
+        longitudeDegrees: 127.001,
+        latitudeDegrees: 37.001,
+        heightMeters: 15,
+        color: {
+          red: 255,
+          green: 0,
+          blue: 0,
+        },
+      },
+    ]);
+
+    expect(addedPrimitives).toHaveLength(2);
+    expect(removedPrimitives).toHaveLength(1);
+
+    renderer.clear();
+    renderer.destroy();
+    renderer.destroy();
+
+    expect(removedPrimitives).toHaveLength(2);
+    expect(() => renderer.setPoints([])).toThrow(
+      "CesiumPrimitivePointRenderer has been destroyed.",
+    );
+  });
+
+  it("rejects invalid typed-array primitive styling options", () => {
+    const { scene } = createSceneStub();
+
+    expect(
+      () => new CesiumPrimitivePointRenderer(scene, { pointSize: 0 }),
+    ).toThrow("pointSize must be a positive number.");
   });
 
   it("removes bounds primitive collections once when destroyed", () => {

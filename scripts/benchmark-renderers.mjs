@@ -225,7 +225,7 @@ function stopServer(serverProcess) {
 
 function createBenchmarkFlow(baseUrl, targetPointCount, repeatCount) {
   return `async (page) => {
-  const renderers = ["primitive", "buffer"];
+  const renderers = ["typed", "primitive", "buffer"];
   const targetPointCount = ${JSON.stringify(targetPointCount)};
   const repeatCount = ${JSON.stringify(repeatCount)};
   const failures = [];

@@ -37,7 +37,7 @@ import {
 } from "../core/copc/suggestHierarchyNode";
 import type { PointSample } from "../core/PointSample";
 import { CesiumBoundsRenderer } from "./CesiumBoundsRenderer";
-import { CesiumBufferPointRenderer } from "./CesiumBufferPointRenderer";
+import { CesiumPrimitivePointRenderer } from "./CesiumPrimitivePointRenderer";
 import type {
   CopcPointCloudRenderer,
   CopcPointCloudRendererFactory,
@@ -177,7 +177,7 @@ export class CopcPointCloudLayer {
     });
     this.pointRenderer = (
       options.createPointRenderer ??
-      ((scene) => new CesiumBufferPointRenderer(scene))
+      ((scene) => new CesiumPrimitivePointRenderer(scene))
     )(scene);
     this.boundsRenderer = new CesiumBoundsRenderer(scene);
     this.defaultMaxPointCountPerNode = options.maxPointCountPerNode;

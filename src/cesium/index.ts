@@ -23,6 +23,10 @@ export {
   type CesiumBufferPointRendererOptions,
 } from "./CesiumBufferPointRenderer";
 export {
+  CesiumPrimitivePointRenderer,
+  type CesiumPrimitivePointRendererOptions,
+} from "./CesiumPrimitivePointRenderer";
+export {
   CesiumPointPrimitiveRenderer,
   type CesiumPointPrimitiveRendererOptions,
 } from "./CesiumPointPrimitiveRenderer";

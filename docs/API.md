@@ -14,7 +14,7 @@ Cesium-native renderer.
 ```ts
 import { CopcPointCloudLayer } from "copc-cesium";
 import { CopcSource } from "copc-cesium/core";
-import { CesiumPointPrimitiveRenderer } from "copc-cesium/cesium";
+import { CesiumPrimitivePointRenderer } from "copc-cesium/cesium";
 ```
 
 - `copc-cesium` exports both core and Cesium-facing APIs.
@@ -29,7 +29,7 @@ import { CesiumPointPrimitiveRenderer } from "copc-cesium/cesium";
 import { Viewer } from "cesium";
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import {
-  CesiumPointPrimitiveRenderer,
+  CesiumPrimitivePointRenderer,
   CopcPointCloudLayer,
 } from "copc-cesium";
 
@@ -39,7 +39,7 @@ const layer = new CopcPointCloudLayer(viewer.scene, {
   url: "https://example.com/point-cloud.copc.laz",
   maxPointCountPerNode: 5_000,
   pointSampleLoading: "worker",
-  createPointRenderer: (scene) => new CesiumPointPrimitiveRenderer(scene),
+  createPointRenderer: (scene) => new CesiumPrimitivePointRenderer(scene),
 });
 
 const { hierarchy, coordinateTransform } = await layer.load();
@@ -77,7 +77,7 @@ COPC file that is readable by browser HTTP range requests.
 | `maxCachedPointSampleBytes` | `32 * 1024 * 1024` | Estimated decoded point sample cache byte limit. |
 | `pointSampleLoading` | `"main-thread"` unless a worker factory is provided | Use `"worker"` to move point-data reads and LAZ decoding into a Web Worker. |
 | `createPointSampleWorker` | built-in worker factory | Custom worker factory for applications with their own bundling strategy. |
-| `createPointRenderer` | `CesiumPointPrimitiveRenderer` | Renderer factory implementing `CopcPointCloudRenderer`. |
+| `createPointRenderer` | `CesiumPrimitivePointRenderer` | Renderer factory implementing `CopcPointCloudRenderer`. |
 | `showBounds` | `true` | Whether render calls draw debug hierarchy bounds by default. |
 | `coordinateTransforms` | `createDefaultCopcCoordinateTransforms` | Factory that maps COPC source XYZ to Cesium longitude, latitude, and height. |
 
@@ -223,11 +223,29 @@ number of selected nodes may change as the camera moves.
 
 ## Renderers
 
-`CopcPointCloudLayer` uses `CesiumBufferPointRenderer` by default. It is backed
-by Cesium `BufferPointCollection`, so the default Cesium submission path is
-GPU-buffer-oriented for the prototype. Cesium currently marks
-`BufferPointCollection` experimental, so `CesiumPointPrimitiveRenderer` remains
-available as a stable fallback.
+`CopcPointCloudLayer` uses `CesiumPrimitivePointRenderer` by default. It builds
+one Cesium `Primitive` from typed position and color arrays, avoiding one
+Cesium point object per rendered COPC point. This keeps the default renderer
+Cesium-native while moving closer to the final high-density path.
+
+You can configure the default typed-array primitive renderer explicitly when you
+need to tune point size.
+
+```ts
+import { CesiumPrimitivePointRenderer } from "copc-cesium";
+
+new CopcPointCloudLayer(viewer.scene, {
+  url,
+  createPointRenderer: (scene) =>
+    new CesiumPrimitivePointRenderer(scene, {
+      pointSize: 2,
+    }),
+});
+```
+
+`CesiumPointPrimitiveRenderer` remains available as a stable Cesium
+`PointPrimitiveCollection` fallback. `CesiumBufferPointRenderer` is also
+available for comparison with Cesium's experimental `BufferPointCollection`.
 
 ```ts
 import { CesiumPointPrimitiveRenderer } from "copc-cesium";
@@ -241,9 +259,6 @@ new CopcPointCloudLayer(viewer.scene, {
     }),
 });
 ```
-
-You can also configure the default GPU buffer renderer explicitly when you need
-to tune point size or outline settings.
 
 ```ts
 import { CesiumBufferPointRenderer } from "copc-cesium";
@@ -324,8 +339,9 @@ This is the boundary that should stay independent of Cesium imports.
 
 ## Current Stability
 
-- Default renderer: experimental `CesiumBufferPointRenderer`.
+- Default renderer: `CesiumPrimitivePointRenderer`.
 - Stable fallback renderer: `CesiumPointPrimitiveRenderer`.
+- Experimental comparison renderer: `CesiumBufferPointRenderer`.
 - Prototype-level camera streaming and Auto LOD.
 - CRS detection is limited. Pass `createProj4CoordinateTransforms` for projected
   COPC files outside the built-in/default cases.

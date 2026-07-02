@@ -160,8 +160,8 @@ function createSmokeFlow(baseUrl) {
     "+proj=utm +zone=11 +datum=WGS84 +units=m +no_defs +type=crs";
   let primitiveRendererTiming = "";
   let primitiveRendererPayload = "";
-  let bufferRendererTiming = "";
-  let bufferRendererPayload = "";
+  let typedRendererTiming = "";
+  let typedRendererPayload = "";
 
   async function metadataValue(label) {
     return page.evaluate((targetLabel) => {
@@ -218,17 +218,17 @@ function createSmokeFlow(baseUrl) {
   await check(
     async () =>
       (await metadataValue("Point renderer")) ===
-      "BufferPointCollection (experimental)",
-    "Default GPU buffer renderer was not reported.",
+      "Primitive typed arrays",
+    "Default typed-array primitive renderer was not reported.",
   );
-  bufferRendererTiming = (await metadataValue("Renderer timing")) ?? "";
-  bufferRendererPayload = (await metadataValue("Renderer payload")) ?? "";
+  typedRendererTiming = (await metadataValue("Renderer timing")) ?? "";
+  typedRendererPayload = (await metadataValue("Renderer payload")) ?? "";
   await check(
-    async () => parsePointCount(bufferRendererTiming) >= minDefaultAutoLodPointCount,
+    async () => parsePointCount(typedRendererTiming) >= minDefaultAutoLodPointCount,
     "Default renderer timing did not report the upgraded Auto LOD point count.",
   );
   await check(
-    async () => bufferRendererPayload.includes("estimated coordinate/color payload"),
+    async () => typedRendererPayload.includes("estimated coordinate/color payload"),
     "Default renderer payload estimate was not reported.",
   );
   await check(
@@ -360,8 +360,8 @@ function createSmokeFlow(baseUrl) {
     sourcePreset: await metadataValue("Source preset"),
     primitiveRendererTiming,
     primitiveRendererPayload,
-    bufferRendererTiming,
-    bufferRendererPayload,
+    typedRendererTiming,
+    typedRendererPayload,
     screenshotPath: ${JSON.stringify(screenshotPath)},
   };
 }

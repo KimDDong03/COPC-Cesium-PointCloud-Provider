@@ -24,7 +24,7 @@ The current prototype is intentionally small:
 5. Display sampled COPC hierarchy-node points in CesiumJS.
 6. Load nearby COPC hierarchy pages progressively, track loaded hierarchy page provenance, reuse bounded caches, and optionally decode point samples in a Web Worker.
 
-Full production LOD, persistent cache management, worker pools, custom WebGL primitives, and advanced styling come later.
+Full production LOD, persistent cache management, worker pools, lower-level custom draw paths, and advanced styling come later.
 
 ## Run
 
@@ -40,7 +40,7 @@ Open `http://localhost:3000`.
 ```ts
 import { Viewer } from "cesium";
 import {
-  CesiumPointPrimitiveRenderer,
+  CesiumPrimitivePointRenderer,
   CopcPointCloudLayer,
 } from "copc-cesium";
 
@@ -49,7 +49,7 @@ const layer = new CopcPointCloudLayer(viewer.scene, {
   url: "https://example.com/point-cloud.copc.laz",
   maxPointCountPerNode: 5_000,
   pointSampleLoading: "worker",
-  createPointRenderer: (scene) => new CesiumPointPrimitiveRenderer(scene),
+  createPointRenderer: (scene) => new CesiumPrimitivePointRenderer(scene),
 });
 
 const { hierarchy } = await layer.load();
@@ -81,22 +81,22 @@ npm run smoke:package
 `npm pack --dry-run` can be used after `npm run build` to inspect the package contents without publishing.
 `npm run smoke:example` builds the example, starts a temporary preview server, and verifies Autzen, SoFi, and Custom URL + proj4 rendering in a browser. Run `npm run smoke:example:install-browser` once if Playwright reports that Chrome for Testing is missing.
 `npm run smoke:package` packs the local build, installs it into a temporary consumer project, and verifies public imports from `copc-cesium`, `copc-cesium/core`, and `copc-cesium/cesium`.
-`npm run benchmark:renderers` builds the example, starts a temporary preview server, renders the Autzen COPC sample with both point renderers at a larger sample size, repeats each run, and writes browser-measured renderer timing to `output/renderer-benchmark/renderers.json`. The defaults are 10,000 max points per node and 3 repeats. On PowerShell, override them with `$env:COPC_BENCHMARK_POINT_COUNT="20000"; $env:COPC_BENCHMARK_REPEATS="5"; npm run benchmark:renderers`.
+`npm run benchmark:renderers` builds the example, starts a temporary preview server, renders the Autzen COPC sample with the typed-array, point-primitive, and buffer point renderers at a larger sample size, repeats each run, and writes browser-measured renderer timing to `output/renderer-benchmark/renderers.json`. The defaults are 10,000 max points per node and 3 repeats. On PowerShell, override them with `$env:COPC_BENCHMARK_POINT_COUNT="20000"; $env:COPC_BENCHMARK_REPEATS="5"; npm run benchmark:renderers`.
 `npm run benchmark:smoothness` builds the example, starts a temporary preview server, enables camera streaming, moves the Cesium camera, records browser frame intervals, stream-stage timing, and selected LOD depth, then writes the result to `output/smoothness-benchmark/smoothness.json`. The defaults are Autzen, SoFi, and Custom SoFi URL samples; 2,500 / 5,000 / 10,000 / 20,000 camera-stream point budgets; 2 repeats per budget; 24 camera steps; 3 seconds per run; and sample-specific minimum selected-depth checks. On PowerShell, override them with `$env:COPC_SMOOTHNESS_SAMPLES="autzen-classified,sofi-stadium"; $env:COPC_SMOOTHNESS_POINT_BUDGETS="5000,10000"; $env:COPC_SMOOTHNESS_REPEATS="5"; $env:COPC_SMOOTHNESS_MIN_SELECTED_DEPTH="2"; npm run benchmark:smoothness`.
 The same browser rendering smoke is available as the manual GitHub Actions workflow `Example Browser Smoke`.
 
 The runnable prototype lives in `examples/basic-viewer`. The root `src` folder contains reusable COPC and Cesium integration code used by that example.
 Reusable source entry points are `src/index.ts`, `src/core/index.ts`, and `src/cesium/index.ts`; package exports expose built JS and type declarations as `copc-cesium`, `copc-cesium/core`, and `copc-cesium/cesium`.
 `CopcPointCloudLayer` is the first thin Cesium-facing API: it owns a `CopcSource`, point renderer, bounds renderer, and simple camera-based node rendering helpers.
-The default point renderer is now `CesiumBufferPointRenderer`, an experimental GPU-buffer backend backed by Cesium `BufferPointCollection`. `CopcPointCloudLayer` also accepts a `createPointRenderer` factory so renderer backends can be swapped without changing COPC loading logic. `CesiumPointPrimitiveRenderer` remains available as the stable point-primitive fallback, and `CesiumPointRenderer` remains as a compatibility alias.
+The default point renderer is now `CesiumPrimitivePointRenderer`, a Cesium `Primitive` backend that submits typed position and color arrays instead of creating one Cesium point object per COPC point. `CopcPointCloudLayer` also accepts a `createPointRenderer` factory so renderer backends can be swapped without changing COPC loading logic. `CesiumPointPrimitiveRenderer` remains available as the stable point-primitive fallback, `CesiumBufferPointRenderer` remains available as an experimental `BufferPointCollection` comparison backend, and `CesiumPointRenderer` remains as a compatibility alias.
 
 The default example URL loads the public Autzen COPC sample, reads the root hierarchy, renders an initial node to place the camera, then automatically renders a denser camera-selected coverage LOD set.
-Balanced detail mode now targets up to 240,000 Auto LOD points with 2 px GPU buffer points and selects coverage nodes through depth 3 so the visible COPC footprint is filled more like tiles instead of only showing the nearest few nodes.
+Balanced detail mode now targets up to 240,000 Auto LOD points with 2 px typed-array primitive points and selects coverage nodes through depth 3 so the visible COPC footprint is filled more like tiles instead of only showing the nearest few nodes.
 The example keeps sample COPC URLs and their transform factories in a small preset list while still allowing direct custom URL entry.
 Bundled sample presets use the Vite `/copc-samples/*` proxy so local dev and preview runs can issue same-origin COPC range requests even when a browser blocks direct S3 requests.
 For custom URLs, the example can also accept a source CRS and optional proj4 definition before loading the COPC file.
 The hierarchy node selector lists currently loaded nodes and lets the example render one selected node at a time.
-The renderer selector starts on the GPU buffer renderer and can switch back to the stable point-primitive renderer for comparison.
+The renderer selector starts on the typed-array primitive renderer and can switch to the stable point-primitive renderer or the experimental buffer renderer for comparison.
 The Quality selector switches between fast preview, balanced detail, high detail, and ultra density presets. These presets tune the point budget and point pixel size together so the example can show a denser cloud without oversized marker dots.
 The Max points / node input controls the active `CopcPointCloudLayer` sample budget, which makes manual and automated renderer comparison possible without changing source code.
 The Camera stream points input controls the maximum point budget used by `Stream on camera move`; the example can temporarily lower the effective stream budget after slow updates and recover it after repeated fast updates.
@@ -123,6 +123,7 @@ Included example presets:
 import {
   CesiumBufferPointRenderer,
   CesiumPointPrimitiveRenderer,
+  CesiumPrimitivePointRenderer,
   CopcPointCloudLayer,
   createDefaultCopcCoordinateTransforms,
 } from "copc-cesium";
@@ -134,8 +135,10 @@ const layer = new CopcPointCloudLayer(viewer.scene, {
   maxCachedPointSampleBytes: 32 * 1024 * 1024,
   maxConcurrentPointSampleWorkerRequests: 3,
   pointSampleLoading: "worker",
-  createPointRenderer: (scene) => new CesiumPointPrimitiveRenderer(scene),
-  // Experimental alternative:
+  createPointRenderer: (scene) => new CesiumPrimitivePointRenderer(scene),
+  // Stable fallback:
+  // createPointRenderer: (scene) => new CesiumPointPrimitiveRenderer(scene),
+  // Experimental comparison backend:
   // createPointRenderer: (scene) => new CesiumBufferPointRenderer(scene),
   coordinateTransforms: createDefaultCopcCoordinateTransforms,
 });

@@ -9,6 +9,7 @@ import "cesium/Build/Cesium/Widgets/widgets.css";
 import {
   CesiumBufferPointRenderer,
   CesiumPointPrimitiveRenderer,
+  CesiumPrimitivePointRenderer,
   CopcPointCloudLayer,
   type CopcBounds,
   type CopcCoordinateTransformStatus,
@@ -156,10 +157,11 @@ const HIERARCHY_PAGE_CACHE_LIMIT = 64;
 const POINT_SAMPLE_CACHE_LIMIT = 32;
 const POINT_SAMPLE_CACHE_BYTE_LIMIT = 32 * 1024 * 1024;
 const POINT_RENDERER_LABELS = {
+  typed: "Primitive typed arrays",
   primitive: "PointPrimitiveCollection",
   buffer: "BufferPointCollection (experimental)",
 } as const;
-const DEFAULT_POINT_RENDERER_KIND: PointRendererKind = "buffer";
+const DEFAULT_POINT_RENDERER_KIND: PointRendererKind = "typed";
 
 type PointRendererKind = keyof typeof POINT_RENDERER_LABELS;
 type RenderQuality = keyof typeof RENDER_QUALITY_SETTINGS;
@@ -1604,8 +1606,10 @@ function readCustomProjectionOptions(): CustomCopcProjectionOptions {
 }
 
 function readPointRendererKind(): PointRendererKind {
-  return elements.rendererSelect.value === "primitive"
-    ? "primitive"
+  const value = elements.rendererSelect.value;
+
+  return value in POINT_RENDERER_LABELS
+    ? (value as PointRendererKind)
     : DEFAULT_POINT_RENDERER_KIND;
 }
 
@@ -1822,17 +1826,26 @@ function createPointRendererFactory(
 ): CopcPointCloudRendererFactory {
   const qualitySettings = readRenderQualitySettings();
 
-  return kind === "buffer"
-    ? (scene) =>
-        new CesiumBufferPointRenderer(scene, {
-          pointSize: qualitySettings.pointPixelSize,
-          outlineWidth: qualitySettings.pointOutlineWidth,
-        })
-    : (scene) =>
-        new CesiumPointPrimitiveRenderer(scene, {
-          pixelSize: qualitySettings.pointPixelSize,
-          outlineWidth: qualitySettings.pointOutlineWidth,
-        });
+  if (kind === "buffer") {
+    return (scene) =>
+      new CesiumBufferPointRenderer(scene, {
+        pointSize: qualitySettings.pointPixelSize,
+        outlineWidth: qualitySettings.pointOutlineWidth,
+      });
+  }
+
+  if (kind === "primitive") {
+    return (scene) =>
+      new CesiumPointPrimitiveRenderer(scene, {
+        pixelSize: qualitySettings.pointPixelSize,
+        outlineWidth: qualitySettings.pointOutlineWidth,
+      });
+  }
+
+  return (scene) =>
+    new CesiumPrimitivePointRenderer(scene, {
+      pointSize: qualitySettings.pointPixelSize,
+    });
 }
 
 function syncCustomProjectionControls(): void {

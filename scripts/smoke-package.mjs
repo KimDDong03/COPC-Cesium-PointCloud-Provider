@@ -170,8 +170,10 @@ import {
   CesiumBufferPointRenderer,
   CesiumPointPrimitiveRenderer,
   CesiumPointRenderer,
+  CesiumPrimitivePointRenderer,
   type CesiumBufferPointRendererOptions,
   type CesiumPointPrimitiveRendererOptions,
+  type CesiumPrimitivePointRendererOptions,
   type CopcPointCloudRendererFactory,
 } from "copc-cesium/cesium";
 
@@ -181,6 +183,7 @@ const exportedConstructors = [
   CesiumBufferPointRenderer,
   CesiumPointRenderer,
   CesiumPointPrimitiveRenderer,
+  CesiumPrimitivePointRenderer,
   createDefaultCopcCoordinateTransforms,
   createProj4CoordinateTransforms,
   createCopcPointSampleWorker,
@@ -224,6 +227,9 @@ const primitiveRendererOptions: CesiumPointPrimitiveRendererOptions = {
 const bufferRendererOptions: CesiumBufferPointRendererOptions = {
   pointSize: 3,
   outlineWidth: 0,
+};
+const primitiveTypedArrayRendererOptions: CesiumPrimitivePointRendererOptions = {
+  pointSize: 3,
 };
 const createSource = (): CopcSource =>
   new CopcSource("https://example.com/sample.copc.laz", sourceOptions);
@@ -281,6 +287,7 @@ if (app) {
     String(renderStats.estimatedRenderPayloadBytes),
     String(primitiveRendererOptions.pixelSize),
     String(bufferRendererOptions.pointSize),
+    String(primitiveTypedArrayRendererOptions.pointSize),
   ].join(" | ");
 }
 `,

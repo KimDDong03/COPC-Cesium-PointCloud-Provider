@@ -69,24 +69,26 @@ Measured on 2026-07-02 with `COPC_BENCHMARK_POINT_COUNT=10000` and
 
 | Renderer | Points | Transform | Renderer submit | Total |
 | --- | ---: | ---: | ---: | ---: |
-| `PointPrimitiveCollection` | 10,000 | 56.3 ms | 4.8 ms | 62.1 ms |
-| `BufferPointCollection` | 10,000 | 60.7 ms | 14.9 ms | 76.2 ms |
+| `Primitive typed arrays` | 10,000 | 32.1 ms | 1.1 ms | 33.4 ms |
+| `PointPrimitiveCollection` | 10,000 | 45.4 ms | 3.9 ms | 49.6 ms |
+| `BufferPointCollection` | 10,000 | 45.8 ms | 11.4 ms | 57.6 ms |
 
-The current Cesium `BufferPointCollection` path is useful as a GPU-buffer-facing
-prototype default, but this checkpoint does not show a CPU submission-time win
-over point primitives at 10,000 points. The next performance step should avoid
-per-point Cesium object submission entirely with a custom typed-array primitive.
+The current default `CesiumPrimitivePointRenderer` submits one typed-array
+`Primitive` instead of creating one Cesium point object per point. This checkpoint
+shows a CPU submission-time win at 10,000 points. The total render path is still
+largely coordinate-transform dominated, so the next performance step should
+reduce main-thread coordinate conversion and data preparation overhead.
 
 ## Current Default
 
 The basic viewer starts in Balanced detail mode: 120,000 max points per node,
-240,000 max Auto LOD points, 120,000 max camera-stream points, and 2 px point
-GPU buffer points. The initial load renders one real COPC node to place the camera,
-then automatically renders a denser camera-selected coverage LOD set through
-depth 3. The stream input acts as a maximum budget: camera streaming can lower
-the effective point budget after slow visible updates and gradually recover it
-after repeated fast updates. This keeps the demo from staying overloaded on
-heavier samples or slower machines.
+240,000 max Auto LOD points, 120,000 max camera-stream points, and 2 px
+typed-array primitive points. The initial load renders one real COPC node to
+place the camera, then automatically renders a denser camera-selected coverage
+LOD set through depth 3. The stream input acts as a maximum budget: camera
+streaming can lower the effective point budget after slow visible updates and
+gradually recover it after repeated fast updates. This keeps the demo from
+staying overloaded on heavier samples or slower machines.
 
 Additional targeted diagnostics on the SoFi sample with a 2,500-point stream
 budget originally measured average stream-stage timing at
