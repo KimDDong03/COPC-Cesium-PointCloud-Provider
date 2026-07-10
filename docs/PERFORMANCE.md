@@ -1,6 +1,6 @@
 # Performance Notes
 
-`copc-cesium` is still a prototype, so performance claims should be backed by
+`copc-cesium` is pre-1.0, so performance claims are backed by
 repeatable browser measurements instead of fixed guarantees.
 
 ## Smoothness Benchmark
@@ -21,6 +21,35 @@ The result is written to:
 ```text
 output/smoothness-benchmark/smoothness.json
 ```
+
+`benchmark:smoothness:*` QC presets preserve named evidence such as
+`smoothness-contest.json`, `smoothness-cold-detail.json`, and
+`smoothness-warm-zoom-detail.json` with matching `-assertion.json` reports, so
+one release gate cannot overwrite another preset's result.
+
+Package smoke also caps the compressed npm tarball at 600 KiB and each packed
+worker JavaScript asset at 600 KiB. The integrated COPC geometry worker is
+deliberately emitted as a separate worker asset; keeping a hard ceiling catches
+dependency or bundling regressions without disguising Vite's raw chunk warning.
+
+The JSON includes `browserGraphics` with the WebGL vendor, renderer, and version.
+The benchmark launch requests Chromium's high-performance adapter; the recorded
+renderer remains the source of truth because headless or GPU-limited systems may
+fall back to another hardware adapter or software rendering.
+
+To require a specific adapter for a local gate, set a case-insensitive regular
+expression before running the QC command:
+
+```powershell
+$env:COPC_SMOOTHNESS_ASSERT_GPU_PATTERN="NVIDIA GeForce RTX 3060"
+npm run benchmark:smoothness:contest
+```
+
+Regression reports require matching `browserGraphics.renderer` values by
+default, preventing results from different GPUs from being treated as a valid
+before/after comparison. Set
+`COPC_SMOOTHNESS_REGRESSION_REQUIRE_SAME_GPU=0` only for an explicitly
+cross-device exploratory comparison.
 
 For a faster regression gate, run:
 
@@ -616,7 +645,7 @@ six, caps integrated geometry concurrency at eight, uses a 120 ms decoded-node
 fallback delay for the basic viewer, reserves browser capacity for rendering,
 and warms the selected geometry pool up front while still bounding total worker
 creation. This reflects the current bottleneck: typed-array Cesium submission is
-usually near-zero milliseconds in the prototype benchmark, while COPC point-data
+usually near-zero milliseconds in the current benchmark, while COPC point-data
 decompression and worker queue time dominate high-density detail completion. If
 a target deployment has tighter CPU or memory limits, applications can still
 pass explicit worker counts to `CopcPointCloudLayer`.

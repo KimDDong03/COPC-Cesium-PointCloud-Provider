@@ -8,8 +8,10 @@ This project is a CesiumJS-native COPC point cloud library. Contributions should
 
 - Load COPC files or URLs directly in the browser.
 - Use COPC hierarchy and range reads instead of converting COPC to 3D Tiles.
-- Keep COPC loading logic independent from Cesium-specific rendering logic.
-- Keep the first milestone small and verifiable before adding full LOD, workers, custom primitives, or publishing automation.
+- Keep COPC loading independent from Cesium-specific rendering and keep
+  application-only orchestration in the example.
+- Preserve the bounded camera-stream, cancellation, worker, and cache contracts
+  when tuning LOD or performance.
 
 This project is not a general point cloud viewer app, not a live LiDAR ingestion system, and not a COPC-to-3D-Tiles converter.
 
@@ -37,6 +39,16 @@ For browser rendering changes, also run:
 ```bash
 npm run smoke:example
 ```
+
+For release, LOD, worker, cache, CRS, or renderer changes, run the complete gate:
+
+```bash
+npm run qc
+```
+
+Performance changes must include the generated assertion/report paths and the
+actual `browserGraphics.renderer`. Do not treat reports from different GPUs as
+a same-device regression comparison.
 
 If Playwright reports that Chrome for Testing is missing, run this once:
 

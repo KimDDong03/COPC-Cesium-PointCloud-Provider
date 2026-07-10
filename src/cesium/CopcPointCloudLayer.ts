@@ -308,13 +308,21 @@ export interface CopcPointCloudLayerAutomaticRenderOptions
 export interface CopcPointCloudLayerProgressiveAutomaticRenderOptions
   extends CopcPointCloudLayerAutomaticRenderOptions {
   readonly backgroundNodeResults?: readonly CopcNodePointSampleResult[];
+  readonly continueLoadingAfterStop?: boolean;
   readonly initialNodeResults?: readonly CopcNodePointSampleResult[];
+  readonly maxActiveProgressiveNodeRequests?: number;
+  readonly nodeRequestOrder?: CopcPointCloudLayerProgressiveNodeOrder;
   readonly nodeRenderOrder?: CopcPointCloudLayerProgressiveNodeOrder;
+  readonly postStopLoadingMode?: CopcPointCloudLayerPostStopLoadingMode;
+  readonly postStopProgressMode?: CopcPointCloudLayerPostStopProgressMode;
   readonly progressBatchNodeCount?: number;
   readonly progressRenderMode?: CopcPointCloudLayerProgressiveRenderMode;
   readonly onProgress?: (
     result: CopcPointCloudLayerAutomaticRenderResult,
   ) => void;
+  readonly shouldStopAfterProgress?: (
+    result: CopcPointCloudLayerAutomaticRenderResult,
+  ) => boolean;
 }
 
 export interface CopcPointCloudLayerWarmupOptions {
@@ -1474,11 +1482,17 @@ export class CopcPointCloudLayer {
       signal,
       showBounds,
       backgroundNodeResults,
+      continueLoadingAfterStop,
       initialNodeResults,
+      maxActiveProgressiveNodeRequests,
+      nodeRequestOrder,
       nodeRenderOrder,
+      postStopLoadingMode,
+      postStopProgressMode,
       progressBatchNodeCount,
       progressRenderMode,
       onProgress,
+      shouldStopAfterProgress,
       ...selectionOptions
     } = options;
     throwIfAborted(signal);
@@ -1510,10 +1524,15 @@ export class CopcPointCloudLayer {
       renderNodes.map((node) => node.key),
       {
         backgroundNodeResults,
+        continueLoadingAfterStop,
         initialNodeResults,
+        maxActiveProgressiveNodeRequests,
         maxPointCountPerNode,
         maxRenderedPointCount,
         includePointsInResult,
+        nodeRequestOrder,
+        postStopLoadingMode,
+        postStopProgressMode,
         requestPriority,
         signal,
         showBounds,
@@ -1526,6 +1545,14 @@ export class CopcPointCloudLayer {
             hierarchyExpansion,
           });
         },
+        shouldStopAfterProgress: shouldStopAfterProgress
+          ? (progressResult) =>
+              shouldStopAfterProgress({
+                ...progressResult,
+                cameraSelection,
+                hierarchyExpansion,
+              })
+          : undefined,
       },
     );
 

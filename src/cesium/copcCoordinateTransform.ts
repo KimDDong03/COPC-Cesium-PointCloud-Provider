@@ -4,7 +4,7 @@ import type { CopcInspection } from "../core/copc/CopcInspection";
 export const EPSG_2992 = "EPSG:2992";
 const WGS84 = "EPSG:4326";
 const UNSUPPORTED_CRS_MESSAGE =
-  "This prototype can only render geographic coordinates or the sample EPSG:2992 COPC CRS.";
+  "COPC coordinates are neither geographic nor described by a usable WKT CRS. Pass a coordinateTransforms factory for this source.";
 export const US_SURVEY_FOOT_TO_METER = 0.304800609601219;
 
 let projectionsConfigured = false;
@@ -33,7 +33,11 @@ export type CesiumToCopcCoordinateTransform = (
   heightMeters: number,
 ) => CopcCoordinate;
 
-export type CopcCoordinateTransformKind = "geographic" | "epsg:2992" | "custom";
+export type CopcCoordinateTransformKind =
+  | "geographic"
+  | "epsg:2992"
+  | "wkt"
+  | "custom";
 
 export interface CopcCoordinateTransformStatus {
   readonly kind: CopcCoordinateTransformKind;
@@ -81,21 +85,33 @@ export function createDefaultCopcCoordinateTransforms(
 export function createProj4CoordinateTransforms(
   options: Proj4CoordinateTransformOptions,
 ): CopcCoordinateTransformFactory {
-  const targetCrs = options.targetCrs ?? WGS84;
+  const sourceCrs = requireCoordinateReferenceSystem(
+    options.sourceCrs,
+    "sourceCrs",
+  );
+  const targetCrs = requireCoordinateReferenceSystem(
+    options.targetCrs ?? WGS84,
+    "targetCrs",
+  );
   const heightScaleToMeters = options.heightScaleToMeters ?? 1;
-  const label = options.label ?? `${options.sourceCrs} to ${targetCrs}`;
+
+  if (!Number.isFinite(heightScaleToMeters) || heightScaleToMeters <= 0) {
+    throw new Error("heightScaleToMeters must be a positive finite number.");
+  }
+
+  const label = options.label ?? `${sourceCrs} to ${targetCrs}`;
 
   return () => {
-    configureProjectionDefinition(options.sourceCrs, options.sourceDefinition);
+    configureProjectionDefinition(sourceCrs, options.sourceDefinition);
     configureProjectionDefinition(targetCrs, options.targetDefinition);
+    const projection = proj4(sourceCrs, targetCrs);
 
     return {
       toCesium: (x, y, z) => {
-        const [longitudeDegrees, latitudeDegrees] = proj4(
-          options.sourceCrs,
-          targetCrs,
-          [x, y],
-        ) as [number, number];
+        const [longitudeDegrees, latitudeDegrees] = projection.forward([
+          x,
+          y,
+        ]) as [number, number];
 
         return {
           longitudeDegrees,
@@ -104,7 +120,7 @@ export function createProj4CoordinateTransforms(
         };
       },
       toCopc: (longitudeDegrees, latitudeDegrees, heightMeters) => {
-        const [x, y] = proj4(targetCrs, options.sourceCrs, [
+        const [x, y] = projection.inverse([
           longitudeDegrees,
           latitudeDegrees,
         ]) as [number, number];
@@ -118,7 +134,7 @@ export function createProj4CoordinateTransforms(
       status: {
         kind: "custom",
         label,
-        sourceCrs: options.sourceCrs,
+        sourceCrs,
         sourceDefinition: options.sourceDefinition,
         targetCrs,
         targetDefinition: options.targetDefinition,
@@ -126,6 +142,16 @@ export function createProj4CoordinateTransforms(
       },
     };
   };
+}
+
+function requireCoordinateReferenceSystem(value: string, name: string): string {
+  const normalizedValue = value.trim();
+
+  if (!normalizedValue) {
+    throw new Error(`${name} must be a non-empty CRS identifier.`);
+  }
+
+  return normalizedValue;
 }
 
 export function createCopcCoordinateTransform(
@@ -163,13 +189,19 @@ export function createCesiumToCopcCoordinateTransform(
 function createHorizontalTransform(
   inspection: CopcInspection,
 ): (x: number, y: number) => [number, number] {
-  if (isLikelyGeographic(inspection)) {
-    return (x, y) => [x, y];
-  }
-
   if (isEpsg2992(inspection)) {
     configureKnownProjections();
-    return (x, y) => proj4(EPSG_2992, WGS84, [x, y]) as [number, number];
+    const projection = proj4(EPSG_2992, WGS84);
+    return (x, y) => projection.forward([x, y]) as [number, number];
+  }
+
+  if (inspection.wkt) {
+    const projection = proj4(extractHorizontalWkt(inspection.wkt), WGS84);
+    return (x, y) => projection.forward([x, y]) as [number, number];
+  }
+
+  if (isLikelyGeographic(inspection)) {
+    return (x, y) => [x, y];
   }
 
   throw new Error(UNSUPPORTED_CRS_MESSAGE);
@@ -178,20 +210,24 @@ function createHorizontalTransform(
 function createInverseHorizontalTransform(
   inspection: CopcInspection,
 ): (longitudeDegrees: number, latitudeDegrees: number) => [number, number] {
+  if (isEpsg2992(inspection)) {
+    configureKnownProjections();
+    const projection = proj4(EPSG_2992, WGS84);
+    return (longitudeDegrees, latitudeDegrees) =>
+      projection.inverse([longitudeDegrees, latitudeDegrees]) as [number, number];
+  }
+
+  if (inspection.wkt) {
+    const projection = proj4(extractHorizontalWkt(inspection.wkt), WGS84);
+    return (longitudeDegrees, latitudeDegrees) =>
+      projection.inverse([longitudeDegrees, latitudeDegrees]) as [number, number];
+  }
+
   if (isLikelyGeographic(inspection)) {
     return (longitudeDegrees, latitudeDegrees) => [
       longitudeDegrees,
       latitudeDegrees,
     ];
-  }
-
-  if (isEpsg2992(inspection)) {
-    configureKnownProjections();
-    return (longitudeDegrees, latitudeDegrees) =>
-      proj4(WGS84, EPSG_2992, [longitudeDegrees, latitudeDegrees]) as [
-        number,
-        number,
-      ];
   }
 
   throw new Error(UNSUPPORTED_CRS_MESSAGE);
@@ -240,13 +276,6 @@ function isEpsg2992(inspection: CopcInspection): boolean {
 function detectDefaultCoordinateTransformStatus(
   inspection: CopcInspection,
 ): Omit<CopcCoordinateTransformStatus, "supportsCameraSelection"> {
-  if (isLikelyGeographic(inspection)) {
-    return {
-      kind: "geographic",
-      label: "Geographic coordinates",
-    };
-  }
-
   if (isEpsg2992(inspection)) {
     return {
       kind: "epsg:2992",
@@ -254,7 +283,89 @@ function detectDefaultCoordinateTransformStatus(
     };
   }
 
+  if (inspection.wkt) {
+    const sourceDefinition = extractHorizontalWkt(inspection.wkt);
+    const sourceCrs = findWktEpsgCode(sourceDefinition) ?? "COPC:WKT";
+    return {
+      kind: "wkt",
+      label:
+        sourceCrs === "COPC:WKT"
+          ? "COPC WKT to WGS84"
+          : `${sourceCrs} WKT to WGS84`,
+      sourceCrs,
+      sourceDefinition,
+      targetCrs: WGS84,
+      heightScaleToMeters: getDefaultCopcHeightScaleToMeters(inspection),
+    };
+  }
+
+  if (isLikelyGeographic(inspection)) {
+    return {
+      kind: "geographic",
+      label: "Geographic coordinates",
+    };
+  }
+
   throw new Error(UNSUPPORTED_CRS_MESSAGE);
+}
+
+function extractHorizontalWkt(wkt: string): string {
+  const trimmedWkt = wkt.trim();
+  const normalizedWkt = trimmedWkt.toUpperCase();
+  const rootNames = ["PROJCS", "PROJCRS", "GEOGCS", "GEOGCRS", "GEODCRS"];
+
+  for (const rootName of rootNames) {
+    const startIndex = normalizedWkt.indexOf(`${rootName}[`);
+
+    if (startIndex < 0) {
+      continue;
+    }
+
+    let bracketDepth = 0;
+    let insideQuotedText = false;
+
+    for (let index = startIndex; index < trimmedWkt.length; index += 1) {
+      const character = trimmedWkt[index];
+
+      if (character === '"') {
+        if (insideQuotedText && trimmedWkt[index + 1] === '"') {
+          index += 1;
+          continue;
+        }
+
+        insideQuotedText = !insideQuotedText;
+        continue;
+      }
+
+      if (insideQuotedText) {
+        continue;
+      }
+
+      if (character === "[") {
+        bracketDepth += 1;
+      } else if (character === "]") {
+        bracketDepth -= 1;
+
+        if (bracketDepth === 0) {
+          return trimmedWkt.slice(startIndex, index + 1);
+        }
+      }
+    }
+
+    throw new Error(`COPC ${rootName} WKT block is not balanced.`);
+  }
+
+  return trimmedWkt;
+}
+
+function findWktEpsgCode(wkt: string): string | undefined {
+  const matches = [
+    ...wkt.matchAll(
+      /(?:AUTHORITY|ID)\s*\[\s*"EPSG"\s*,\s*"?(\d+)"?/gi,
+    ),
+  ];
+  const code = matches.at(-1)?.[1];
+  return code ? `EPSG:${code}` : undefined;
 }
 
 function heightToMeters(z: number, inspection: CopcInspection): number {
@@ -268,6 +379,17 @@ function heightFromMeters(heightMeters: number, inspection: CopcInspection): num
 export function getDefaultCopcHeightScaleToMeters(
   inspection: CopcInspection,
 ): number {
+  const verticalUnitScale = inspection.wkt?.match(
+    /VERT_(?:CS|CRS)[\s\S]*?(?:LENGTH)?UNIT\s*\[\s*"[^"]+"\s*,\s*([\d.eE+-]+)/i,
+  )?.[1];
+
+  if (verticalUnitScale) {
+    const scale = Number(verticalUnitScale);
+    if (Number.isFinite(scale) && scale > 0) {
+      return scale;
+    }
+  }
+
   return inspection.wkt?.includes('VERT_CS["NAVD88 height (ftUS)"')
     ? US_SURVEY_FOOT_TO_METER
     : 1;

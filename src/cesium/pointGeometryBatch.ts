@@ -259,8 +259,10 @@ function createEpsg2992LocalLinearTransform(
   pointData: CopcPointDataSampleArrays,
 ): (x: number, y: number) => readonly [number, number] {
   configureKnownCopcProjections();
-  return createProjectedLocalLinearTransform(pointData, (x, y) =>
-    proj4(EPSG_2992, WGS84, [x, y]) as [number, number],
+  const projection = proj4(EPSG_2992, WGS84);
+  return createProjectedLocalLinearTransform(
+    pointData,
+    (x, y) => projection.forward([x, y]) as [number, number],
   );
 }
 
@@ -275,11 +277,13 @@ function createProj4LocalLinearTransform(
     throw new Error("Serializable proj4 point geometry transform requires a source CRS.");
   }
 
-  configureProjectionDefinition(sourceCrs, transform.sourceDefinition);
-  configureProjectionDefinition(targetCrs, transform.targetDefinition);
+  const sourceProjection = transform.sourceDefinition ?? sourceCrs;
+  const targetProjection = transform.targetDefinition ?? targetCrs;
+  const projection = proj4(sourceProjection, targetProjection);
 
-  return createProjectedLocalLinearTransform(pointData, (x, y) =>
-    proj4(sourceCrs, targetCrs, [x, y]) as [number, number],
+  return createProjectedLocalLinearTransform(
+    pointData,
+    (x, y) => projection.forward([x, y]) as [number, number],
   );
 }
 
@@ -320,15 +324,6 @@ function findFinitePointDataOrigin(
   }
 
   return [0, 0];
-}
-
-function configureProjectionDefinition(
-  crs: string,
-  definition: string | undefined,
-): void {
-  if (definition) {
-    proj4.defs(crs, definition);
-  }
 }
 
 function cartesianFromDegrees(

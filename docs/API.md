@@ -1,8 +1,8 @@
 # API
 
-`copc-cesium` is currently a prototype package. The public surface is useful for
-experiments and contest demos, but the API should stay version `0.0.0` until
-more COPC samples and renderer paths are validated.
+`copc-cesium` is a pre-1.0 ESM package. Version `0.1.0` establishes the first
+package-consumer-verified API baseline; minor releases may still refine public
+types while the library is below 1.0.
 
 The main integration point is `CopcPointCloudLayer`. It opens a COPC URL or
 browser `File`/`Blob`, loads metadata and hierarchy information, reads selected
@@ -35,6 +35,10 @@ import {
 ```
 
 `createCopcRangeGetter()` accepts URL strings and browser `Blob`/`File` values.
+A remote HTTP source must honor exact byte ranges with `206 Partial Content`.
+Cross-origin hosts must permit the viewer origin and the `Range` request header
+through CORS. A browser-selected `File`/`Blob` avoids network and CORS
+requirements while preserving the same getter contract.
 It wraps exact byte-range reads with a small in-memory cache, so duplicate
 metadata, hierarchy, or point-data requests can share an in-flight read and
 later receive copied cached bytes without mutating the retained cache entry.
@@ -450,7 +454,56 @@ COPC-octree planning rules. `previewMinFinalNodeCount` lets an application skip
 the temporary coverage preview when only a few final detail nodes are needed, so
 those dense current-view nodes can be submitted to workers immediately.
 
-### Camera Stream Controllers
+### High-Level Camera Stream
+
+```ts
+import {
+  CopcPointCloudCameraStream,
+  CopcPointCloudLayer,
+} from "copc-cesium";
+
+const layer = new CopcPointCloudLayer(viewer.scene, { url });
+await layer.load();
+
+const cameraStream = new CopcPointCloudCameraStream({
+  camera: viewer.camera,
+  layer,
+  quality: "balanced",
+  onUpdate: ({ phase, requestId, lodSettings, result }) => {
+    renderStatus({ phase, requestId, lodSettings, result });
+  },
+  onError: (error) => {
+    showCameraStreamError(error);
+  },
+});
+
+cameraStream.start();
+
+// Stop listening without destroying the layer:
+cameraStream.stop();
+
+// Release the controller permanently:
+cameraStream.destroy();
+```
+
+`CopcPointCloudCameraStream` is the reusable default camera loop. It subscribes
+to Cesium `moveStart`, `changed`, and `moveEnd`, debounces duplicate updates,
+aborts stale renders, maps camera height and a quality preset to bounded LOD and
+byte budgets, expands nearby hierarchy pages, and calls
+`renderAutomaticProgressively()` for the latest view. `renderOptions` can
+override individual selection or progressive-render settings without replacing
+the lifecycle controller. `lastResult`, `lastError`, `isRunning`, and
+`isRendering` expose state for application UI and diagnostics.
+
+Call `render()` directly when an application needs an awaited refresh. `start()`
+uses the same method for camera events and reports asynchronous failures through
+`onError` while retaining the value in `lastError`.
+
+The lower-level helpers below remain available for applications that need the
+basic viewer's custom preview, retained-node, completion, and predictive-prefetch
+policies.
+
+### Low-Level Camera Stream Controllers
 
 ```ts
 import {
@@ -799,7 +852,7 @@ Fields:
 - `totalRenderMilliseconds`: total CPU-side render submission time measured by
   the layer.
 
-These numbers are prototype comparison metrics, not GPU frame-time profiling.
+These numbers are repeatable comparison metrics, not GPU frame-time profiling.
 
 ## Render Budgets
 
@@ -891,14 +944,17 @@ interface CopcPointCloudRenderer {
 `core` keeps point samples in source COPC XYZ. The Cesium layer needs a transform
 factory that returns at least `toCesium`.
 
-The default factory supports likely geographic coordinates and the public Autzen
-EPSG:2992 sample:
+The default factory supports likely geographic coordinates, the public Autzen
+EPSG:2992 sample, and projected COPC sources that include proj4-compatible WKT.
+WKT1 compound coordinate systems are split into a horizontal CRS for XY
+conversion and a vertical unit scale for height conversion:
 
 ```ts
 import { createDefaultCopcCoordinateTransforms } from "copc-cesium";
 ```
 
-For projected data, pass a proj4-backed transform:
+For projected data with missing, malformed, grid-dependent, or application-specific
+WKT, pass an explicit proj4-backed transform override:
 
 ```ts
 import { createProj4CoordinateTransforms } from "copc-cesium";
@@ -949,8 +1005,9 @@ way to stay ahead of retained background work without changing the Cesium layer.
 - Default renderer: `CesiumPrimitivePointRenderer`.
 - Stable fallback renderer: `CesiumPointPrimitiveRenderer`.
 - Experimental comparison renderer: `CesiumBufferPointRenderer`.
-- Prototype-level camera streaming and Auto LOD.
-- CRS detection is limited. Pass `createProj4CoordinateTransforms` for projected
-  COPC files outside the built-in/default cases.
-- Package is still private and versioned as `0.0.0`; treat APIs as draft until
-  the project is ready for npm publishing.
+- Pre-1.0 camera-streaming and Auto LOD defaults that remain open to measured calibration.
+- Projected COPC WKT is detected automatically when proj4 can parse its horizontal
+  CRS. Pass `createProj4CoordinateTransforms` for missing or unsupported WKT and
+  for transformations that require application-managed datum grids.
+- Package metadata and consumer checks target public version `0.1.0`; pre-1.0
+  minor releases may still refine public types before the 1.0 compatibility contract.

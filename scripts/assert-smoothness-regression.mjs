@@ -59,14 +59,26 @@ const thresholds = {
     "COPC_SMOOTHNESS_REGRESSION_MAX_COVERAGE_DROP",
     0.05,
   ),
+  requireSameBrowserGraphics: readBooleanEnv(
+    "COPC_SMOOTHNESS_REGRESSION_REQUIRE_SAME_GPU",
+    true,
+  ),
 };
 
 const current = JSON.parse(await readFile(inputPath, "utf8"));
 const baseline = JSON.parse(await readFile(baselinePath, "utf8"));
 const currentGroups = groupResults(readSmoothnessResults(current));
 const baselineGroups = groupResults(readSmoothnessResults(baseline));
+const currentBrowserGraphics = current.browserGraphics;
+const baselineBrowserGraphics = baseline.browserGraphics;
 const failures = [];
 const comparisons = [];
+
+compareBrowserGraphics(
+  currentBrowserGraphics,
+  baselineBrowserGraphics,
+  failures,
+);
 
 for (const [key, baselineGroup] of baselineGroups) {
   const currentGroup = currentGroups.get(key);
@@ -98,6 +110,8 @@ for (const [key, baselineGroup] of baselineGroups) {
 const regression = {
   inputPath,
   baselinePath,
+  currentBrowserGraphics,
+  baselineBrowserGraphics,
   thresholds,
   comparedGroupCount: comparisons.length,
   failureCount: failures.length,
@@ -121,6 +135,28 @@ if (failures.length > 0) {
   console.log(
     `Smoothness regression assertion passed for ${comparisons.length} group(s): ${outputPath}`,
   );
+}
+
+function compareBrowserGraphics(currentGraphics, baselineGraphics, failures) {
+  if (!thresholds.requireSameBrowserGraphics) {
+    return;
+  }
+
+  const currentRenderer = currentGraphics?.renderer?.trim();
+  const baselineRenderer = baselineGraphics?.renderer?.trim();
+
+  if (!currentRenderer || !baselineRenderer) {
+    failures.push(
+      "Current and baseline reports must both include browserGraphics.renderer.",
+    );
+    return;
+  }
+
+  if (currentRenderer !== baselineRenderer) {
+    failures.push(
+      `Browser WebGL renderer changed from "${baselineRenderer}" to "${currentRenderer}"; performance reports are not comparable.`,
+    );
+  }
 }
 
 function readSmoothnessResults(report) {
@@ -512,6 +548,16 @@ function readNumberEnv(name, fallback) {
   }
 
   return value;
+}
+
+function readBooleanEnv(name, fallback) {
+  const rawValue = process.env[name];
+
+  if (!rawValue) {
+    return fallback;
+  }
+
+  return rawValue === "1" || rawValue.toLowerCase() === "true";
 }
 
 function formatNumber(value) {

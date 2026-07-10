@@ -5,7 +5,6 @@ import {
   type CopcSourceInput,
 } from "copc-cesium";
 
-const EPSG_32611 = "EPSG:32611";
 const HOBU_LIDAR_SAMPLE_ROOT = "https://s3.amazonaws.com/hobu-lidar";
 
 export interface CopcSourceConfig {
@@ -37,13 +36,9 @@ export const SAMPLE_COPC_SOURCES = [
     id: "sofi-stadium",
     label: "SoFi Stadium",
     url: `${HOBU_LIDAR_SAMPLE_ROOT}/sofi.copc.laz`,
-    description: "Public COPC sample using WGS84 / UTM zone 11N coordinates.",
-    coordinateTransforms: createProj4CoordinateTransforms({
-      sourceCrs: EPSG_32611,
-      sourceDefinition:
-        "+proj=utm +zone=11 +datum=WGS84 +units=m +no_defs +type=crs",
-      label: "EPSG:32611 to WGS84",
-    }),
+    description:
+      "Public COPC sample using WGS84 / UTM zone 11N coordinates detected from its WKT metadata.",
+    coordinateTransforms: createDefaultCopcCoordinateTransforms,
   },
 ] as const satisfies readonly SampleCopcSource[];
 

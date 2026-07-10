@@ -2629,6 +2629,7 @@ describe("CopcPointCloudLayer hierarchy loading", () => {
     });
     const loadedNodeKeys: string[] = [];
     const progressNodeKeys: string[][] = [];
+    const completionCheckNodeKeys: string[][] = [];
 
     layer.source.inspect = async () => createInspection();
     layer.source.loadHierarchySummary = async () =>
@@ -2667,10 +2668,18 @@ describe("CopcPointCloudLayer hierarchy loading", () => {
       maxNodes: 2,
       selectionMode: "coverage",
       targetNodeScreenPixels: 10_000,
+      maxActiveProgressiveNodeRequests: 1,
+      nodeRequestOrder: "lightweight-first",
       progressBatchNodeCount: 1,
       showBounds: false,
       onProgress: (progressResult) => {
         progressNodeKeys.push([...progressResult.pointSamples.nodeKeys]);
+      },
+      shouldStopAfterProgress: (progressResult) => {
+        completionCheckNodeKeys.push([
+          ...progressResult.pointSamples.nodeKeys,
+        ]);
+        return false;
       },
     });
 
@@ -2679,6 +2688,7 @@ describe("CopcPointCloudLayer hierarchy loading", () => {
       ["1-1-0-0"],
       ["1-1-0-0", "1-0-0-0"],
     ]);
+    expect(completionCheckNodeKeys).toEqual(progressNodeKeys);
     expect(result?.cameraSelection.nodes.map((node) => node.key)).toEqual([
       "1-0-0-0",
       "1-1-0-0",

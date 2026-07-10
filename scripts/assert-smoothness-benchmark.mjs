@@ -11,6 +11,12 @@ const defaultOutputPath = path.join(defaultBenchmarkRoot, "smoothness-assertion.
 
 const inputPath = readStringArg("--input") ?? defaultInputPath;
 const outputPath = readStringArg("--output") ?? defaultOutputPath;
+const expectedBrowserGraphicsPattern = readOptionalStringEnv(
+  "COPC_SMOOTHNESS_ASSERT_GPU_PATTERN",
+);
+const expectedBrowserGraphicsRegex = expectedBrowserGraphicsPattern
+  ? new RegExp(expectedBrowserGraphicsPattern, "i")
+  : undefined;
 const thresholds = {
   minAverageFps: readNumberEnv("COPC_SMOOTHNESS_ASSERT_MIN_AVG_FPS", 30),
   maxP95FrameMilliseconds: readNumberEnv(
@@ -100,6 +106,7 @@ const benchmark = JSON.parse(await readFile(inputPath, "utf8"));
 const results = readBenchmarkResults(benchmark);
 const benchmarkDurationMilliseconds = Number(benchmark.durationMilliseconds);
 const waitForFinalDetail = benchmark.waitForFinalDetail !== false;
+const browserGraphics = benchmark.browserGraphics;
 const sampleMinimumDepthById = new Map(
   (Array.isArray(benchmark.sampleCases) ? benchmark.sampleCases : []).map(
     (sampleCase) => [
@@ -111,6 +118,7 @@ const sampleMinimumDepthById = new Map(
   ),
 );
 const failures = [];
+checkBrowserGraphics(browserGraphics, failures);
 const checkedResults = results.map((result) => {
   const resultFailures = checkResult(
     result,
@@ -126,6 +134,8 @@ const checkedResults = results.map((result) => {
 const assertion = {
   inputPath,
   waitForFinalDetail,
+  browserGraphics,
+  expectedBrowserGraphicsPattern,
   thresholds,
   resultCount: results.length,
   failureCount: failures.length,
@@ -161,6 +171,24 @@ function readBenchmarkResults(benchmark) {
   }
 
   return benchmark.results;
+}
+
+function checkBrowserGraphics(graphics, failures) {
+  const renderer = graphics?.renderer;
+
+  if (typeof renderer !== "string" || !renderer.trim()) {
+    failures.push("Browser WebGL renderer metadata was not reported.");
+    return;
+  }
+
+  if (
+    expectedBrowserGraphicsRegex &&
+    !expectedBrowserGraphicsRegex.test(renderer)
+  ) {
+    failures.push(
+      `Browser WebGL renderer "${renderer}" did not match ${expectedBrowserGraphicsPattern}.`,
+    );
+  }
 }
 
 function checkResult(
@@ -394,6 +422,10 @@ function checkResult(
       resultFailures.push(
         `${label}: camera stream prefetch status was required but not reported.`,
       );
+    } else if (result.cameraStreamPrefetch.state === "failed") {
+      resultFailures.push(
+        `${label}: camera stream prefetch failed: ${result.cameraStreamPrefetch.reason ?? "unknown error"}.`,
+      );
     }
   }
 
@@ -587,6 +619,11 @@ function readNumberEnv(name, fallback) {
   }
 
   return value;
+}
+
+function readOptionalStringEnv(name) {
+  const value = process.env[name]?.trim();
+  return value || undefined;
 }
 
 function readBooleanEnv(name, fallback) {

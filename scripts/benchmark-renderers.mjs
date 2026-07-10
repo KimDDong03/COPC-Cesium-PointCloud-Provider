@@ -10,6 +10,10 @@ const outputRoot = path.join(repoRoot, "output");
 const benchmarkRoot = path.join(outputRoot, "renderer-benchmark");
 const benchmarkFlowPath = path.join(benchmarkRoot, "renderer-benchmark-flow.mjs");
 const benchmarkResultPath = path.join(benchmarkRoot, "renderers.json");
+const playwrightConfigPath = path.join(
+  scriptDir,
+  "playwright.high-performance-gpu.json",
+);
 const isWindows = process.platform === "win32";
 const npmCommand = "npm";
 const npxCommand = "npx";
@@ -233,6 +237,29 @@ function createBenchmarkFlow(baseUrl, targetPointCount, repeatCount) {
   const pageErrors = [];
   const results = [];
 
+  async function readBrowserGraphics() {
+    return page.evaluate(() => {
+      const canvas = document.createElement("canvas");
+      const context = canvas.getContext("webgl2") ?? canvas.getContext("webgl");
+
+      if (!context) {
+        throw new Error("WebGL is unavailable in the renderer benchmark.");
+      }
+
+      const debugInfo = context.getExtension("WEBGL_debug_renderer_info");
+
+      return {
+        vendor: debugInfo
+          ? context.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL)
+          : context.getParameter(context.VENDOR),
+        renderer: debugInfo
+          ? context.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL)
+          : context.getParameter(context.RENDERER),
+        version: context.getParameter(context.VERSION),
+      };
+    });
+  }
+
   page.on("console", (message) => {
     if (message.type() === "error" || message.type() === "warning") {
       consoleProblems.push(\`\${message.type()}: \${message.text()}\`);
@@ -250,58 +277,41 @@ function createBenchmarkFlow(baseUrl, targetPointCount, repeatCount) {
     }, label);
   }
 
-  async function setBenchmarkControls(renderer) {
-    await page.evaluate(
-      ({ renderer, targetPointCount }) => {
-        const rendererSelect = document.querySelector("#copc-renderer-select");
-        const maxPointCountInput = document.querySelector("#copc-max-point-count");
-
-        if (!(rendererSelect instanceof HTMLSelectElement)) {
-          throw new Error("Renderer select was not found.");
-        }
-
-        if (!(maxPointCountInput instanceof HTMLInputElement)) {
-          throw new Error("Max point count input was not found.");
-        }
-
-        rendererSelect.value = renderer;
-        maxPointCountInput.value = String(targetPointCount);
-      },
-      { renderer, targetPointCount },
-    );
-  }
-
-  async function waitForRenderedStatus() {
+  async function waitForBenchmarkApi() {
     try {
       await page.waitForFunction(
-        () => document.querySelector("#copc-status")?.textContent?.includes("Rendered "),
+        () =>
+          typeof window.__copcBasicViewerBenchmark?.renderForRendererBenchmark ===
+          "function",
         undefined,
-        { timeout: 120_000 },
+        { timeout: 60_000 },
       );
     } catch (error) {
-      const currentStatus = await page.locator("#copc-status").textContent();
       throw new Error(
-        \`Timed out waiting for a rendered status. Current status: "\${currentStatus}". \${error.message}\`,
+        \`Timed out waiting for the renderer benchmark API. \${error.message}\`,
       );
     }
   }
 
-  async function triggerRender() {
-    await page.evaluate(() => {
-      const form = document.querySelector("#copc-form");
-      const status = document.querySelector("#copc-status");
+  async function renderBenchmarkNode(renderer) {
+    return page.evaluate(
+      ({ renderer, targetPointCount }) => {
+        const benchmark = window.__copcBasicViewerBenchmark;
 
-      if (!(form instanceof HTMLFormElement)) {
-        throw new Error("COPC form was not found.");
-      }
+        if (
+          !benchmark ||
+          typeof benchmark.renderForRendererBenchmark !== "function"
+        ) {
+          throw new Error("Renderer benchmark API is unavailable.");
+        }
 
-      if (status) {
-        status.textContent = "Benchmark render pending...";
-      }
-
-      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-    });
-    await waitForRenderedStatus();
+        return benchmark.renderForRendererBenchmark({
+          renderer,
+          maxPointCountPerNode: targetPointCount,
+        });
+      },
+      { renderer, targetPointCount },
+    );
   }
 
   function parseRendererTiming(timing) {
@@ -353,18 +363,15 @@ function createBenchmarkFlow(baseUrl, targetPointCount, repeatCount) {
   }
 
   await page.goto(${JSON.stringify(baseUrl)}, { waitUntil: "domcontentloaded" });
-  await waitForRenderedStatus();
+  await waitForBenchmarkApi();
 
   for (const renderer of renderers) {
-    await setBenchmarkControls(renderer);
-
     for (let runIndex = 0; runIndex < repeatCount; runIndex += 1) {
-      await triggerRender();
-
-      const timing = (await metadataValue("Renderer timing")) ?? "";
-      const payload = (await metadataValue("Renderer payload")) ?? "";
-      const rendererLabel = (await metadataValue("Point renderer")) ?? "";
-      const maxPointsPerNode = (await metadataValue("Max points / node")) ?? "";
+      const status = await renderBenchmarkNode(renderer);
+      const timing = status.rendererTiming ?? "";
+      const payload = status.rendererPayload ?? "";
+      const rendererLabel = status.pointRenderer ?? "";
+      const maxPointsPerNode = String(targetPointCount);
       const parsedTiming = parseRendererTiming(timing);
 
       if (parsedTiming.pointCount <= 5000) {
@@ -402,6 +409,7 @@ function createBenchmarkFlow(baseUrl, targetPointCount, repeatCount) {
   return {
     targetPointCount,
     repeatCount,
+    browserGraphics: await readBrowserGraphics(),
     sourcePreset: await metadataValue("Source preset"),
     coordinateTransform: await metadataValue("Coordinate transform"),
     summaries: renderers.map(summarizeRenderer),
@@ -413,6 +421,7 @@ function createBenchmarkFlow(baseUrl, targetPointCount, repeatCount) {
 
 function printBenchmarkSummary(result) {
   console.log("Renderer benchmark summary:");
+  console.log(`- GPU: ${result.browserGraphics.renderer}`);
 
   for (const summary of result.summaries) {
     console.log(
@@ -480,7 +489,12 @@ try {
   console.log(
     `Running renderer benchmark: ${benchmarkPointCount.toLocaleString()} max points / node, ${benchmarkRepeats.toLocaleString()} repeats...`,
   );
-  runPlaywrightCli(["open", "about:blank"]);
+  runPlaywrightCli([
+    "--config",
+    playwrightConfigPath,
+    "open",
+    "about:blank",
+  ]);
   const output = runPlaywrightCli(["run-code", "--filename", benchmarkFlowPath]);
   const result = extractPlaywrightResult(output);
   await writeFile(benchmarkResultPath, `${JSON.stringify(result, null, 2)}\n`);

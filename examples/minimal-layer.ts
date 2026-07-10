@@ -1,6 +1,7 @@
 import { Viewer } from "cesium";
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import {
+  CopcPointCloudCameraStream,
   CopcPointCloudLayer,
   createProj4CoordinateTransforms,
   type CopcPointCloudLayerLoadResult,
@@ -18,6 +19,7 @@ export interface MinimalCopcLayerExampleOptions {
 export interface MinimalCopcLayerExampleResult {
   readonly viewer: Viewer;
   readonly layer: CopcPointCloudLayer;
+  readonly cameraStream: CopcPointCloudCameraStream;
   readonly loadResult: CopcPointCloudLayerLoadResult;
   readonly renderResult: CopcPointCloudLayerNodeRenderResult;
   destroy(): void;
@@ -60,13 +62,22 @@ export async function mountMinimalCopcLayerExample(
     }
 
     const renderResult = await layer.renderNode(firstNode.key);
+    const cameraStream = new CopcPointCloudCameraStream({
+      camera: viewer.camera,
+      layer,
+      quality: "balanced",
+      renderOnStart: false,
+    });
+    cameraStream.start();
 
     return {
       viewer,
       layer,
+      cameraStream,
       loadResult,
       renderResult,
       destroy: () => {
+        cameraStream.destroy();
         layer.destroy();
         viewer.destroy();
       },

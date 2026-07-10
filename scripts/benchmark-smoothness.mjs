@@ -8,12 +8,39 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..");
 const outputRoot = path.join(repoRoot, "output");
 const benchmarkRoot = path.join(outputRoot, "smoothness-benchmark");
-const benchmarkFlowPath = path.join(benchmarkRoot, "smoothness-benchmark-flow.mjs");
-const benchmarkResultPath = path.join(benchmarkRoot, "smoothness.json");
+const benchmarkOutputName = readBenchmarkOutputName();
+const benchmarkResultPath = path.join(
+  benchmarkRoot,
+  benchmarkOutputName,
+);
+const benchmarkFlowPath = path.join(
+  benchmarkRoot,
+  `${path.parse(benchmarkOutputName).name}-flow.mjs`,
+);
+const playwrightConfigPath = path.join(
+  scriptDir,
+  "playwright.high-performance-gpu.json",
+);
 const isWindows = process.platform === "win32";
 const npmCommand = "npm";
 const npxCommand = "npx";
 const playwrightCliPackage = "@playwright/cli@0.1.14";
+
+function readBenchmarkOutputName() {
+  const outputName =
+    process.env.COPC_SMOOTHNESS_OUTPUT_NAME?.trim() || "smoothness.json";
+
+  if (
+    path.basename(outputName) !== outputName ||
+    !outputName.toLowerCase().endsWith(".json")
+  ) {
+    throw new Error(
+      "COPC_SMOOTHNESS_OUTPUT_NAME must be a JSON filename without directories.",
+    );
+  }
+
+  return outputName;
+}
 const benchmarkStreamPointBudgets = readPositiveIntegerListEnv(
   "COPC_SMOOTHNESS_POINT_BUDGETS",
   [2_500, 5_000, 10_000, 20_000],
@@ -460,6 +487,29 @@ function createSmoothnessFlow(
   const consoleProblems = [];
   const pageErrors = [];
   const results = [];
+
+  async function readBrowserGraphics() {
+    return page.evaluate(() => {
+      const canvas = document.createElement("canvas");
+      const context = canvas.getContext("webgl2") ?? canvas.getContext("webgl");
+
+      if (!context) {
+        throw new Error("WebGL is unavailable in the smoothness benchmark.");
+      }
+
+      const debugInfo = context.getExtension("WEBGL_debug_renderer_info");
+
+      return {
+        vendor: debugInfo
+          ? context.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL)
+          : context.getParameter(context.VENDOR),
+        renderer: debugInfo
+          ? context.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL)
+          : context.getParameter(context.RENDERER),
+        version: context.getParameter(context.VERSION),
+      };
+    });
+  }
 
   page.on("console", (message) => {
     if (message.type() === "error" || message.type() === "warning") {
@@ -1105,6 +1155,7 @@ function createSmoothnessFlow(
     clearCachesBeforeRun,
     cacheResetMode,
     waitForFinalDetail,
+    browserGraphics: await readBrowserGraphics(),
     pointRenderer: await metadataValue("Point renderer"),
     results,
   };
@@ -1118,6 +1169,7 @@ function average(values) {
 
 function printBenchmarkSummary(result) {
   console.log("Smoothness benchmark summary:");
+  console.log(`- GPU: ${result.browserGraphics.renderer}`);
 
   console.log(
     `- ${result.maxPointCountPerNode.toLocaleString()} max points / node, ${result.cameraSteps.toLocaleString()} camera steps`,
@@ -1285,8 +1337,9 @@ function printBenchmarkSummary(result) {
 
 await mkdir(outputRoot, { recursive: true });
 assertInside(outputRoot, benchmarkRoot);
-await rm(benchmarkRoot, { recursive: true, force: true });
 await mkdir(benchmarkRoot, { recursive: true });
+await rm(benchmarkFlowPath, { force: true });
+await rm(benchmarkResultPath, { force: true });
 
 console.log("Building example...");
 run(npmCommand, ["run", "build:example"], repoRoot);
@@ -1369,7 +1422,12 @@ try {
         : `min selected depth ${benchmarkMinSelectedDepthOverride}`,
     ].filter(Boolean).join(" "),
   );
-  runPlaywrightCli(["open", "about:blank"]);
+  runPlaywrightCli([
+    "--config",
+    playwrightConfigPath,
+    "open",
+    "about:blank",
+  ]);
   const output = runPlaywrightCli(["run-code", "--filename", benchmarkFlowPath]);
   const result = extractPlaywrightResult(output);
   await writeFile(benchmarkResultPath, `${JSON.stringify(result, null, 2)}\n`);
@@ -1382,4 +1440,5 @@ try {
     // The browser may already be closed if startup failed.
   }
   stopServer(serverProcess);
+  await rm(benchmarkFlowPath, { force: true });
 }

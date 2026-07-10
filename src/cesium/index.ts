@@ -15,6 +15,9 @@ export {
   type CopcPointCloudLayerPrepareNodesResult,
   type CopcPointCloudLayerPostStopLoadingMode,
   type CopcPointCloudLayerPostStopProgressMode,
+  type CopcPointCloudLayerProgressiveAutomaticRenderOptions,
+  type CopcPointCloudLayerProgressiveNodeOrder,
+  type CopcPointCloudLayerProgressiveRenderNodesOptions,
   type CopcPointCloudLayerProgressivePrepareNodesOptions,
   type CopcPointCloudLayerProgressiveRenderMode,
   type CopcPointCloudLayerPointGeometryCacheStats,
@@ -28,6 +31,13 @@ export {
   type CopcPointCloudLayerRenderNodesOptions,
   type CopcPointCloudLayerWarmupOptions,
 } from "./CopcPointCloudLayer";
+export {
+  CopcPointCloudCameraStream,
+  type CopcPointCloudCameraStreamLayer,
+  type CopcPointCloudCameraStreamOptions,
+  type CopcPointCloudCameraStreamRenderOptions,
+  type CopcPointCloudCameraStreamUpdate,
+} from "./CopcPointCloudCameraStream";
 export { CesiumBoundsRenderer } from "./CesiumBoundsRenderer";
 export type {
   CopcPointCloudBatchRenderer,

@@ -14,7 +14,19 @@ const smokeRoot = path.join(outputRoot, "example-smoke");
 const localFileSampleRoot = path.join(outputRoot, "local-copc-samples");
 const screenshotDir = path.join(outputRoot, "playwright");
 const smokeFlowPath = path.join(smokeRoot, "smoke-example-flow.mjs");
-const screenshotPath = path.join(screenshotDir, "smoke-example.png");
+const autzenScreenshotPath = path.join(
+  screenshotDir,
+  "smoke-example-autzen-stream.png",
+);
+const screenshotPath = path.join(screenshotDir, "smoke-example-sofi-stream.png");
+const verificationScreenshotPath = path.join(
+  screenshotDir,
+  "smoke-example-final-verification.png",
+);
+const playwrightConfigPath = path.join(
+  scriptDir,
+  "playwright.high-performance-gpu.json",
+);
 const localFileSampleUrl =
   "https://s3.amazonaws.com/hobu-lidar/autzen-classified.copc.laz";
 const localFileSamplePath = path.join(
@@ -188,6 +200,31 @@ function createSmokeFlow(baseUrl) {
   let typedPointGeometryTiming = "";
   let typedPointGeometryCache = "";
   let localFileRendererTiming = "";
+  let cameraStreamControllerSmoke;
+  let browserGraphics;
+
+  async function readBrowserGraphics() {
+    return page.evaluate(() => {
+      const canvas = document.createElement("canvas");
+      const context = canvas.getContext("webgl2") ?? canvas.getContext("webgl");
+
+      if (!context) {
+        throw new Error("WebGL is unavailable in the browser smoke test.");
+      }
+
+      const debugInfo = context.getExtension("WEBGL_debug_renderer_info");
+
+      return {
+        vendor: debugInfo
+          ? context.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL)
+          : context.getParameter(context.VENDOR),
+        renderer: debugInfo
+          ? context.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL)
+          : context.getParameter(context.RENDERER),
+        version: context.getParameter(context.VERSION),
+      };
+    });
+  }
 
   async function metadataValue(label) {
     return page.evaluate((targetLabel) => {
@@ -220,6 +257,36 @@ function createSmokeFlow(baseUrl) {
           error.message,
       );
     }
+  }
+
+  async function waitForCameraStreamCompleteStatus() {
+    try {
+      await page.waitForFunction(
+        () =>
+          document
+            .querySelector("#copc-status")
+            ?.textContent?.includes("Camera stream rendered"),
+        undefined,
+        { timeout: 120_000 },
+      );
+    } catch (error) {
+      const currentStatus = await page.locator("#copc-status").textContent();
+      throw new Error(
+        \`Timed out waiting for camera-stream completion. Current status: "\${currentStatus}". \${error.message}\`,
+      );
+    }
+  }
+
+  async function waitForSceneReady() {
+    await page.evaluate(async () => {
+      const benchmark = window.__copcBasicViewerBenchmark;
+
+      if (!benchmark) {
+        throw new Error("Basic viewer benchmark API was not installed.");
+      }
+
+      await benchmark.waitForSceneReady();
+    });
   }
 
   async function waitForInteractivePointCount(minPointCount) {
@@ -276,7 +343,14 @@ function createSmokeFlow(baseUrl) {
   }
 
   await page.goto(${JSON.stringify(baseUrl)}, { waitUntil: "domcontentloaded" });
+  browserGraphics = await readBrowserGraphics();
   await waitForInteractivePointCount(minDefaultInteractivePointCount);
+  await check(
+    async () =>
+      (await page.title()) ===
+      "copc-cesium | Direct COPC streaming for CesiumJS",
+    "Example page title did not identify the copc-cesium library.",
+  );
 
   await check(
     async () => (await metadataValue("Source preset")) === "Autzen classified",
@@ -328,6 +402,49 @@ function createSmokeFlow(baseUrl) {
     "Projection controls should be disabled for sample presets.",
   );
 
+  cameraStreamControllerSmoke = await page.evaluate(async () => {
+    const benchmark = window.__copcBasicViewerBenchmark;
+
+    if (!benchmark) {
+      throw new Error("Basic viewer benchmark API was not installed.");
+    }
+
+    return benchmark.verifyCameraStreamController();
+  });
+  await check(
+    async () => cameraStreamControllerSmoke.completedPointCount > 0,
+    "High-level camera stream controller did not render COPC points.",
+  );
+  await check(
+    async () => cameraStreamControllerSmoke.listenerCountRestored,
+    "High-level camera stream controller leaked Cesium camera listeners.",
+  );
+  await check(
+    async () => cameraStreamControllerSmoke.updatePhases.includes("complete"),
+    "High-level camera stream controller did not report completion.",
+  );
+  await page.evaluate(async () => {
+    const benchmark = window.__copcBasicViewerBenchmark;
+
+    if (!benchmark) {
+      throw new Error("Basic viewer benchmark API was not installed.");
+    }
+
+    await benchmark.moveCameraForSmoothness({
+      steps: 1,
+      durationMilliseconds: 16,
+      heightAboveCloudMeters: 2_000,
+      moveMeters: 1,
+    });
+  });
+  await waitForCameraStreamCompleteStatus();
+  await waitForSceneReady();
+  await waitForInteractivePointCount(10_000);
+  await page.screenshot({
+    path: ${JSON.stringify(autzenScreenshotPath)},
+    fullPage: false,
+  });
+
   await page.getByLabel("Renderer").selectOption("primitive");
   await waitForInteractivePointCount(minDefaultInteractivePointCount);
   primitiveRendererTiming = (await metadataValue("Renderer timing")) ?? "";
@@ -345,6 +462,7 @@ function createSmokeFlow(baseUrl) {
     "Primitive renderer payload estimate was not reported.",
   );
 
+  await page.getByLabel("Renderer").selectOption("typed");
   await page.getByLabel("Sample").selectOption("sofi-stadium");
   await waitForRenderedStatus();
 
@@ -416,6 +534,27 @@ function createSmokeFlow(baseUrl) {
       ),
     "Camera selection did not report progressive coverage selection.",
   );
+  await page.evaluate(async () => {
+    const benchmark = window.__copcBasicViewerBenchmark;
+
+    if (!benchmark) {
+      throw new Error("Basic viewer benchmark API was not installed.");
+    }
+
+    await benchmark.moveCameraForSmoothness({
+      steps: 1,
+      durationMilliseconds: 16,
+      heightAboveCloudMeters: 1_600,
+      moveMeters: 1,
+    });
+  });
+  await waitForCameraStreamCompleteStatus();
+  await waitForSceneReady();
+  await waitForInteractivePointCount(10_000);
+  await page.screenshot({
+    path: ${JSON.stringify(screenshotPath)},
+    fullPage: false,
+  });
   await page.getByRole("checkbox", { name: "Stream on camera move" }).uncheck();
 
   await page.getByRole("textbox", { name: "COPC URL" }).fill(sofiUrl);
@@ -488,9 +627,12 @@ function createSmokeFlow(baseUrl) {
     );
   }
 
+  await waitForCameraStreamCompleteStatus();
+  await waitForSceneReady();
+
   await page.screenshot({
-    path: ${JSON.stringify(screenshotPath)},
-    fullPage: true,
+    path: ${JSON.stringify(verificationScreenshotPath)},
+    fullPage: false,
   });
 
   if (consoleProblems.length > 0 || pageErrors.length > 0) {
@@ -516,8 +658,12 @@ function createSmokeFlow(baseUrl) {
     typedRendererPayload,
     typedPointGeometryTiming,
     typedPointGeometryCache,
+    cameraStreamControllerSmoke,
+    browserGraphics,
     localFileRendererTiming,
+    autzenScreenshotPath: ${JSON.stringify(autzenScreenshotPath)},
     screenshotPath: ${JSON.stringify(screenshotPath)},
+    verificationScreenshotPath: ${JSON.stringify(verificationScreenshotPath)},
   };
 }
 `;
@@ -578,10 +724,17 @@ try {
   await writeFile(smokeFlowPath, createSmokeFlow(baseUrl));
 
   console.log("Running browser smoke flow...");
-  runPlaywrightCli(["open", "about:blank"]);
+  runPlaywrightCli([
+    "--config",
+    playwrightConfigPath,
+    "open",
+    "about:blank",
+  ]);
   runPlaywrightCli(["run-code", "--filename", smokeFlowPath]);
 
-  console.log(`Example smoke test passed: ${screenshotPath}`);
+  console.log(
+    `Example smoke test passed: ${autzenScreenshotPath}, ${screenshotPath}, ${verificationScreenshotPath}`,
+  );
 } finally {
   try {
     runPlaywrightCli(["close"]);

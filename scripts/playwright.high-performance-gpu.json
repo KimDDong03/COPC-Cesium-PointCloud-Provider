@@ -1,0 +1,9 @@
+{
+  "browser": {
+    "launchOptions": {
+      "args": [
+        "--force_high_performance_gpu"
+      ]
+    }
+  }
+}

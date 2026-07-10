@@ -70,27 +70,27 @@ async function fetchRange(
   begin: number,
   end: number,
 ): Promise<Uint8Array> {
-    const response = await fetch(parsedUrl.toString(), {
-      headers: {
-        Range: `bytes=${begin}-${end - 1}`,
-      },
-    });
+  const response = await fetch(parsedUrl.toString(), {
+    headers: {
+      Range: `bytes=${begin}-${end - 1}`,
+    },
+  });
 
-    if (!response.ok) {
-      if (isRetriableHttpStatus(response.status)) {
-        throw new RetriableCopcRangeRequestError(
-          `COPC range request failed with HTTP ${response.status}.`,
-        );
-      }
-
-      throw new Error(`COPC range request failed with HTTP ${response.status}.`);
+  if (!response.ok) {
+    if (isRetriableHttpStatus(response.status)) {
+      throw new RetriableCopcRangeRequestError(
+        `COPC range request failed with HTTP ${response.status}.`,
+      );
     }
 
-    if (response.status !== 206) {
-      throw new Error("COPC source must support HTTP range requests.");
-    }
+    throw new Error(`COPC range request failed with HTTP ${response.status}.`);
+  }
 
-    return new Uint8Array(await response.arrayBuffer());
+  if (response.status !== 206) {
+    throw new Error("COPC source must support HTTP range requests.");
+  }
+
+  return new Uint8Array(await response.arrayBuffer());
 }
 
 function createHttpUrl(url: string): URL {
@@ -101,9 +101,7 @@ function createHttpUrl(url: string): URL {
   const parsedUrl = baseUrl ? new URL(url, baseUrl) : new URL(url);
 
   if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
-    throw new Error(
-      "Only HTTP and HTTPS COPC URLs are supported in this prototype.",
-    );
+    throw new Error("Only HTTP and HTTPS COPC URLs are supported.");
   }
 
   return parsedUrl;

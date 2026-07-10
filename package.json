@@ -1,9 +1,16 @@
 {
   "name": "copc-cesium",
-  "version": "0.0.0",
-  "description": "CesiumJS-native COPC point cloud streaming and visualization library prototype.",
+  "version": "0.1.0",
+  "description": "CesiumJS-native COPC point cloud streaming and visualization library.",
   "license": "MIT",
-  "private": true,
+  "packageManager": "npm@11.16.0",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "keywords": [
     "cesium",
     "cesiumjs",
@@ -42,6 +49,7 @@
     "dist/lib",
     "docs",
     "examples/minimal-layer.ts",
+    "CHANGELOG.md",
     "LICENSE",
     "README.md"
   ],
@@ -50,6 +58,8 @@
     "build": "npm run build:lib && npm run build:example",
     "build:example": "tsc && vite build examples/basic-viewer --config vite.config.ts --outDir ../../dist/example --emptyOutDir",
     "build:lib": "vite build --config vite.lib.config.ts && tsc -p tsconfig.lib.json",
+    "prepack": "npm run build:lib",
+    "prepublishOnly": "npm run qc",
     "preview": "vite preview examples/basic-viewer --config vite.config.ts --host localhost --port 3000 --outDir ../../dist/example",
     "benchmark:renderers": "node scripts/benchmark-renderers.mjs",
     "benchmark:smoothness": "node scripts/benchmark-smoothness.mjs",
@@ -70,15 +80,21 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "cesium": "^1.135.0",
     "copc": "^0.0.8",
     "laz-perf": "^0.0.7",
     "proj4": "^2.20.9"
   },
+  "peerDependencies": {
+    "cesium": ">=1.135.0 <2"
+  },
   "devDependencies": {
+    "cesium": "^1.135.0",
     "typescript": "^5.9.3",
     "vite": "^7.2.7",
     "vite-plugin-cesium": "^1.2.23",
     "vitest": "^4.1.9"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true
   }
 }

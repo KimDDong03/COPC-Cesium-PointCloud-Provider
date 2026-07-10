@@ -23,9 +23,9 @@ export interface CesiumBufferPointRendererOptions {
  * Experimental GPU-buffer point renderer backed by Cesium BufferPointCollection.
  *
  * BufferPointCollection is a Cesium-native primitive path, but Cesium currently
- * marks it experimental. The prototype uses this backend as the default to keep
- * the Cesium path GPU-buffer-oriented while the stable point-primitive renderer
- * remains available as an explicit fallback.
+ * marks it experimental. The library keeps this backend available for explicit
+ * comparisons while the typed-array `CesiumPrimitivePointRenderer` remains the
+ * default and the stable point-primitive renderer remains a fallback.
  */
 export class CesiumBufferPointRenderer implements CopcPointCloudRenderer {
   private readonly scene: Scene;

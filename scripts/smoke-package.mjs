@@ -12,6 +12,8 @@ const consumerRoot = path.join(smokeRoot, "consumer");
 const isWindows = process.platform === "win32";
 const npmCommand = "npm";
 const npxCommand = "npx";
+const MAX_PACKAGE_TARBALL_BYTES = 600 * 1024;
+const MAX_PACKED_WORKER_ASSET_BYTES = 600 * 1024;
 
 function assertInside(parent, target) {
   const relative = path.relative(parent, target);
@@ -71,13 +73,59 @@ run(npmCommand, ["run", "build"], repoRoot);
 console.log("Packing local package...");
 const packOutput = runCapture(
   npmCommand,
-  ["pack", "--pack-destination", smokeRoot],
+  ["pack", "--json", "--ignore-scripts", "--pack-destination", smokeRoot],
   repoRoot,
 );
-const tarballName = packOutput.trim().split(/\r?\n/).at(-1);
+const [packResult] = JSON.parse(packOutput);
+const tarballName = packResult?.filename;
 
 if (!tarballName) {
   throw new Error("npm pack did not return a tarball name.");
+}
+
+const packedPaths = new Set(
+  packResult.files.map((entry) => entry.path),
+);
+
+for (const requiredPath of [
+  "CHANGELOG.md",
+  "LICENSE",
+  "README.md",
+  "docs/API.md",
+  "docs/ARCHITECTURE.md",
+  "docs/COMPETITION.md",
+  "docs/PERFORMANCE.md",
+  "examples/minimal-layer.ts",
+]) {
+  if (!packedPaths.has(requiredPath)) {
+    throw new Error(`Packed package is missing ${requiredPath}.`);
+  }
+}
+
+if (packResult.size > MAX_PACKAGE_TARBALL_BYTES) {
+  throw new Error(
+    `Packed package is ${packResult.size.toLocaleString()} bytes; expected at most ${MAX_PACKAGE_TARBALL_BYTES.toLocaleString()} bytes.`,
+  );
+}
+
+const oversizedWorkerAsset = packResult.files.find(
+  (entry) =>
+    entry.path.includes("/assets/") &&
+    entry.path.includes("Worker-") &&
+    entry.path.endsWith(".js") &&
+    entry.size > MAX_PACKED_WORKER_ASSET_BYTES,
+);
+
+if (oversizedWorkerAsset) {
+  throw new Error(
+    `Packed worker asset ${oversizedWorkerAsset.path} is ${oversizedWorkerAsset.size.toLocaleString()} bytes; expected at most ${MAX_PACKED_WORKER_ASSET_BYTES.toLocaleString()} bytes.`,
+  );
+}
+
+if ([...packedPaths].some((filePath) => filePath.endsWith(".d.ts.map"))) {
+  throw new Error(
+    "Packed package contains declaration maps without packaged TypeScript sources.",
+  );
 }
 
 const tarballPath = path.join(smokeRoot, tarballName);
@@ -102,6 +150,9 @@ await writeFile(
       devDependencies: {
         typescript: "^5.9.3",
         vite: "^7.2.7",
+      },
+      allowScripts: {
+        "esbuild@0.28.1": true,
       },
     },
     null,
@@ -141,6 +192,7 @@ await writeFile(
 await writeFile(
   path.join(consumerRoot, "src", "main.ts"),
   `import {
+  CopcPointCloudCameraStream,
   CopcPointCloudLayer,
   CopcCameraStreamNodeSampleCache,
   CopcCameraStreamPrefetchController,
@@ -227,6 +279,7 @@ import {
 } from "copc-cesium/cesium";
 
 const exportedConstructors = [
+  CopcPointCloudCameraStream,
   CopcPointCloudLayer,
   CopcCameraStreamNodeSampleCache,
   CopcCameraStreamPrefetchController,

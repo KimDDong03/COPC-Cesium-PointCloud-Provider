@@ -4,12 +4,17 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" href="data:," />
-    <title>COPC Cesium Prototype</title>
+    <title>copc-cesium | Direct COPC streaming for CesiumJS</title>
   </head>
   <body>
     <div id="app">
       <div id="cesium-container"></div>
       <section id="copc-panel" aria-label="COPC metadata">
+        <header class="copc-panel-header">
+          <p class="copc-panel-kicker">CesiumJS point cloud streaming</p>
+          <h1>copc-cesium</h1>
+          <p>Open COPC data directly—no 3D Tiles conversion.</p>
+        </header>
         <form id="copc-form">
           <label for="copc-sample-select">Sample</label>
           <select id="copc-sample-select"></select>

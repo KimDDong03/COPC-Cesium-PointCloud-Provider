@@ -15,6 +15,7 @@ import {
   CopcCameraStreamNodeSampleCache as CameraStreamNodeSampleCache,
   CopcCameraStreamPrefetchController as CameraStreamPrefetchController,
   CopcCameraStreamRequestController as CameraStreamRequestController,
+  CopcPointCloudCameraStream,
   CopcPointCloudLayer,
   DEFAULT_COPC_POINT_CLOUD_QUALITY_PRESET as DEFAULT_RENDER_QUALITY,
   constrainCopcCameraStreamBudgetForRenderedPoints as constrainCameraStreamBudgetForRenderedPoints,
@@ -189,6 +190,21 @@ interface BasicViewerBenchmarkCacheResetOptions {
   readonly resetLayerCaches?: boolean;
 }
 
+interface BasicViewerCameraStreamControllerSmokeResult {
+  readonly completedPointCount: number;
+  readonly listenerCountRestored: boolean;
+  readonly updatePhases: readonly ("progress" | "complete")[];
+}
+
+interface BasicViewerRendererBenchmarkOptions {
+  readonly maxPointCountPerNode: number;
+  readonly renderer: PointRendererKind;
+}
+
+interface InspectSourceOptions {
+  readonly initialRenderMode?: "automatic" | "selected-node";
+}
+
 interface BasicViewerBenchmarkApi {
   readonly moveCameraForSmoothness: (
     options?: BasicViewerBenchmarkCameraOptions,
@@ -199,16 +215,24 @@ interface BasicViewerBenchmarkApi {
   readonly clearStreamingCaches: (
     options?: BasicViewerBenchmarkCacheResetOptions,
   ) => BasicViewerBenchmarkCacheResetResult;
+  readonly verifyCameraStreamController: () =>
+    Promise<BasicViewerCameraStreamControllerSmokeResult>;
+  readonly renderForRendererBenchmark: (
+    options: BasicViewerRendererBenchmarkOptions,
+  ) => Promise<BasicViewerBenchmarkStatus>;
+  readonly waitForSceneReady: (timeoutMilliseconds?: number) => Promise<void>;
   readonly getStatus: () => BasicViewerBenchmarkStatus;
 }
 
 interface CameraStreamPrefetchStatus {
+  readonly state: "pending" | "completed" | "skipped" | "failed";
   readonly plannedNodeCount: number;
   readonly requestedNodeCount: number;
   readonly prefetchedNodeCount: number;
   readonly skippedNodeCount: number;
   readonly selectedDepth: number;
   readonly completed: boolean;
+  readonly reason?: string;
 }
 
 interface CameraHierarchyPrefetchOptions {
@@ -505,7 +529,182 @@ function installBasicViewerBenchmarkApi(): void {
     moveCameraForSmoothness,
     waitForCameraStreamPrefetch,
     clearStreamingCaches: clearStreamingCachesForBenchmark,
+    verifyCameraStreamController,
+    renderForRendererBenchmark,
+    waitForSceneReady: waitForSceneReadyForBenchmark,
     getStatus: readBenchmarkStatus,
+  };
+}
+
+async function waitForSceneReadyForBenchmark(
+  timeoutMilliseconds = 10_000,
+): Promise<void> {
+  if (!Number.isFinite(timeoutMilliseconds) || timeoutMilliseconds <= 0) {
+    throw new Error("timeoutMilliseconds must be a positive finite number.");
+  }
+
+  const globe = viewer.scene.globe;
+
+  if (!globe.tilesLoaded) {
+    await new Promise<void>((resolve, reject) => {
+      let removeListener: (() => void) | undefined;
+      let completed = false;
+      const timeoutId = globalThis.setTimeout(() => {
+        finish(new Error("Timed out waiting for Cesium globe tiles."));
+      }, timeoutMilliseconds);
+      const finish = (error?: Error): void => {
+        if (completed) {
+          return;
+        }
+
+        completed = true;
+        globalThis.clearTimeout(timeoutId);
+        removeListener?.();
+
+        if (error) {
+          reject(error);
+        } else {
+          resolve();
+        }
+      };
+
+      removeListener = globe.tileLoadProgressEvent.addEventListener(() => {
+        if (globe.tilesLoaded) {
+          finish();
+        }
+      });
+
+      if (globe.tilesLoaded) {
+        finish();
+      }
+    });
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    let removeListener: (() => void) | undefined;
+    let completed = false;
+    const timeoutId = globalThis.setTimeout(() => {
+      finish(new Error("Timed out waiting for the Cesium scene to render."));
+    }, timeoutMilliseconds);
+    const finish = (error?: Error): void => {
+      if (completed) {
+        return;
+      }
+
+      completed = true;
+      globalThis.clearTimeout(timeoutId);
+      removeListener?.();
+
+      if (error) {
+        reject(error);
+      } else {
+        resolve();
+      }
+    };
+
+    removeListener = viewer.scene.postRender.addEventListener(() => finish());
+    viewer.scene.requestRender();
+  });
+}
+
+async function renderForRendererBenchmark(
+  options: BasicViewerRendererBenchmarkOptions,
+): Promise<BasicViewerBenchmarkStatus> {
+  if (!(options.renderer in POINT_RENDERER_LABELS)) {
+    throw new Error(`Unknown point renderer: ${options.renderer}.`);
+  }
+
+  if (!isPositiveSafeInteger(options.maxPointCountPerNode)) {
+    throw new Error("maxPointCountPerNode must be a positive integer.");
+  }
+
+  elements.rendererSelect.value = options.renderer;
+  elements.maxPointCountInput.value = String(options.maxPointCountPerNode);
+  await inspectSource(createSourceConfigFromForm(), {
+    initialRenderMode: "selected-node",
+  });
+
+  const status = readBenchmarkStatus();
+
+  if (!status.status.startsWith("Rendered ")) {
+    throw new Error(
+      `Renderer benchmark did not complete its selected-node render: ${status.status}`,
+    );
+  }
+
+  return status;
+}
+
+async function verifyCameraStreamController(): Promise<BasicViewerCameraStreamControllerSmokeResult> {
+  const layer = currentLayer;
+
+  if (!layer) {
+    throw new Error("Load a COPC layer before verifying the camera stream controller.");
+  }
+
+  cancelAutomaticCameraStreamRender();
+  cancelCameraStreamPrefetch();
+  clearQueuedAutomaticStreamRender();
+
+  const cameraEvents = [
+    viewer.camera.moveStart,
+    viewer.camera.changed,
+    viewer.camera.moveEnd,
+  ] as const;
+  const listenerCountsBefore = cameraEvents.map(
+    (event) => event.numberOfListeners,
+  );
+  const updatePhases: Array<"progress" | "complete"> = [];
+  const previousSuppression = suppressAutomaticCameraStreamEvents;
+  let completedPointCount = 0;
+  const controller = new CopcPointCloudCameraStream({
+    camera: viewer.camera,
+    layer,
+    quality: readRenderQuality(),
+    // Cesium can raise passive camera-changed events while this explicit smoke
+    // render is active. Keep them queued; destroy() clears the pending timer.
+    debounceMilliseconds: 60_000,
+    renderOnStart: false,
+    renderOptions: {
+      maxNodes: 8,
+      maxRenderedPointCount: 32_000,
+      maxPointCountPerNode: 8_000,
+    },
+    onUpdate: ({ phase }) => {
+      updatePhases.push(phase);
+    },
+  });
+
+  suppressAutomaticCameraStreamEvents = true;
+
+  try {
+    controller.start();
+    const result = await controller.render();
+
+    if (!result) {
+      throw new Error("Camera stream controller did not return a render result.");
+    }
+
+    completedPointCount = result.renderStats.pointCount;
+  } finally {
+    controller.destroy();
+    suppressAutomaticCameraStreamEvents = previousSuppression;
+
+    const listenerCountRestored = cameraEvents.every(
+      (event, index) => event.numberOfListeners === listenerCountsBefore[index],
+    );
+
+    if (!listenerCountRestored) {
+      throw new Error(
+        "Camera stream controller did not restore Cesium camera listeners.",
+      );
+    }
+  }
+
+  return {
+    completedPointCount,
+    listenerCountRestored: true,
+    updatePhases,
   };
 }
 
@@ -739,26 +938,36 @@ async function waitForCameraStreamPrefetchIdle(
 ): Promise<void> {
   const deadline = performance.now() + Math.max(0, timeoutMilliseconds);
 
-  while (
-    queuedCameraStreamPrefetchTimeout !== undefined &&
-    performance.now() < deadline
-  ) {
-    await delayForBenchmark(Math.min(50, deadline - performance.now()));
+  while (performance.now() < deadline) {
+    if (lastCameraStreamPrefetchStatus?.completed) {
+      return;
+    }
+
+    const remainingMilliseconds = deadline - performance.now();
+
+    if (automaticStreamPrefetches.isActive) {
+      await Promise.race([
+        automaticStreamPrefetches.waitForIdle(),
+        delayForBenchmark(Math.min(50, remainingMilliseconds)),
+      ]);
+      continue;
+    }
+
+    if (
+      lastCameraStreamPrefetchStatus &&
+      queuedCameraStreamPrefetchTimeout === undefined
+    ) {
+      return;
+    }
+
+    await delayForBenchmark(Math.min(50, remainingMilliseconds));
   }
-
-  const remainingMilliseconds = deadline - performance.now();
-
-  if (remainingMilliseconds <= 0 || !automaticStreamPrefetches.isActive) {
-    return;
-  }
-
-  await Promise.race([
-    automaticStreamPrefetches.waitForIdle(),
-    delayForBenchmark(remainingMilliseconds),
-  ]);
 }
 
-async function inspectSource(source: CopcSourceConfig): Promise<void> {
+async function inspectSource(
+  source: CopcSourceConfig,
+  options: InspectSourceOptions = {},
+): Promise<void> {
   const activeSource = normalizeSourceConfig(source);
   const pointRendererKind = readPointRendererKind();
   const maxPointCountPerNode = readMaxPointCountPerNode();
@@ -851,7 +1060,10 @@ async function inspectSource(source: CopcSourceConfig): Promise<void> {
     updateSuggestedNode();
     await waitForPointGeometryWorkerWarmup(layer);
 
-    if (
+    if (options.initialRenderMode === "selected-node") {
+      elements.autoStreamCheckbox.checked = false;
+      await renderSelectedHierarchyNode();
+    } else if (
       layer === currentLayer &&
       currentCoordinateTransform?.supportsCameraSelection
     ) {
@@ -900,10 +1112,10 @@ async function waitForPointGeometryWorkerWarmup(
 }
 
 function setInspectionError(error: unknown): void {
-  elements.statusText.textContent =
-    error instanceof Error
-      ? `COPC inspection failed: ${error.message}`
-      : "COPC inspection failed.";
+  const message = readUnknownErrorMessage(error);
+  elements.statusText.textContent = message
+    ? `COPC inspection failed: ${message}`
+    : "COPC inspection failed.";
   elements.metadataList.replaceChildren();
   elements.nodeSelect.disabled = true;
   currentLayer?.clear();
@@ -2265,8 +2477,26 @@ async function prefetchCameraHierarchy(
       signal,
       prefetchGeometryBatches,
     );
-  } catch {
-    return;
+  } catch (error) {
+    if (
+      signal.aborted ||
+      layer !== currentLayer ||
+      !elements.autoStreamCheckbox.checked
+    ) {
+      return;
+    }
+
+    lastCameraStreamPrefetchStatus = {
+      state: "failed",
+      plannedNodeCount: 0,
+      requestedNodeCount: 0,
+      prefetchedNodeCount: 0,
+      skippedNodeCount: 0,
+      selectedDepth: lastCameraStreamLodSettings?.maxDepth ?? 0,
+      completed: true,
+      reason:
+        readUnknownErrorMessage(error) ?? "Unknown prefetch error.",
+    };
   }
 }
 
@@ -2314,11 +2544,24 @@ async function prefetchCameraNodeSamples(
 
   if (
     signal.aborted ||
-    !cameraSelection ||
-    cameraSelection.nodes.length === 0 ||
     layer !== currentLayer ||
     !elements.autoStreamCheckbox.checked
   ) {
+    return;
+  }
+
+  if (!cameraSelection || cameraSelection.nodes.length === 0) {
+    lastCameraStreamPrefetchStatus = {
+      state: "skipped",
+      plannedNodeCount: 0,
+      requestedNodeCount: 0,
+      prefetchedNodeCount: 0,
+      skippedNodeCount: 0,
+      selectedDepth:
+        cameraSelection?.selectedDepth ?? prefetchSelectionPlan.maxDepth,
+      completed: true,
+      reason: "No camera-selected prefetch nodes were available.",
+    };
     return;
   }
 
@@ -2358,17 +2601,20 @@ async function prefetchCameraNodeSamples(
 
   if (!prefetchPlan.shouldPrefetch) {
     lastCameraStreamPrefetchStatus = {
+      state: "skipped",
       plannedNodeCount: 0,
       requestedNodeCount: 0,
       prefetchedNodeCount: 0,
       skippedNodeCount: 0,
       selectedDepth: cameraSelection.selectedDepth,
       completed: true,
+      reason: "All selected prefetch nodes already have usable samples.",
     };
     return;
   }
 
   lastCameraStreamPrefetchStatus = {
+    state: "pending",
     plannedNodeCount: prefetchPlan.prefetchNodeKeys.length,
     requestedNodeCount: prefetchPlan.prefetchNodeKeys.length,
     prefetchedNodeCount: 0,
@@ -2392,15 +2638,17 @@ async function prefetchCameraNodeSamples(
         return;
       }
 
+      const completed =
+        progress.prefetchedNodeCount + progress.skippedNodeCount >=
+        progress.requestedNodeCount;
       lastCameraStreamPrefetchStatus = {
+        state: completed ? "completed" : "pending",
         plannedNodeCount: prefetchPlan.prefetchNodeKeys.length,
         requestedNodeCount: progress.requestedNodeCount,
         prefetchedNodeCount: progress.prefetchedNodeCount,
         skippedNodeCount: progress.skippedNodeCount,
         selectedDepth: cameraSelection.selectedDepth,
-        completed:
-          progress.prefetchedNodeCount + progress.skippedNodeCount >=
-          progress.requestedNodeCount,
+        completed,
       };
     },
   };
@@ -3142,7 +3390,7 @@ function getPrototypeElements(): {
     !statusText ||
     !metadataList
   ) {
-    throw new Error("Missing prototype DOM elements.");
+    throw new Error("Missing basic viewer DOM elements.");
   }
 
   return {
@@ -3383,6 +3631,7 @@ function createCameraStreamPrefetchStatus(options: {
   readonly result: CopcPointCloudLayerPrefetchNodePointDataResult;
 }): CameraStreamPrefetchStatus {
   return {
+    state: "completed",
     plannedNodeCount: options.plannedNodeCount,
     requestedNodeCount: options.result.requestedNodeCount,
     prefetchedNodeCount: options.result.prefetchedNodeCount,
@@ -3399,9 +3648,15 @@ function formatCameraStreamPrefetchStatus(
     return "Not prefetched yet";
   }
 
-  const state = status.completed ? "complete" : "pending";
+  if (status.state === "failed") {
+    return `failed at depth ${status.selectedDepth.toLocaleString()}: ${status.reason ?? "Unknown prefetch error."}`;
+  }
 
-  return `${state}, planned ${status.plannedNodeCount.toLocaleString()} nodes at depth ${status.selectedDepth.toLocaleString()}, requested ${status.requestedNodeCount.toLocaleString()}, prefetched ${status.prefetchedNodeCount.toLocaleString()}, skipped ${status.skippedNodeCount.toLocaleString()}`;
+  if (status.state === "skipped") {
+    return `skipped at depth ${status.selectedDepth.toLocaleString()}: ${status.reason ?? "No prefetch work was required."}`;
+  }
+
+  return `${status.state}, planned ${status.plannedNodeCount.toLocaleString()} nodes at depth ${status.selectedDepth.toLocaleString()}, requested ${status.requestedNodeCount.toLocaleString()}, prefetched ${status.prefetchedNodeCount.toLocaleString()}, skipped ${status.skippedNodeCount.toLocaleString()}`;
 }
 
 function formatHierarchyPageStats(
@@ -3423,6 +3678,18 @@ function formatHierarchyPageStats(
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
+}
+
+function readUnknownErrorMessage(error: unknown): string | undefined {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (typeof error === "string") {
+    return error;
+  }
+
+  return undefined;
 }
 
 function formatCoordinateTransform(

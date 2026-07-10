@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -187,15 +188,41 @@ const smoothnessQcPresets = {
 };
 const presetName = readPresetName();
 const presetDefaults = smoothnessQcPresets[presetName];
+const artifactStem = `smoothness-${toKebabCase(presetName)}`;
+const benchmarkOutputName = `${artifactStem}.json`;
+const benchmarkOutputPath = path.join(
+  repoRoot,
+  "output",
+  "smoothness-benchmark",
+  benchmarkOutputName,
+);
+const assertionOutputPath = path.join(
+  repoRoot,
+  "output",
+  "smoothness-benchmark",
+  `${artifactStem}-assertion.json`,
+);
 const env = {
   COPC_SMOOTHNESS_QC_PRESET: presetName,
   ...presetDefaults,
   ...process.env,
+  COPC_SMOOTHNESS_OUTPUT_NAME: benchmarkOutputName,
 };
 
 console.log(`Running ${presetName} camera-stream smoothness QC...`);
+rmSync(benchmarkOutputPath, { force: true });
+rmSync(assertionOutputPath, { force: true });
 runNodeScript("scripts/benchmark-smoothness.mjs");
-runNodeScript("scripts/assert-smoothness-benchmark.mjs");
+runNodeScript("scripts/assert-smoothness-benchmark.mjs", [
+  "--input",
+  benchmarkOutputPath,
+  "--output",
+  assertionOutputPath,
+]);
+
+function toKebabCase(value) {
+  return value.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
+}
 
 function readPresetName() {
   const presetName =
@@ -250,8 +277,8 @@ function readPresetArg() {
   return undefined;
 }
 
-function runNodeScript(scriptPath) {
-  const result = spawnSync(nodeCommand, [scriptPath], {
+function runNodeScript(scriptPath, args = []) {
+  const result = spawnSync(nodeCommand, [scriptPath, ...args], {
     cwd: repoRoot,
     env,
     shell: isWindows,

@@ -10,6 +10,7 @@ const npmCommand = "npm";
 const steps = [
   ["Unit tests", npmCommand, ["test"]],
   ["Library and example build", npmCommand, ["run", "build"]],
+  ["Renderer benchmark", npmCommand, ["run", "benchmark:renderers"]],
   [
     "Contest camera-stream smoothness QC",
     npmCommand,
