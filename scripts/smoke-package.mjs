@@ -394,7 +394,7 @@ function createPackageBrowserFlow(baseUrl) {
       canvasBounds.y + canvasBounds.height / 2,
     );
     const minimumZoomInputCount = 3;
-    const maximumZoomInputCount = 20;
+    const maximumZoomInputCount = 32;
 
     while (
       zoomInputCount < minimumZoomInputCount ||

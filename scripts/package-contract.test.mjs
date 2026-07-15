@@ -145,7 +145,7 @@ describe("published package contract", () => {
       /zoomTargetCameraHeightMeters = Math\.min\(\s*650,\s*overviewCameraHeightMeters \* 0\.25,\s*\);/,
     );
     assert.match(source, /const minimumZoomInputCount = 3;/);
-    assert.match(source, /const maximumZoomInputCount = 20;/);
+    assert.match(source, /const maximumZoomInputCount = 32;/);
     assert.match(source, /await page\.mouse\.wheel\(0, -60\);/);
     assert.match(
       source,
