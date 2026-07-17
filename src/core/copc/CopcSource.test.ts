@@ -110,7 +110,7 @@ describe("CopcSource point sample cache", () => {
 
     expect(loadCount).toBe(1);
     expect(reused.sampledPointCount).toBe(3);
-    expect(reused.points.map((point) => point.x)).toEqual([0, 2, 5]);
+    expect(reused.points.map((point) => point.x)).toEqual([0, 1, 2]);
     expect(source.getPointSampleCacheStats()).toEqual(
       expect.objectContaining({
         cachedSampleSetCount: 1,
@@ -138,11 +138,11 @@ describe("CopcSource point sample cache", () => {
       sampledPointCount: maxPointCount,
       points: [],
       pointData: {
-        x: new Float64Array([0, 1, 2, 3]),
-        y: new Float64Array([10, 11, 12, 13]),
-        z: new Float64Array([20, 21, 22, 23]),
-        classification: new Uint8Array([2, 3, 6, 9]),
-        intensity: new Uint16Array([100, 200, 300, 400]),
+        x: new Float64Array([2, 0, 3, 1]),
+        y: new Float64Array([12, 10, 13, 11]),
+        z: new Float64Array([22, 20, 23, 21]),
+        classification: new Uint8Array([6, 2, 9, 3]),
+        intensity: new Uint16Array([300, 100, 400, 200]),
       },
     });
 
@@ -157,9 +157,9 @@ describe("CopcSource point sample cache", () => {
       sampleFormat: "typed",
     });
 
-    expect(reused.pointData?.x).toEqual(new Float64Array([0, 2]));
-    expect(reused.pointData?.classification).toEqual(new Uint8Array([2, 6]));
-    expect(reused.pointData?.intensity).toEqual(new Uint16Array([100, 300]));
+    expect(reused.pointData?.x).toEqual(new Float64Array([2, 0]));
+    expect(reused.pointData?.classification).toEqual(new Uint8Array([6, 2]));
+    expect(reused.pointData?.intensity).toEqual(new Uint16Array([300, 100]));
     expect(source.getPointSampleCacheStats()).toEqual(
       expect.objectContaining({
         cachedPointSampleBytes: 108,
@@ -561,6 +561,11 @@ describe("CopcSource point sample cache", () => {
 
     expect(worker.requests).toEqual([
       expect.objectContaining({
+        copc: expect.objectContaining({
+          info: expect.objectContaining({
+            cube: [0, 0, 0, 8, 8, 8],
+          }),
+        }),
         source: {
           key: "url:https://example.com/sample.copc.laz",
           input: "https://example.com/sample.copc.laz",
@@ -2006,10 +2011,12 @@ describe("CopcSource point sample cache", () => {
       await expect(source.loadHierarchySummary()).rejects.toThrow(
         "metadata failed",
       );
+      expect(source.getLoadedCopcMetadata()).toBeUndefined();
       await expect(source.loadHierarchySummary()).resolves.toMatchObject({
         loadedPageCount: 1,
         pendingPageCount: 0,
       });
+      expect(source.getLoadedCopcMetadata()).toBe(copc);
       expect(createSpy).toHaveBeenCalledTimes(2);
       expect(pageSpy).toHaveBeenCalledTimes(1);
     } finally {

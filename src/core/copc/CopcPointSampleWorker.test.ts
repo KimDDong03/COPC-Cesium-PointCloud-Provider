@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { Copc as CopcData } from "copc";
 import type {
   CopcPointSampleWorkerLoadRequest,
   CopcPointSampleWorkerRequest,
@@ -23,11 +24,19 @@ const mocks = vi.hoisted(() => ({
     },
     getter: () => (index: number) => index,
   })),
+  createSpatiallyDistributedPointIndices: vi.fn(
+    (options: { readonly pointCount: number }) =>
+      Uint32Array.from(
+        { length: options.pointCount },
+        (_value, index) => index,
+      ),
+  ),
   sampleCopcPointDataView: vi.fn((options: {
     readonly nodeKey: string;
     readonly view: { readonly pointCount: number };
     readonly maxPointCount: number;
     readonly sampleFormat?: string;
+    readonly spatialPointOrder?: Uint32Array;
   }) => {
     const sampledPointCount = Math.min(
       options.view.pointCount,
@@ -81,10 +90,36 @@ vi.mock("./loadCopcNodePointSamples", () => ({
   sampleCopcPointDataView: mocks.sampleCopcPointDataView,
 }));
 
+vi.mock("./createSpatiallyDistributedPointIndices", () => ({
+  createSpatiallyDistributedPointIndices:
+    mocks.createSpatiallyDistributedPointIndices,
+  SPATIAL_POINT_ORDER_BYTES_PER_POINT: Uint32Array.BYTES_PER_ELEMENT,
+}));
+
 describe("CopcPointSampleWorker decoded view cache", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.clearAllMocks();
+  });
+
+  it("uses supplied COPC metadata without reopening the source", async () => {
+    const worker = await importWorker();
+    const copc = {
+      header: {
+        pointDataRecordLength: 16,
+      },
+    } as CopcData;
+
+    worker.dispatch({
+      ...createLoadRequest(1, "1-0-0-0", 100),
+      copc,
+    });
+    await worker.waitForMessageCount(1);
+
+    expect(mocks.createCopc).not.toHaveBeenCalled();
+    expect(mocks.loadCopcNodePointDataView).toHaveBeenCalledWith(
+      expect.objectContaining({ copc }),
+    );
   });
 
   it("reuses a decoded node view for repeated sample requests", async () => {
@@ -96,12 +131,22 @@ describe("CopcPointSampleWorker decoded view cache", () => {
     await worker.waitForMessageCount(2);
 
     expect(mocks.loadCopcNodePointDataView).toHaveBeenCalledTimes(1);
+    expect(mocks.createSpatiallyDistributedPointIndices).toHaveBeenCalledTimes(
+      1,
+    );
     expect(mocks.sampleCopcPointDataView).toHaveBeenCalledTimes(2);
     expect(
       mocks.sampleCopcPointDataView.mock.calls.map(
         ([options]) => options.maxPointCount,
       ),
     ).toEqual([100, 500]);
+    const firstSpatialPointOrder =
+      mocks.sampleCopcPointDataView.mock.calls[0]?.[0].spatialPointOrder;
+
+    expect(firstSpatialPointOrder).toBeInstanceOf(Uint32Array);
+    expect(
+      mocks.sampleCopcPointDataView.mock.calls[1]?.[0].spatialPointOrder,
+    ).toBe(firstSpatialPointOrder);
     expect(worker.messages.map((message) => message.type)).toEqual([
       "loadNodePointSamples:success",
       "loadNodePointSamples:success",
@@ -109,7 +154,7 @@ describe("CopcPointSampleWorker decoded view cache", () => {
     expect(worker.messages[1]).toMatchObject({
       cache: {
         retainedViewCount: 1,
-        retainedBytes: 16_000,
+        retainedBytes: 20_000,
         cacheHitCount: 1,
         cacheMissCount: 1,
         requestedNodeRetained: true,
@@ -132,6 +177,12 @@ describe("CopcPointSampleWorker decoded view cache", () => {
       }),
     );
     expect(worker.transferLists[0]).toHaveLength(8);
+    const spatialPointOrder = mocks.createSpatiallyDistributedPointIndices.mock
+      .results[0]?.value as Uint32Array | undefined;
+
+    expect(spatialPointOrder).toBeInstanceOf(Uint32Array);
+    expect(worker.transferLists[0]).not.toContain(spatialPointOrder?.buffer);
+    expect(spatialPointOrder?.byteLength).toBe(4_000);
   });
 
   it("evicts decoded node views using the per-request cache limits", async () => {
@@ -154,6 +205,9 @@ describe("CopcPointSampleWorker decoded view cache", () => {
     await worker.waitForMessageCount(3);
 
     expect(mocks.loadCopcNodePointDataView).toHaveBeenCalledTimes(3);
+    expect(mocks.createSpatiallyDistributedPointIndices).toHaveBeenCalledTimes(
+      3,
+    );
     expect(worker.messages.map((message) => message.type)).toEqual([
       "loadNodePointSamples:success",
       "loadNodePointSamples:success",
@@ -187,7 +241,7 @@ describe("CopcPointSampleWorker decoded view cache", () => {
     expect(worker.messages[1]).toMatchObject({
       cache: {
         retainedViewCount: 1,
-        retainedBytes: 16_000,
+        retainedBytes: 20_000,
         cacheEvictionCount: 1,
         evictedNodeKeys: [
           {
@@ -204,16 +258,19 @@ describe("CopcPointSampleWorker decoded view cache", () => {
 
     worker.dispatch({
       ...createLoadRequest(1, "1-0-0-0", 100),
-      maxDecodedPointDataViewBytes: 15_999,
+      maxDecodedPointDataViewBytes: 19_999,
     });
     await worker.waitForMessageCount(1);
     worker.dispatch({
       ...createLoadRequest(2, "1-0-0-0", 100),
-      maxDecodedPointDataViewBytes: 15_999,
+      maxDecodedPointDataViewBytes: 19_999,
     });
     await worker.waitForMessageCount(2);
 
     expect(mocks.loadCopcNodePointDataView).toHaveBeenCalledTimes(2);
+    expect(mocks.createSpatiallyDistributedPointIndices).toHaveBeenCalledTimes(
+      2,
+    );
     expect(worker.messages[1]).toMatchObject({
       type: "loadNodePointSamples:success",
       cache: {
@@ -293,7 +350,7 @@ describe("CopcPointSampleWorker decoded view cache", () => {
       type: "loadNodePointSamples:canceled",
       cache: {
         retainedViewCount: 1,
-        retainedBytes: 16_000,
+        retainedBytes: 20_000,
         cacheEvictionCount: 1,
         requestedNodeRetained: true,
         evictedNodeKeys: [

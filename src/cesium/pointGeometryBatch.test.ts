@@ -6,8 +6,10 @@ import {
   createCesiumPointGeometryTransform,
   createPointGeometryBatchFromCopc,
   createPointGeometryBatchFromSerializableTransform,
+  estimateCopcNodePointSpacingMeters,
   estimatePointGeometryBatchByteSize,
   getPointGeometryBatchBackingBuffers,
+  withCopcPointGeometryBatchRenderMetadata,
 } from "./pointGeometryBatch";
 import {
   createDefaultCopcCoordinateTransforms,
@@ -100,6 +102,38 @@ describe("point geometry batch creation", () => {
     expect(result.positions[0]).toBeCloseTo(expected.x, 6);
     expect(result.positions[1]).toBeCloseTo(expected.y, 6);
     expect(result.positions[2]).toBeCloseTo(expected.z, 6);
+    expect(result.colors).toEqual(new Uint8Array([10, 20, 30, 255]));
+  });
+
+  it("applies the resolved elevation style with a serializable transform", () => {
+    const result = createPointGeometryBatchFromSerializableTransform({
+      key: "0-0-0-0:3:3:3",
+      pointData: {
+        x: new Float64Array([127, 127, 127]),
+        y: new Float64Array([37, 37, 37]),
+        z: new Float64Array([0, 50, 100]),
+        red: new Uint8Array([255, 255, 255]),
+        green: new Uint8Array([0, 0, 0]),
+        blue: new Uint8Array([0, 0, 0]),
+      },
+      transform: {
+        kind: "geographic",
+        heightScaleToMeters: 1,
+      },
+      pointColorStyle: {
+        mode: "elevation",
+        minimumZ: 0,
+        inverseZRange: 0.01,
+      },
+    });
+
+    expect(result.colors).toEqual(
+      new Uint8Array([
+        68, 1, 84, 255,
+        38, 144, 137, 255,
+        253, 231, 37, 255,
+      ]),
+    );
   });
 
   it("approximates EPSG:2992 serializable transforms near exact projected coordinates", () => {
@@ -242,6 +276,80 @@ describe("point geometry batch creation", () => {
 
     expect(result.positions).toHaveLength(6);
     expect([...result.positions].every(Number.isFinite)).toBe(true);
+  });
+
+  it("derives adaptive render spacing in meters and records sampling density", () => {
+    const inspection = {
+      ...createGeographicInspection(),
+      spacing: 8,
+    };
+    const node = {
+      key: "2-0-0-0",
+      depth: 2,
+      x: 0,
+      y: 0,
+      z: 0,
+      bounds: {
+        minX: 0,
+        minY: 0,
+        minZ: 0,
+        maxX: 100,
+        maxY: 100,
+        maxZ: 10,
+      },
+      pointCount: 100,
+      pointDensity: 1,
+      pointDataOffset: 0,
+      pointDataLength: 1_000,
+    };
+    const coordinateTransform = (x: number, y: number, z: number) => ({
+      longitudeDegrees: x / 111_319.49079327357,
+      latitudeDegrees: y / 110_574.2727,
+      heightMeters: z,
+    });
+    const batch = {
+      key: "2-0-0-0:25",
+      pointCount: 25,
+      positions: new Float64Array(75),
+      colors: new Uint8Array(100),
+    };
+
+    expect(
+      estimateCopcNodePointSpacingMeters(
+        inspection,
+        node,
+        coordinateTransform,
+      ),
+    ).toBeCloseTo(2, 2);
+    expect(
+      withCopcPointGeometryBatchRenderMetadata({
+        batch,
+        inspection,
+        node,
+        coordinateTransform,
+      }),
+    ).toMatchObject({
+      key: batch.key,
+      pointCount: batch.pointCount,
+      pointSpacingMeters: expect.closeTo(2, 2),
+      pointDensityScale: 0.25,
+    });
+
+    const metadataWithoutSpacing = withCopcPointGeometryBatchRenderMetadata({
+      batch,
+      inspection,
+      node,
+      coordinateTransform: (x, y, z) => {
+        if (x > 50 || y > 50) {
+          throw new Error("Synthetic spacing probe is outside the domain.");
+        }
+
+        return coordinateTransform(x, y, z);
+      },
+    });
+
+    expect(metadataWithoutSpacing.pointSpacingMeters).toBeUndefined();
+    expect(metadataWithoutSpacing.pointDensityScale).toBe(0.25);
   });
 });
 

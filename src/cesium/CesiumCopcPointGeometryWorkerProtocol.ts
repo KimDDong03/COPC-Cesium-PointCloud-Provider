@@ -1,8 +1,9 @@
-import type { Hierarchy } from "copc";
+import type { Copc as CopcData, Hierarchy } from "copc";
 import type { CopcNodePointSampleResult } from "../core/copc/CopcPointDataSample";
 import type { CopcSourceDescriptor } from "../core/copc/createCopcRangeGetter";
 import type { CopcDecodedPointDataCacheSnapshot } from "../core/copc/CopcDecodedPointDataCache";
 import type { PointGeometryBatch } from "./CopcPointCloudRenderer";
+import type { ResolvedCopcPointColorStyle } from "./copcPointColorizer";
 import type { CesiumPointGeometryTransform } from "./pointGeometryBatch";
 
 export type CesiumCopcPointGeometryWorkerRequest =
@@ -18,6 +19,7 @@ export type CesiumCopcPointGeometryWorkerWorkRequest =
 export interface CesiumCopcPointGeometryWorkerWarmupRequest {
   readonly id: number;
   readonly type: "warmup";
+  readonly copc?: CopcData;
   readonly source?: CopcSourceDescriptor;
   readonly url?: string;
 }
@@ -25,12 +27,14 @@ export interface CesiumCopcPointGeometryWorkerWarmupRequest {
 export interface CesiumCopcPointGeometryWorkerLoadRequest {
   readonly id: number;
   readonly type: "loadNodePointGeometry";
+  readonly copc?: CopcData;
   readonly source?: CopcSourceDescriptor;
   readonly url?: string;
   readonly nodeKey: string;
   readonly node: Hierarchy.Node;
   readonly maxPointCount: number;
   readonly transform: CesiumPointGeometryTransform;
+  readonly pointColorStyle?: ResolvedCopcPointColorStyle;
   readonly maxDecodedPointDataViews?: number;
   readonly maxDecodedPointDataViewBytes?: number;
 }
@@ -38,6 +42,7 @@ export interface CesiumCopcPointGeometryWorkerLoadRequest {
 export interface CesiumCopcPointGeometryWorkerPrefetchRequest {
   readonly id: number;
   readonly type: "prefetchNodePointData";
+  readonly copc?: CopcData;
   readonly source?: CopcSourceDescriptor;
   readonly url?: string;
   readonly nodeKey: string;

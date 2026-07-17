@@ -28,6 +28,7 @@ import type {
   CopcPointCloudLayer,
   CopcPointCloudLayerAutomaticRenderResult,
   CopcPointCloudLayerHierarchyExpansionResult,
+  CopcPointCloudLayerProgressiveRenderCandidate,
   CopcPointCloudLayerProgressiveAutomaticRenderOptions,
 } from "./CopcPointCloudLayer";
 
@@ -84,6 +85,11 @@ export interface CopcCameraStreamEngineOptions {
   readonly runtimeSettings?: CopcCameraStreamRuntimeSettings;
   readonly rendererKind?: CopcCameraStreamRendererKind;
   readonly shouldPublish?: () => boolean;
+  readonly shouldRenderProgress?: (
+    candidate: CopcPointCloudLayerProgressiveRenderCandidate,
+    prepared: CopcCameraStreamPreparedView,
+  ) => boolean;
+  readonly onProgressCommitted?: () => void;
   readonly onUpdate?: (update: CopcCameraStreamEngineUpdate) => void;
 }
 
@@ -111,8 +117,10 @@ export function isCopcCameraStreamEngineLayer(
 export function supportsCopcCameraStreamEngineOptions(
   options: Partial<CopcPointCloudLayerProgressiveAutomaticRenderOptions>,
 ): boolean {
+  const coverageMode = options.coverageMode ?? "complete-depth";
+
   return (
-    (options.coverageMode ?? "complete-depth") === "complete-depth" &&
+    (coverageMode === "complete-depth" || coverageMode === "mixed-depth") &&
     options.includeAncestorNodes !== false &&
     options.includePointsInResult !== true &&
     options.showBounds !== true &&
@@ -197,6 +205,7 @@ export async function prepareCopcCameraStreamView(
     renderOptions.maxRenderedPointCount,
     lodSettings.maxRenderedPointCount,
   );
+  const activeHierarchy = hierarchyExpansion?.hierarchy ?? layer.hierarchy;
   const renderPlan = createCopcCameraStreamRenderPlan({
     cameraSelection,
     configuredMaxPointCountPerNode: readPositiveInteger(
@@ -215,7 +224,7 @@ export async function prepareCopcCameraStreamView(
       renderOptions.maxTotalPointCount,
       lodSettings.maxSourcePointCount,
     ),
-    hierarchy: hierarchyExpansion?.hierarchy ?? layer.hierarchy,
+    hierarchy: activeHierarchy,
     lodSettings,
     maxFinalNodeCount: runtimeSettings.detailMaxFinalNodeCount,
     minFinalNodeCount: lodSettings.detailMinFinalNodeCount,
@@ -231,12 +240,12 @@ export async function prepareCopcCameraStreamView(
     return undefined;
   }
 
-  const selectedPointCountByNodeKey = new Map(
-    cameraSelection.nodes.map((node) => [node.key, node.pointCount]),
+  const sourcePointCountByNodeKey = new Map(
+    activeHierarchy?.nodes.map((node) => [node.key, node.pointCount]) ?? [],
   );
   const finalNodeWeights = renderPlan.finalNodeKeys.map((nodeKey) => ({
     nodeKey,
-    weight: selectedPointCountByNodeKey.get(nodeKey) ?? 1,
+    weight: normalizePointCountWeight(sourcePointCountByNodeKey.get(nodeKey)),
   }));
 
   return {
@@ -267,11 +276,17 @@ export async function runCopcCameraStreamEngine(
     layer: options.layer,
     frontierNodeKeys: prepared.renderPlan.selectedNodeKeys,
     requiredNodeKeys: prepared.renderPlan.finalNodeKeys,
+    terminalFrontierMode:
+      prepared.cameraSelection.coverageMode === "mixed-depth"
+        ? "mixed-depth-antichain"
+        : "same-depth",
     finalNodeWeights: prepared.finalNodeWeights,
     initialNodeResults: renderOptions.initialNodeResults,
     backgroundNodeResults: renderOptions.backgroundNodeResults,
     renderedPointBudget: prepared.renderPlan.renderedPointBudget,
     maxPointCountPerNode: prepared.renderPlan.maxPointCountPerNode,
+    useSourcePointBudgetHeadroom:
+      prepared.renderPlan.useSourcePointBudgetHeadroom,
     maxActiveNodeRequests:
       renderOptions.maxActiveProgressiveNodeRequests ??
       runtimeSettings.detailMaxActiveNodeRequests,
@@ -279,8 +294,13 @@ export async function runCopcCameraStreamEngine(
     lodSettings: options.lodSettings,
     runtimeSettings,
     requestPriority: renderOptions.requestPriority,
+    skipInitialProgressRender: renderOptions.skipInitialProgressRender,
+    shouldRenderProgress: options.shouldRenderProgress
+      ? (candidate) => options.shouldRenderProgress!(candidate, prepared)
+      : undefined,
     signal: renderOptions.signal,
     shouldPublish: options.shouldPublish,
+    onProgressCommitted: options.onProgressCommitted,
     onUpdate: (update) => {
       const visualQuality = withCopcCameraStreamHierarchyQuality(
         update.visualQuality,
@@ -333,6 +353,9 @@ function createCameraSelectionOptions(
     spacing: options.spacing,
     targetPointSpacingScreenPixels:
       options.targetPointSpacingScreenPixels,
+    previousFrontierKeys: options.previousFrontierKeys,
+    refineScreenSpaceError: options.refineScreenSpaceError,
+    retainScreenSpaceError: options.retainScreenSpaceError,
     signal: options.signal,
   };
 }
@@ -358,4 +381,8 @@ function readPositiveInteger(
   return value !== undefined && Number.isSafeInteger(value) && value > 0
     ? value
     : fallback;
+}
+
+function normalizePointCountWeight(value: number | undefined): number {
+  return value !== undefined && Number.isFinite(value) && value > 0 ? value : 1;
 }

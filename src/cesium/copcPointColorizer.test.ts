@@ -3,6 +3,7 @@ import type { CopcPointDataSampleArrays } from "../core/copc/CopcPointDataSample
 import {
   colorizeCopcPoint,
   colorizeCopcPointSample,
+  resolveCopcPointColorStyle,
 } from "./copcPointColorizer";
 
 describe("colorizeCopcPoint", () => {
@@ -67,6 +68,75 @@ describe("colorizeCopcPoint", () => {
 
   it("keeps the existing cyan fallback when no color dimensions exist", () => {
     expect(colorizeCopcPoint(createPointData({}), 0)).toBe(0x00ffff);
+  });
+
+  it("maps the global elevation range through viridis endpoints and interpolation", () => {
+    const pointData = createPointData({
+      z: new Float64Array([0, 50, 100, -10, 110]),
+      red: new Uint8Array([255, 255, 255, 255, 255]),
+      green: new Uint8Array([0, 0, 0, 0, 0]),
+      blue: new Uint8Array([0, 0, 0, 0, 0]),
+    });
+    const style = resolveCopcPointColorStyle("elevation", {
+      minZ: 0,
+      maxZ: 100,
+    });
+
+    expect(
+      Array.from(pointData.z, (_value, index) =>
+        colorizeCopcPoint(pointData, index, style),
+      ),
+    ).toEqual([
+      0x440154,
+      0x269089,
+      0xfde725,
+      0x440154,
+      0xfde725,
+    ]);
+    expect(Object.isFrozen(style)).toBe(true);
+  });
+
+  it("uses the palette midpoint for degenerate bounds and non-finite elevations", () => {
+    const degenerateStyle = resolveCopcPointColorStyle("elevation", {
+      minZ: 10,
+      maxZ: 10,
+    });
+    const nonFiniteBoundsStyle = resolveCopcPointColorStyle("elevation", {
+      minZ: Number.NaN,
+      maxZ: Number.POSITIVE_INFINITY,
+    });
+    const pointData = createPointData({
+      z: new Float64Array([10, Number.NaN]),
+    });
+
+    expect(colorizeCopcPoint(pointData, 0, degenerateStyle)).toBe(0x269089);
+    expect(colorizeCopcPoint(pointData, 0, nonFiniteBoundsStyle)).toBe(
+      0x269089,
+    );
+    expect(
+      colorizeCopcPoint(
+        pointData,
+        1,
+        resolveCopcPointColorStyle("elevation", { minZ: 0, maxZ: 100 }),
+      ),
+    ).toBe(0x269089);
+  });
+
+  it("keeps attribute coloring as the resolved default", () => {
+    const pointData = createPointData({
+      z: new Float64Array([100]),
+      red: new Uint8Array([10]),
+      green: new Uint8Array([20]),
+      blue: new Uint8Array([30]),
+    });
+    const style = resolveCopcPointColorStyle(undefined, {
+      minZ: 0,
+      maxZ: 100,
+    });
+
+    expect(style).toEqual({ mode: "attribute" });
+    expect(Object.isFrozen(style)).toBe(true);
+    expect(colorizeCopcPoint(pointData, 0, style)).toBe(0x0a141e);
   });
 
   it("colorizes object samples with the same fallback order", () => {

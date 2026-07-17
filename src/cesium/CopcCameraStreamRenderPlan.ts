@@ -47,6 +47,7 @@ export interface CopcCameraStreamRenderPlan {
   readonly renderSignature: string;
   readonly renderedPointBudget: number;
   readonly selectedNodeKeys: readonly string[];
+  readonly useSourcePointBudgetHeadroom: boolean;
 }
 
 export function createCopcCameraStreamRenderPlan(
@@ -73,7 +74,7 @@ export function createCopcCameraStreamRenderPlan(
     options.renderedPointBudget,
   );
   const terminalFrontierNodeKeys =
-    options.cameraSelection.coverageMode === "complete-depth"
+    options.cameraSelection.coverageMode !== "progressive"
       ? orderedFrontierNodeKeys
       : limitFinalNodeKeysForRenderedBudget(
           orderedFrontierNodeKeys,
@@ -94,14 +95,23 @@ export function createCopcCameraStreamRenderPlan(
   const finalSelectedNodeCount = finalNodeKeys.filter((nodeKey) =>
     selectedNodeKeySet.has(nodeKey),
   ).length;
+  // Mixed-depth selection budgets the full additive ancestor closure before
+  // this render plan is created, so it is safe to load up to the configured
+  // per-node source cap and apply the global render budget during composition.
+  // Complete-depth selection budgets only its same-depth frontier; keep its
+  // legacy render-budget-derived load cap until that selector also accounts
+  // for the additive ancestors appended below.
+  const useSourcePointBudgetHeadroom =
+    options.cameraSelection.coverageMode === "mixed-depth";
   const maxPointCountPerNode = createCopcCameraStreamMaxPointCountPerNode({
     configuredMaxPointCountPerNode: options.configuredMaxPointCountPerNode,
     nodeCount: finalNodeKeys.length,
     renderedPointBudget,
     maxPointCountPerFinalNode:
-      options.cameraSelection.coverageMode === "complete-depth"
+      options.cameraSelection.coverageMode !== "progressive"
         ? undefined
         : options.maxPointCountPerFinalNode,
+    useSourcePointBudgetHeadroom,
   });
   const previewNodeKeys =
     shouldCreatePreviewNodeKeys(
@@ -129,6 +139,7 @@ export function createCopcCameraStreamRenderPlan(
     options.effectiveNodePointDataLengthBudget,
     options.effectiveSourcePointBudget,
     options.effectivePointDataLengthBudget,
+    ...(useSourcePointBudgetHeadroom ? ["source-headroom"] : []),
   ].join("@");
 
   return {
@@ -142,6 +153,7 @@ export function createCopcCameraStreamRenderPlan(
     renderSignature,
     renderedPointBudget,
     selectedNodeKeys,
+    useSourcePointBudgetHeadroom,
   };
 }
 
@@ -165,6 +177,7 @@ export interface CopcCameraStreamMaxPointCountPerNodeOptions {
   readonly nodeCount: number;
   readonly renderedPointBudget: number;
   readonly maxPointCountPerFinalNode?: number;
+  readonly useSourcePointBudgetHeadroom?: boolean;
 }
 
 export function createCopcCameraStreamMaxPointCountPerNode(
@@ -177,6 +190,10 @@ export function createCopcCameraStreamMaxPointCountPerNode(
   const maxPointCountPerFinalNode = normalizeOptionalPositiveInteger(
     options.maxPointCountPerFinalNode,
   );
+
+  if (options.useSourcePointBudgetHeadroom === true) {
+    return configuredMaxPointCountPerNode;
+  }
 
   if (options.nodeCount <= 0) {
     return Math.min(

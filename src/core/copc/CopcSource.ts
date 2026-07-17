@@ -157,6 +157,7 @@ export class CopcSource {
   private readonly createPointSampleWorker: () => Worker;
   private readonly getter: Getter;
   private copcPromise: Promise<CopcData> | undefined;
+  private loadedCopcMetadata: CopcData | undefined;
   private hierarchyPromise: Promise<Hierarchy.Subtree> | undefined;
   private inspectionPromise: Promise<CopcInspection> | undefined;
   private readonly hierarchyPagePromises = new Map<
@@ -309,6 +310,10 @@ export class CopcSource {
 
   getDescriptor(): CopcSourceDescriptor {
     return this.sourceDescriptor;
+  }
+
+  getLoadedCopcMetadata(): CopcData | undefined {
+    return this.loadedCopcMetadata;
   }
 
   inspect(): Promise<CopcInspection> {
@@ -855,7 +860,10 @@ export class CopcSource {
     let promise = this.copcPromise;
 
     if (!promise) {
-      promise = Copc.create(this.getter);
+      promise = Copc.create(this.getter).then((copc) => {
+        this.loadedCopcMetadata = copc;
+        return copc;
+      });
       this.copcPromise = promise;
       void promise.catch(() => {
         if (this.copcPromise === promise) {
@@ -1116,6 +1124,7 @@ export class CopcSource {
   }
 
   private loadNodePointSamplesWithWorker(
+    copc: CopcData,
     nodeKey: string,
     node: Hierarchy.Node,
     maxPointCount: number,
@@ -1186,6 +1195,7 @@ export class CopcSource {
       const request: CopcPointSampleWorkerLoadRequest = {
         id,
         type: "loadNodePointSamples",
+        copc,
         source: this.sourceDescriptor,
         nodeKey,
         node,
@@ -1751,6 +1761,7 @@ export class CopcSource {
     this.touchLoadedHierarchyPage(this.hierarchyNodePageIds.get(nodeKey));
 
     const workerResult = this.loadNodePointSamplesWithWorker(
+      copc,
       nodeKey,
       node,
       maxPointCount,
@@ -1770,6 +1781,7 @@ export class CopcSource {
       node,
       maxPointCount,
       sampleFormat,
+      signal,
     });
 
     throwIfAborted(signal);
@@ -2202,28 +2214,13 @@ function downsamplePointSampleResult(
     return result;
   }
 
-  const step = result.sampledPointCount / sampledPointCount;
-  const points: CopcPointDataSample[] = [];
-
   const pointData = result.pointData
-    ? createDownsampledPointDataSampleArrays(result.pointData, {
-        sourcePointCount: result.sampledPointCount,
+    ? createDownsampledPointDataSampleArrays(
+        result.pointData,
         sampledPointCount,
-        step,
-      })
+      )
     : undefined;
-
-  for (let sampleIndex = 0; sampleIndex < sampledPointCount; sampleIndex += 1) {
-    const pointIndex = Math.min(
-      result.sampledPointCount - 1,
-      Math.floor(sampleIndex * step),
-    );
-    const point = result.points[pointIndex];
-
-    if (point) {
-      points.push(point);
-    }
-  }
+  const points = result.points.slice(0, sampledPointCount);
 
   return {
     nodeKey: result.nodeKey,
@@ -2255,66 +2252,18 @@ function estimatePointDataSampleArraysByteSize(
 
 function createDownsampledPointDataSampleArrays(
   pointData: CopcPointDataSampleArrays,
-  options: {
-    readonly sourcePointCount: number;
-    readonly sampledPointCount: number;
-    readonly step: number;
-  },
+  sampledPointCount: number,
 ): CopcPointDataSampleArrays {
-  const downsampled: CopcPointDataSampleArrays = {
-    x: new Float64Array(options.sampledPointCount),
-    y: new Float64Array(options.sampledPointCount),
-    z: new Float64Array(options.sampledPointCount),
-    red: pointData.red ? new Uint8Array(options.sampledPointCount) : undefined,
-    green: pointData.green
-      ? new Uint8Array(options.sampledPointCount)
-      : undefined,
-    blue: pointData.blue ? new Uint8Array(options.sampledPointCount) : undefined,
-    classification: pointData.classification
-      ? new Uint8Array(options.sampledPointCount)
-      : undefined,
-    intensity: pointData.intensity
-      ? new Uint16Array(options.sampledPointCount)
-      : undefined,
+  return {
+    x: pointData.x.slice(0, sampledPointCount),
+    y: pointData.y.slice(0, sampledPointCount),
+    z: pointData.z.slice(0, sampledPointCount),
+    red: pointData.red?.slice(0, sampledPointCount),
+    green: pointData.green?.slice(0, sampledPointCount),
+    blue: pointData.blue?.slice(0, sampledPointCount),
+    classification: pointData.classification?.slice(0, sampledPointCount),
+    intensity: pointData.intensity?.slice(0, sampledPointCount),
   };
-
-  for (
-    let sampleIndex = 0;
-    sampleIndex < options.sampledPointCount;
-    sampleIndex += 1
-  ) {
-    const pointIndex = Math.min(
-      options.sourcePointCount - 1,
-      Math.floor(sampleIndex * options.step),
-    );
-    downsampled.x[sampleIndex] = pointData.x[pointIndex] ?? 0;
-    downsampled.y[sampleIndex] = pointData.y[pointIndex] ?? 0;
-    downsampled.z[sampleIndex] = pointData.z[pointIndex] ?? 0;
-
-    if (downsampled.red && pointData.red) {
-      downsampled.red[sampleIndex] = pointData.red[pointIndex] ?? 0;
-    }
-
-    if (downsampled.green && pointData.green) {
-      downsampled.green[sampleIndex] = pointData.green[pointIndex] ?? 0;
-    }
-
-    if (downsampled.blue && pointData.blue) {
-      downsampled.blue[sampleIndex] = pointData.blue[pointIndex] ?? 0;
-    }
-
-    if (downsampled.classification && pointData.classification) {
-      downsampled.classification[sampleIndex] =
-        pointData.classification[pointIndex] ?? 0;
-    }
-
-    if (downsampled.intensity && pointData.intensity) {
-      downsampled.intensity[sampleIndex] =
-        pointData.intensity[pointIndex] ?? 0;
-    }
-  }
-
-  return downsampled;
 }
 
 function hierarchyPageId(page: Hierarchy.Page): string {

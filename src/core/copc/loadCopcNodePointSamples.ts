@@ -1,6 +1,7 @@
 import { Copc } from "copc";
 import type { Copc as CopcData, Getter, Hierarchy } from "copc";
 import { getSharedLazPerf } from "./createLazPerf";
+import { createSpatiallyDistributedPointIndices } from "./createSpatiallyDistributedPointIndices";
 import type {
   CopcNodePointSampleResult,
   CopcPointColor,
@@ -16,6 +17,7 @@ export interface LoadCopcNodePointSamplesOptions {
   readonly node: Hierarchy.Node;
   readonly maxPointCount: number;
   readonly sampleFormat?: CopcPointSampleFormat;
+  readonly signal?: AbortSignal;
 }
 
 export interface LoadCopcNodePointDataViewOptions {
@@ -29,6 +31,8 @@ export interface SampleCopcPointDataViewOptions {
   readonly view: CopcPointDataView;
   readonly maxPointCount: number;
   readonly sampleFormat?: CopcPointSampleFormat;
+  readonly spatialPointOrder?: Uint32Array;
+  readonly signal?: AbortSignal;
 }
 
 export interface CopcPointDataView {
@@ -40,13 +44,16 @@ export interface CopcPointDataView {
 export async function loadCopcNodePointSamples(
   options: LoadCopcNodePointSamplesOptions,
 ): Promise<CopcNodePointSampleResult> {
+  throwIfAborted(options.signal);
   const view = await loadCopcNodePointDataView(options);
+  throwIfAborted(options.signal);
 
   return sampleCopcPointDataView({
     nodeKey: options.nodeKey,
     view,
     maxPointCount: options.maxPointCount,
     sampleFormat: options.sampleFormat,
+    signal: options.signal,
   });
 }
 
@@ -77,14 +84,48 @@ export function sampleCopcPointDataView(
   options: SampleCopcPointDataViewOptions,
 ): CopcNodePointSampleResult {
   const { view } = options;
+  validatePointCount("view.pointCount", view.pointCount);
+  validatePointCount("maxPointCount", options.maxPointCount);
+  validateSpatialPointOrder(options.spatialPointOrder, view.pointCount);
+  throwIfAborted(options.signal);
+
+  const sampledPointCount = Math.min(view.pointCount, options.maxPointCount);
+
+  if (sampledPointCount === 0) {
+    return {
+      nodeKey: options.nodeKey,
+      nodePointCount: view.pointCount,
+      sampledPointCount: 0,
+      points: [],
+      ...(options.sampleFormat === "typed"
+        ? {
+            pointData: createPointDataSampleArrays(
+              0,
+              hasColorDimensions(view),
+              "Classification" in view.dimensions,
+              "Intensity" in view.dimensions,
+            ),
+          }
+        : {}),
+    };
+  }
+
   const getX = view.getter("X");
   const getY = view.getter("Y");
   const getZ = view.getter("Z");
   const colorGetters = getColorGetters(view);
   const getClassification = getOptionalDimensionGetter(view, "Classification");
   const getIntensity = getOptionalDimensionGetter(view, "Intensity");
-  const sampledPointCount = Math.min(view.pointCount, options.maxPointCount);
-  const step = view.pointCount / sampledPointCount;
+  const pointIndices =
+    options.spatialPointOrder ??
+    createSpatiallyDistributedPointIndices({
+      pointCount: view.pointCount,
+      sampleCount: sampledPointCount,
+      getX,
+      getY,
+      getZ,
+      signal: options.signal,
+    });
 
   if (options.sampleFormat === "typed") {
     return sampleCopcPointDataViewAsTypedArrays({
@@ -97,16 +138,19 @@ export function sampleCopcPointDataView(
       getIntensity,
       nodePointCount: view.pointCount,
       sampledPointCount,
-      step,
+      pointIndices,
+      signal: options.signal,
     });
   }
 
   const points: CopcPointDataSample[] = [];
 
   for (let sampleIndex = 0; sampleIndex < sampledPointCount; sampleIndex += 1) {
-    const pointIndex = Math.min(
-      view.pointCount - 1,
-      Math.floor(sampleIndex * step),
+    checkForAbort(options.signal, sampleIndex);
+    const pointIndex = readSpatialPointIndex(
+      pointIndices,
+      sampleIndex,
+      view.pointCount,
     );
 
     points.push({
@@ -126,6 +170,8 @@ export function sampleCopcPointDataView(
         : {}),
     });
   }
+
+  throwIfAborted(options.signal);
 
   return {
     nodeKey: options.nodeKey,
@@ -151,7 +197,8 @@ function sampleCopcPointDataViewAsTypedArrays(options: {
   readonly getIntensity: ((index: number) => number) | undefined;
   readonly nodePointCount: number;
   readonly sampledPointCount: number;
-  readonly step: number;
+  readonly pointIndices: Uint32Array;
+  readonly signal: AbortSignal | undefined;
 }): CopcNodePointSampleResult {
   const pointData = createPointDataSampleArrays(
     options.sampledPointCount,
@@ -165,9 +212,11 @@ function sampleCopcPointDataViewAsTypedArrays(options: {
     sampleIndex < options.sampledPointCount;
     sampleIndex += 1
   ) {
-    const pointIndex = Math.min(
-      options.nodePointCount - 1,
-      Math.floor(sampleIndex * options.step),
+    checkForAbort(options.signal, sampleIndex);
+    const pointIndex = readSpatialPointIndex(
+      options.pointIndices,
+      sampleIndex,
+      options.nodePointCount,
     );
     pointData.x[sampleIndex] = options.getX(pointIndex);
     pointData.y[sampleIndex] = options.getY(pointIndex);
@@ -202,6 +251,8 @@ function sampleCopcPointDataViewAsTypedArrays(options: {
       );
     }
   }
+
+  throwIfAborted(options.signal);
 
   return {
     nodeKey: options.nodeKey,
@@ -249,7 +300,7 @@ function getColorGetters(view: {
       readonly blue: (index: number) => number;
     }
   | undefined {
-  if (!("Red" in view.dimensions) || !("Green" in view.dimensions) || !("Blue" in view.dimensions)) {
+  if (!hasColorDimensions(view)) {
     return undefined;
   }
 
@@ -258,6 +309,16 @@ function getColorGetters(view: {
     green: view.getter("Green"),
     blue: view.getter("Blue"),
   };
+}
+
+function hasColorDimensions(view: {
+  readonly dimensions: Record<string, unknown>;
+}): boolean {
+  return (
+    "Red" in view.dimensions &&
+    "Green" in view.dimensions &&
+    "Blue" in view.dimensions
+  );
 }
 
 function colorAt(
@@ -294,4 +355,62 @@ function normalizeUnsignedInteger(value: number, maximum: number): number {
   }
 
   return Math.max(0, Math.min(maximum, Math.round(value)));
+}
+
+function validatePointCount(name: string, value: number): void {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError(`${name} must be a non-negative safe integer.`);
+  }
+}
+
+function validateSpatialPointOrder(
+  spatialPointOrder: Uint32Array | undefined,
+  pointCount: number,
+): void {
+  if (spatialPointOrder && spatialPointOrder.length !== pointCount) {
+    throw new RangeError(
+      "spatialPointOrder length must match view.pointCount.",
+    );
+  }
+}
+
+function readSpatialPointIndex(
+  spatialPointOrder: Uint32Array,
+  sampleIndex: number,
+  pointCount: number,
+): number {
+  const pointIndex = spatialPointOrder[sampleIndex];
+
+  if (pointIndex === undefined || pointIndex >= pointCount) {
+    throw new RangeError("spatialPointOrder contains an invalid point index.");
+  }
+
+  return pointIndex;
+}
+
+function checkForAbort(
+  signal: AbortSignal | undefined,
+  iteration: number,
+): void {
+  if ((iteration & 2_047) === 0) {
+    throwIfAborted(signal);
+  }
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) {
+    return;
+  }
+
+  if (signal.reason instanceof Error) {
+    throw signal.reason;
+  }
+
+  if (typeof DOMException !== "undefined") {
+    throw new DOMException("COPC point sampling was aborted.", "AbortError");
+  }
+
+  const error = new Error("COPC point sampling was aborted.");
+  error.name = "AbortError";
+  throw error;
 }

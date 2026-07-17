@@ -50,7 +50,7 @@ describe("CopcCameraStreamEngine", () => {
     ]);
     expect(prepared?.renderPlan.maxPointCountPerNode).toBe(180_000);
     expect(prepared?.finalNodeWeights).toEqual([
-      { nodeKey: "0-0-0-0", weight: 1 },
+      { nodeKey: "0-0-0-0", weight: 60_000 },
       { nodeKey: "1-0-0-0", weight: 120_000 },
     ]);
   });
@@ -72,9 +72,12 @@ describe("CopcCameraStreamEngine", () => {
         maxActiveProgressiveNodeRequests: 6,
         maxPointCountPerNode: 180_000,
         maxRenderedPointCount: 360_000,
+        nodePointCountWeights: [60_000, 120_000],
         nodeRequestOrder: "selection",
         postStopLoadingMode: "await",
         postStopProgressMode: "render",
+        progressRenderMode: "final-only",
+        useSourcePointBudgetHeadroom: false,
       }),
     );
     expect(stages).toEqual(["refining", "terminal"]);
@@ -89,6 +92,73 @@ describe("CopcCameraStreamEngine", () => {
       isTerminalReady: true,
       missingRequiredNodeCount: 0,
       unexpectedRenderedNodeCount: 0,
+    });
+  });
+
+  it("forwards mixed-depth hysteresis and verifies a mixed antichain terminal set", async () => {
+    const hierarchy = createHierarchyForKeys(
+      [
+        "0-0-0-0",
+        "1-0-0-0",
+        "1-1-1-1",
+        "2-0-0-0",
+        "2-3-3-3",
+        "3-7-7-7",
+      ],
+      [],
+    );
+    const frontierNodes = hierarchy.nodes.filter((node) =>
+      ["2-0-0-0", "3-7-7-7"].includes(node.key),
+    );
+    const selectNodesForCamera = vi.fn(async () =>
+      ({
+        ...createCameraSelection(),
+        nodes: frontierNodes,
+        selectedDepth: 3,
+        targetDepth: 3,
+        coverageMode: "mixed-depth",
+      }) as CopcHierarchyNodeCameraSelection,
+    );
+    const renderNodesProgressively = vi.fn(
+      async (nodeKeys: readonly string[]) => createRenderResult(nodeKeys),
+    );
+    const layer = {
+      hierarchy,
+      expandHierarchyForCamera: vi.fn(async () => undefined),
+      selectNodesForCamera,
+      renderNodesProgressively,
+    } as unknown as CopcCameraStreamEngineLayer;
+    const previousFrontierKeys = ["2-0-0-0", "2-3-3-3"];
+    const result = await runCopcCameraStreamEngine({
+      layer,
+      lodSettings: createLodSettings(),
+      renderOptions: {
+        ...createRenderOptions(),
+        coverageMode: "mixed-depth",
+        previousFrontierKeys,
+        refineScreenSpaceError: 4,
+        retainScreenSpaceError: 3,
+      },
+    });
+
+    expect(selectNodesForCamera).toHaveBeenCalledWith(
+      expect.objectContaining({
+        coverageMode: "mixed-depth",
+        previousFrontierKeys,
+        refineScreenSpaceError: 4,
+        retainScreenSpaceError: 3,
+      }),
+    );
+    expect(result?.renderPlan.selectedNodeKeys).toEqual([
+      "2-0-0-0",
+      "3-7-7-7",
+    ]);
+    expect(result?.visualQuality).toMatchObject({
+      terminalFrontierMode: "mixed-depth-antichain",
+      frontierDepthSpan: 1,
+      isFrontierAntichain: true,
+      isFrontierDepthPolicySatisfied: true,
+      isTerminalReady: true,
     });
   });
 
@@ -348,6 +418,12 @@ describe("CopcCameraStreamEngine", () => {
       supportsCopcCameraStreamEngineOptions({
         maxNodes: 12,
         maxRenderedPointCount: 240_000,
+      }),
+    ).toBe(true);
+    expect(
+      supportsCopcCameraStreamEngineOptions({
+        coverageMode: "mixed-depth",
+        previousFrontierKeys: ["2-0-0-0", "3-7-7-7"],
       }),
     ).toBe(true);
     expect(isCopcCameraStreamEngineLayer({})).toBe(false);

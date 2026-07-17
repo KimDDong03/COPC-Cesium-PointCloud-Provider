@@ -101,6 +101,14 @@ describe("CopcPointCloudLayer coordinate transforms", () => {
           maxDecodedPointDataViewBytesAcrossWorkers: 0,
         }),
     ).toThrow("maxDecodedPointDataViewBytesAcrossWorkers");
+
+    expect(
+      () =>
+        new CopcPointCloudLayer(createSceneStub(), {
+          url: "https://example.com/sample.copc.laz",
+          pointColorMode: "invalid" as never,
+        }),
+    ).toThrow('pointColorMode must be "attribute" or "elevation".');
   });
 
   it("splits one decoded point data byte budget across active worker slots", () => {
@@ -191,6 +199,36 @@ describe("CopcPointCloudLayer coordinate transforms", () => {
 
     layer.destroy();
     expect(workers.map((worker) => worker.terminateCount)).toEqual([1, 1]);
+  });
+
+  it("seeds point geometry workers with already loaded COPC metadata", () => {
+    const workers: FakeCopcPointGeometryWorker[] = [];
+    const layer = new CopcPointCloudLayer(createSceneStub(), {
+      url: "https://example.com/sample.copc.laz",
+      pointGeometryLoading: "integrated-worker",
+      createCopcPointGeometryWorker: () => {
+        const worker = new FakeCopcPointGeometryWorker();
+        workers.push(worker);
+        return worker as unknown as Worker;
+      },
+    });
+    const copc = {
+      header: {
+        pointDataRecordLength: 16,
+      },
+    } as CopcData;
+    const mutableSource = layer.source as unknown as {
+      loadedCopcMetadata: CopcData;
+    };
+    mutableSource.loadedCopcMetadata = copc;
+
+    layer.warmUpPointGeometryWorkers({ workerCount: 1 });
+
+    expect(workers[0]?.requests[0]).toMatchObject({
+      type: "warmup",
+      copc,
+    });
+    layer.destroy();
   });
 
   it("resets streaming caches and worker pools without destroying the layer", () => {
@@ -476,6 +514,49 @@ describe("CopcPointCloudLayer coordinate transforms", () => {
     expect(pointRendering.clearCount).toBe(1);
     expect(pointRendering.destroyCount).toBe(1);
   });
+
+  it("applies elevation coloring when renderNode uses object point samples", async () => {
+    const pointRendering = createRecordingPointRenderer();
+    const layer = new CopcPointCloudLayer(createSceneStub(), {
+      url: "https://example.com/sample.copc.laz",
+      createPointRenderer: () => pointRendering.renderer,
+      pointColorMode: "elevation",
+    });
+    const bounds = {
+      ...createBounds(),
+      minZ: 0,
+      maxZ: 100,
+    };
+
+    layer.source.inspect = async () => createInspection({ bounds });
+    layer.source.loadHierarchySummary = async () => createHierarchy();
+    layer.source.loadNodePointSamples = async () => ({
+      nodeKey: "0-0-0-0",
+      nodePointCount: 1,
+      sampledPointCount: 1,
+      points: [
+        {
+          x: 1,
+          y: 2,
+          z: 100,
+          color: { red: 255, green: 0, blue: 0 },
+        },
+      ],
+    });
+
+    const result = await layer.renderNode("0-0-0-0", {
+      showBounds: false,
+    });
+
+    expect(result.points[0]?.color).toEqual({
+      red: 253,
+      green: 231,
+      blue: 37,
+    });
+    expect(pointRendering.points).toEqual(result.points);
+
+    layer.destroy();
+  });
 });
 
 describe("CopcPointCloudLayer hierarchy loading", () => {
@@ -567,7 +648,7 @@ describe("CopcPointCloudLayer hierarchy loading", () => {
     expect(pointRendering.points).toHaveLength(1);
   });
 
-  it("distributes supplied node sample results across the rendered point budget", async () => {
+  it("keeps nested prefixes while distributing the rendered point budget", async () => {
     const pointRendering = createRecordingPointRenderer();
     const layer = new CopcPointCloudLayer(createSceneStub(), {
       url: "https://example.com/sample.copc.laz",
@@ -599,7 +680,7 @@ describe("CopcPointCloudLayer hierarchy loading", () => {
     ).toEqual([3, 3]);
     expect(
       pointRendering.points.map((point) => point.longitudeDegrees),
-    ).toEqual([0, 2, 4, 10, 12, 14]);
+    ).toEqual([0, 1, 2, 10, 11, 12]);
   });
 
   it("passes supplied node sample results as renderer batches when supported", async () => {
@@ -711,9 +792,76 @@ describe("CopcPointCloudLayer hierarchy loading", () => {
     expect(
       pointRendering.geometryBatches.map((batch) => batch.pointCount),
     ).toEqual([1, 1]);
+    expect(pointRendering.geometryBatches[0]?.colors).toEqual(
+      new Uint8Array([1, 2, 3, 255]),
+    );
+    expect(
+      pointRendering.geometryBatches.map((batch) => batch.pointDensityScale),
+    ).toEqual([1, 1]);
+    expect(
+      pointRendering.geometryBatches.every(
+        (batch) =>
+          batch.pointSpacingMeters !== undefined &&
+          Number.isFinite(batch.pointSpacingMeters) &&
+          batch.pointSpacingMeters > 0,
+      ),
+    ).toBe(true);
     expect(result.points).toEqual([]);
     expect(result.pointSamples.points).toEqual([]);
     expect(result.renderStats.pointCount).toBe(2);
+  });
+
+  it("colors main-thread geometry from the inspection-wide elevation range", async () => {
+    const pointRendering = createRecordingGeometryBatchPointRenderer();
+    const layer = new CopcPointCloudLayer(createSceneStub(), {
+      url: "https://example.com/sample.copc.laz",
+      createPointRenderer: () => pointRendering.renderer,
+      pointColorMode: "elevation",
+    });
+
+    layer.source.inspect = async () => createInspection({
+      bounds: {
+        ...createBounds(),
+        maxZ: 100,
+      },
+    });
+    layer.source.loadHierarchySummary = async () =>
+      createHierarchy([createHierarchyNode("0-0-0-0")]);
+    layer.source.loadNodesPointSamples = async () => ({
+      nodeKeys: ["0-0-0-0"],
+      nodeResults: [
+        {
+          nodeKey: "0-0-0-0",
+          nodePointCount: 3,
+          sampledPointCount: 3,
+          points: [],
+          pointData: {
+            x: new Float64Array([0, 0, 0]),
+            y: new Float64Array([0, 0, 0]),
+            z: new Float64Array([0, 50, 100]),
+            red: new Uint8Array([255, 255, 255]),
+            green: new Uint8Array([0, 0, 0]),
+            blue: new Uint8Array([0, 0, 0]),
+          },
+        },
+      ],
+      nodePointCount: 3,
+      sampledPointCount: 3,
+      points: [],
+    });
+
+    await layer.renderNodes(["0-0-0-0"], {
+      includePointsInResult: false,
+      showBounds: false,
+    });
+
+    expect(pointRendering.geometryBatches[0]?.colors).toEqual(
+      new Uint8Array([
+        68, 1, 84, 255,
+        38, 144, 137, 255,
+        253, 231, 37, 255,
+      ]),
+    );
   });
 
   it("uses the Cesium geometry worker for typed built-in coordinate transforms", async () => {
@@ -723,6 +871,7 @@ describe("CopcPointCloudLayer hierarchy loading", () => {
       url: "https://example.com/sample.copc.laz",
       createPointRenderer: () => pointRendering.renderer,
       pointGeometryLoading: "worker",
+      pointColorMode: "elevation",
       createPointGeometryWorker: () => geometryWorker as unknown as Worker,
     });
 
@@ -750,6 +899,11 @@ describe("CopcPointCloudLayer hierarchy loading", () => {
         transform: {
           kind: "geographic",
           heightScaleToMeters: 1,
+        },
+        pointColorStyle: {
+          mode: "elevation",
+          minimumZ: 0,
+          inverseZRange: 1,
         },
       }),
     );
@@ -817,6 +971,7 @@ describe("CopcPointCloudLayer hierarchy loading", () => {
       url: "https://example.com/sample.copc.laz",
       createPointRenderer: () => pointRendering.renderer,
       pointGeometryLoading: "integrated-worker",
+      pointColorMode: "elevation",
       maxDecodedPointDataViewsPerWorker: 80,
       maxDecodedPointDataViewBytesPerWorker: 200 * 1024 * 1024,
       createCopcPointGeometryWorker: () => geometryWorker as unknown as Worker,
@@ -854,6 +1009,11 @@ describe("CopcPointCloudLayer hierarchy loading", () => {
           kind: "geographic",
           heightScaleToMeters: 1,
         },
+        pointColorStyle: {
+          mode: "elevation",
+          minimumZ: 0,
+          inverseZRange: 1,
+        },
       }),
     );
     expect(pointRendering.geometryBatches[0]?.positions).toEqual(
@@ -862,6 +1022,53 @@ describe("CopcPointCloudLayer hierarchy loading", () => {
     expect(result.pointSamples.nodeKeys).toEqual(["0-0-0-0"]);
     expect(result.pointSamples.sampledPointCount).toBe(1);
     expect(result.renderStats.pointCount).toBe(1);
+  });
+
+  it("passes loaded COPC metadata to integrated geometry and prefetch without warmup", async () => {
+    const pointRendering = createRecordingGeometryBatchPointRenderer();
+    const geometryWorker = new FakeCopcPointGeometryWorker();
+    const layer = new CopcPointCloudLayer(createSceneStub(), {
+      url: "https://example.com/sample.copc.laz",
+      createPointRenderer: () => pointRendering.renderer,
+      pointGeometryLoading: "integrated-worker",
+      createCopcPointGeometryWorker: () => geometryWorker as unknown as Worker,
+    });
+    const copc = {
+      header: {
+        pointDataRecordLength: 16,
+      },
+    } as CopcData;
+    const mutableSource = layer.source as unknown as {
+      loadedCopcMetadata: CopcData;
+    };
+    mutableSource.loadedCopcMetadata = copc;
+
+    layer.source.inspect = async () => createInspection();
+    layer.source.loadHierarchySummary = async () =>
+      createHierarchy([
+        createHierarchyNode("0-0-0-0"),
+        createHierarchyNode("1-0-0-0"),
+      ]);
+
+    await layer.renderNodes(["0-0-0-0"], {
+      includePointsInResult: false,
+      maxPointCountPerNode: 5,
+      showBounds: false,
+    });
+    await layer.prefetchNodePointDataViews(["1-0-0-0"]);
+
+    expect(geometryWorker.requests).toEqual([
+      expect.objectContaining({
+        type: "loadNodePointGeometry",
+        nodeKey: "0-0-0-0",
+        copc,
+      }),
+      expect.objectContaining({
+        type: "prefetchNodePointData",
+        nodeKey: "1-0-0-0",
+        copc,
+      }),
+    ]);
   });
 
   it("prefetches decoded COPC node data without rendering geometry", async () => {
@@ -2831,6 +3038,63 @@ describe("CopcPointCloudLayer hierarchy loading", () => {
     expect(result.renderStats.pointCount).toBe(10);
   });
 
+  it("loads source headroom only when progressive rendering explicitly opts in", async () => {
+    const renderWithHeadroom = async (
+      useSourcePointBudgetHeadroom: boolean | undefined,
+    ): Promise<{
+      readonly requestedPointCounts: readonly number[];
+      readonly renderedPointCount: number;
+    }> => {
+      const geometryWorker = new CountingCopcPointGeometryWorker();
+      const layer = new CopcPointCloudLayer(createSceneStub(), {
+        url: "https://example.com/sample.copc.laz",
+        createPointRenderer: () =>
+          createRecordingGeometryBatchPointRenderer().renderer,
+        pointGeometryLoading: "integrated-worker",
+        createCopcPointGeometryWorker: () =>
+          geometryWorker as unknown as Worker,
+      });
+      const nodeKeys = ["0-0-0-0", "1-0-0-0"];
+
+      layer.source.inspect = async () => createInspection();
+      layer.source.loadHierarchySummary = async () =>
+        createHierarchy(
+          nodeKeys.map((key) => ({
+            ...createHierarchyNode(key),
+            pointCount: 100,
+          })),
+        );
+
+      const result = await layer.renderNodesProgressively(nodeKeys, {
+        includePointsInResult: false,
+        maxPointCountPerNode: 100,
+        maxRenderedPointCount: 20,
+        progressRenderMode: "final-only",
+        showBounds: false,
+        useSourcePointBudgetHeadroom,
+      });
+      const requestedPointCounts = geometryWorker.loadRequests.map((request) =>
+        request.type === "loadNodePointGeometry" ? request.maxPointCount : 0,
+      );
+
+      layer.destroy();
+
+      return {
+        requestedPointCounts,
+        renderedPointCount: result.pointSamples.sampledPointCount,
+      };
+    };
+
+    await expect(renderWithHeadroom(undefined)).resolves.toEqual({
+      requestedPointCounts: [10, 10],
+      renderedPointCount: 20,
+    });
+    await expect(renderWithHeadroom(true)).resolves.toEqual({
+      requestedPointCounts: [100, 100],
+      renderedPointCount: 20,
+    });
+  });
+
   it("caps cached integrated progressive geometry per node before applying the total budget", async () => {
     const pointRendering = createRecordingGeometryBatchPointRenderer();
     const geometryWorker = new CountingCopcPointGeometryWorker();
@@ -4407,6 +4671,133 @@ describe("CopcPointCloudLayer hierarchy loading", () => {
     expect(selection?.nodes.map((node) => node.key)).toEqual(["0-0-0-0"]);
     expect(frustumCheckCount).toBe(1);
   });
+
+  it("reuses transformed bounds for repeated selection of the same hierarchy nodes", async () => {
+    let transformCallCount = 0;
+    let frustumCheckCount = 0;
+    const layer = new CopcPointCloudLayer(createSceneStub(), {
+      url: "https://example.com/sample.copc.laz",
+      coordinateTransforms: () => ({
+        toCesium: (x, y, z) => {
+          transformCallCount += 1;
+
+          return {
+            longitudeDegrees: x,
+            latitudeDegrees: y,
+            heightMeters: z,
+          };
+        },
+        toCopc: () => ({
+          x: 0,
+          y: 0,
+          z: 0,
+        }),
+      }),
+    });
+    const hierarchy = createHierarchy(
+      [
+        createHierarchyNodeWithBounds("0-0-0-0", 0, 0, 0, 4),
+        createHierarchyNodeWithBounds("1-0-0-0", 1, 0, 0, 2),
+        createHierarchyNodeWithBounds("1-1-0-0", 1, 2, 0, 2),
+      ],
+      [],
+    );
+    const camera = createCountingFrustumCameraStub(() => {
+      frustumCheckCount += 1;
+
+      return Intersect.INSIDE;
+    });
+
+    layer.source.inspect = async () => createInspection();
+    layer.source.loadHierarchySummary = async () => hierarchy;
+    const selectionOptions = {
+      camera,
+      viewportHeightPixels: 720,
+      minDepth: 1,
+      maxDepth: 1,
+      maxNodes: 4,
+      targetNodeScreenPixels: 10_000,
+    };
+
+    const firstSelection = await layer.selectNodesForCamera(selectionOptions);
+    const firstTransformCallCount = transformCallCount;
+    const secondSelection = await layer.selectNodesForCamera(selectionOptions);
+
+    expect(firstSelection?.nodes.map((node) => node.key)).toEqual([
+      "1-0-0-0",
+      "1-1-0-0",
+    ]);
+    expect(secondSelection?.nodes.map((node) => node.key)).toEqual(
+      firstSelection?.nodes.map((node) => node.key),
+    );
+    expect(firstTransformCallCount).toBe(16);
+    expect(transformCallCount).toBe(firstTransformCallCount);
+    expect(frustumCheckCount).toBe(4);
+
+    layer.destroy();
+  });
+
+  it("recomputes transformed bounds when hierarchy nodes have new identities", async () => {
+    let transformCallCount = 0;
+    const layer = new CopcPointCloudLayer(createSceneStub(), {
+      url: "https://example.com/sample.copc.laz",
+      coordinateTransforms: () => ({
+        toCesium: (x, y, z) => {
+          transformCallCount += 1;
+
+          return {
+            longitudeDegrees: x,
+            latitudeDegrees: y,
+            heightMeters: z,
+          };
+        },
+        toCopc: () => ({
+          x: 0,
+          y: 0,
+          z: 0,
+        }),
+      }),
+    });
+    const createSelectionHierarchy = () =>
+      createHierarchy(
+        [
+          createHierarchyNodeWithBounds("0-0-0-0", 0, 0, 0, 4),
+          createHierarchyNodeWithBounds("1-0-0-0", 1, 0, 0, 2),
+          createHierarchyNodeWithBounds("1-1-0-0", 1, 2, 0, 2),
+        ],
+        [],
+      );
+    const initialHierarchy = createSelectionHierarchy();
+    const replacementHierarchy = createSelectionHierarchy();
+    const selectionOptions = {
+      camera: createCountingFrustumCameraStub(() => Intersect.INSIDE),
+      viewportHeightPixels: 720,
+      minDepth: 1,
+      maxDepth: 1,
+      maxNodes: 4,
+      targetNodeScreenPixels: 10_000,
+    };
+
+    layer.source.inspect = async () => createInspection();
+    layer.source.loadHierarchySummary = async () => initialHierarchy;
+    layer.source.loadHierarchyPage = async () => replacementHierarchy;
+
+    const firstSelection = await layer.selectNodesForCamera(selectionOptions);
+    const firstTransformCallCount = transformCallCount;
+    await layer.loadHierarchyPage("1-0-0-0");
+    const replacementSelection = await layer.selectNodesForCamera(
+      selectionOptions,
+    );
+
+    expect(replacementHierarchy.nodes[1]).not.toBe(initialHierarchy.nodes[1]);
+    expect(replacementSelection?.nodes.map((node) => node.key)).toEqual(
+      firstSelection?.nodes.map((node) => node.key),
+    );
+    expect(firstTransformCallCount).toBe(16);
+    expect(transformCallCount).toBe(firstTransformCallCount * 2);
+
+    layer.destroy();
+  });
 });
 
 function patchLayerSource(layer: CopcPointCloudLayer): void {
@@ -5086,6 +5477,7 @@ function createPickingCameraStub(pickedCenter: Cartesian3 | undefined): Camera {
 function createInspection(
   options: {
     readonly spacing?: number;
+    readonly bounds?: CopcInspection["bounds"];
   } = {},
 ): CopcInspection {
   return {
@@ -5094,7 +5486,7 @@ function createInspection(
     lasVersion: "1.4",
     pointDataRecordFormat: 7,
     pointDataRecordLength: 36,
-    bounds: createBounds(),
+    bounds: options.bounds ?? createBounds(),
     cube: createBounds(),
     scale: [1, 1, 1],
     offset: [0, 0, 0],

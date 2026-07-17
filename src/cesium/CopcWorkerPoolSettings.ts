@@ -34,7 +34,12 @@ const POINT_GEOMETRY_WORKER_POLICY: WorkerConcurrencyPolicy = {
   reservedThreads: 2,
   maxWarmupCount: 8,
 };
-const DEFAULT_DECODED_NODE_WORKER_FALLBACK_DELAY_MILLISECONDS = 120;
+// Decoded COPC views live inside one worker. Keep density upgrades on that
+// cache-owning worker by default so an idle fallback worker does not repeat the
+// same HTTP range read and LAZ decode. Applications can still opt into a
+// finite delay when measured foreground latency matters more than reuse.
+const DEFAULT_DECODED_NODE_WORKER_FALLBACK_DELAY_MILLISECONDS =
+  Number.POSITIVE_INFINITY;
 
 export function createCopcWorkerPoolSettings(
   options: CopcWorkerPoolSettingsOptions = {},

@@ -33,15 +33,26 @@ export function createProgressPointGeometryResults(options: {
   readonly includeBackground: boolean;
   readonly maxRenderedPointCount: number | undefined;
   readonly maxPointCountPerNode: number | undefined;
+  readonly nodePointCountWeights?: readonly number[];
 }): {
   readonly nodes: readonly CopcHierarchyNodeSummary[];
   readonly geometryResults: readonly CopcNodePointGeometryBatchResult[];
 } {
+  validateAlignedPositiveWeights(
+    options.nodePointCountWeights,
+    options.nodes.length,
+  );
   const nodeEntries = options.nodes.flatMap((node, index) => {
     const geometryResult =
       options.geometryResults[index] ?? options.initialGeometryResults[index];
 
-    return geometryResult ? [{ node, geometryResult }] : [];
+    return geometryResult
+      ? [{
+          node,
+          geometryResult,
+          pointCountWeight: options.nodePointCountWeights?.[index],
+        }]
+      : [];
   });
   const backgroundEntries = options.includeBackground
     ? options.backgroundGeometryResults.map((geometryResult) => ({
@@ -50,6 +61,7 @@ export function createProgressPointGeometryResults(options: {
           geometryResult.pointSamples.nodeKey,
         ),
         geometryResult,
+        pointCountWeight: options.nodePointCountWeights ? 1 : undefined,
       }))
     : [];
   const entries = limitPointGeometryProgressEntries(
@@ -57,6 +69,9 @@ export function createProgressPointGeometryResults(options: {
     options.maxRenderedPointCount,
     options.maxPointCountPerNode,
     nodeEntries.length,
+    options.nodePointCountWeights
+      ? entriesPointCountWeights([...nodeEntries, ...backgroundEntries])
+      : undefined,
   );
 
   return {
@@ -70,6 +85,7 @@ export function limitPointGeometryProgressEntries(
   maxRenderedPointCount: number | undefined,
   maxPointCountPerNode: number | undefined,
   priorityEntryCount?: number,
+  entryPointCountWeights?: readonly number[],
 ): readonly PointGeometryProgressEntry[] {
   const pointCounts = allocateProgressEntryPointCounts(
     entries.map((entry) =>
@@ -81,6 +97,7 @@ export function limitPointGeometryProgressEntries(
     maxRenderedPointCount,
     maxPointCountPerNode,
     priorityEntryCount,
+    entryPointCountWeights,
   );
 
   return entries.flatMap((entry, index) => {
@@ -106,6 +123,7 @@ export function limitNodeSampleProgressEntries(
   maxRenderedPointCount: number | undefined,
   maxPointCountPerNode: number | undefined,
   priorityEntryCount?: number,
+  entryPointCountWeights?: readonly number[],
 ): readonly {
   readonly node: CopcHierarchyNodeSummary;
   readonly nodeResult: CopcNodePointSampleResult;
@@ -115,6 +133,7 @@ export function limitNodeSampleProgressEntries(
     maxRenderedPointCount,
     maxPointCountPerNode,
     priorityEntryCount,
+    entryPointCountWeights,
   );
 
   return entries.flatMap((entry, index) => {
@@ -139,6 +158,7 @@ export function allocateProgressEntryPointCounts(
   maxRenderedPointCount: number | undefined,
   maxPointCountPerNode: number | undefined,
   priorityEntryCount: number | undefined,
+  entryPointCountWeights?: readonly number[],
 ): readonly number[] {
   const limits = entryPointCounts.map((pointCount) =>
     Math.max(
@@ -149,6 +169,7 @@ export function allocateProgressEntryPointCounts(
       ),
     ),
   );
+  validateAlignedPositiveWeights(entryPointCountWeights, limits.length);
 
   if (maxRenderedPointCount === undefined) {
     return limits;
@@ -161,19 +182,25 @@ export function allocateProgressEntryPointCounts(
   const allocations = new Array<number>(limits.length).fill(0);
   let remainingPointCount = Math.max(0, Math.floor(maxRenderedPointCount));
 
-  remainingPointCount = allocateFairProgressPointCounts(
+  const allocatePointCounts = entryPointCountWeights
+    ? allocateWeightedProgressPointCounts
+    : allocateFairProgressPointCounts;
+
+  remainingPointCount = allocatePointCounts(
     limits,
     allocations,
     0,
     normalizedPriorityEntryCount,
     remainingPointCount,
+    entryPointCountWeights,
   );
-  allocateFairProgressPointCounts(
+  allocatePointCounts(
     limits,
     allocations,
     normalizedPriorityEntryCount,
     limits.length,
     remainingPointCount,
+    entryPointCountWeights,
   );
 
   return allocations;
@@ -185,6 +212,7 @@ function allocateFairProgressPointCounts(
   startIndex: number,
   endIndex: number,
   pointBudget: number,
+  _weights?: readonly number[],
 ): number {
   let remainingPointCount = pointBudget;
   let activeIndexes = limits
@@ -227,6 +255,120 @@ function allocateFairProgressPointCounts(
   }
 
   return remainingPointCount;
+}
+
+function allocateWeightedProgressPointCounts(
+  limits: readonly number[],
+  allocations: number[],
+  startIndex: number,
+  endIndex: number,
+  pointBudget: number,
+  weights: readonly number[] = [],
+): number {
+  let remainingPointCount = pointBudget;
+  let activeIndexes = limits
+    .map((_limit, index) => index)
+    .slice(startIndex, endIndex)
+    .filter((index) => limits[index] > allocations[index]);
+
+  while (remainingPointCount > 0 && activeIndexes.length > 0) {
+    const maxWeight = Math.max(...activeIndexes.map((index) => weights[index]));
+    const scaledWeightTotal = activeIndexes.reduce(
+      (total, index) => total + weights[index] / maxWeight,
+      0,
+    );
+    const quotas = activeIndexes.map((index) => ({
+      index,
+      quota:
+        (remainingPointCount * (weights[index] / maxWeight)) /
+        scaledWeightTotal,
+    }));
+    const saturatedIndexes = quotas
+      .filter(
+        ({ index, quota }) =>
+          limits[index] - allocations[index] <= quota,
+      )
+      .map(({ index }) => index);
+
+    if (saturatedIndexes.length > 0) {
+      const saturatedIndexSet = new Set(saturatedIndexes);
+
+      for (const index of saturatedIndexes) {
+        const pointCount = Math.min(
+          remainingPointCount,
+          limits[index] - allocations[index],
+        );
+        allocations[index] += pointCount;
+        remainingPointCount -= pointCount;
+      }
+
+      activeIndexes = activeIndexes.filter(
+        (index) => !saturatedIndexSet.has(index),
+      );
+      continue;
+    }
+
+    const remainders: Array<{
+      readonly index: number;
+      readonly remainder: number;
+    }> = [];
+
+    for (const { index, quota } of quotas) {
+      const pointCount = Math.min(
+        Math.floor(quota),
+        limits[index] - allocations[index],
+      );
+      allocations[index] += pointCount;
+      remainingPointCount -= pointCount;
+      remainders.push({
+        index,
+        remainder: quota - pointCount,
+      });
+    }
+
+    remainders.sort(
+      (left, right) =>
+        right.remainder - left.remainder || left.index - right.index,
+    );
+    for (const { index } of remainders) {
+      if (
+        remainingPointCount <= 0 ||
+        allocations[index] >= limits[index]
+      ) {
+        continue;
+      }
+
+      allocations[index] += 1;
+      remainingPointCount -= 1;
+    }
+
+    break;
+  }
+
+  return remainingPointCount;
+}
+
+function validateAlignedPositiveWeights(
+  weights: readonly number[] | undefined,
+  expectedLength: number,
+): void {
+  if (weights === undefined) {
+    return;
+  }
+
+  if (weights.length !== expectedLength) {
+    throw new Error("point count weights must align with the node entries.");
+  }
+
+  if (weights.some((weight) => !Number.isFinite(weight) || weight <= 0)) {
+    throw new Error("point count weights must be positive finite numbers.");
+  }
+}
+
+function entriesPointCountWeights(
+  entries: readonly { readonly pointCountWeight: number | undefined }[],
+): readonly number[] {
+  return entries.map((entry) => entry.pointCountWeight ?? 1);
 }
 
 export function limitPointGeometryBatchResult(
@@ -276,39 +418,38 @@ export function limitNodePointSampleResult(
     return result;
   }
 
-  const availablePointCount = result.pointData?.x.length ?? result.points.length;
-  const sampleIndexes = createDistributedSampleIndexes(
-    Math.min(result.sampledPointCount, availablePointCount),
+  const availablePointCount =
+    result.pointData?.x.length ??
+    (result.points.length > 0
+      ? result.points.length
+      : result.sampledPointCount);
+  const prefixPointCount = Math.min(
+    result.sampledPointCount,
+    availablePointCount,
     pointCount,
   );
 
   return {
     nodeKey: result.nodeKey,
     nodePointCount: result.nodePointCount,
-    sampledPointCount: pointCount,
+    sampledPointCount: prefixPointCount,
     points:
       result.points.length > 0
-        ? sampleIndexes.map((pointIndex) => result.points[pointIndex])
+        ? result.points.slice(0, prefixPointCount)
         : [],
     pointData: result.pointData
       ? {
-          x: selectFloat64Values(result.pointData.x, sampleIndexes),
-          y: selectFloat64Values(result.pointData.y, sampleIndexes),
-          z: selectFloat64Values(result.pointData.z, sampleIndexes),
-          red: selectOptionalUint8Values(result.pointData.red, sampleIndexes),
-          green: selectOptionalUint8Values(
-            result.pointData.green,
-            sampleIndexes,
+          x: result.pointData.x.slice(0, prefixPointCount),
+          y: result.pointData.y.slice(0, prefixPointCount),
+          z: result.pointData.z.slice(0, prefixPointCount),
+          red: result.pointData.red?.slice(0, prefixPointCount),
+          green: result.pointData.green?.slice(0, prefixPointCount),
+          blue: result.pointData.blue?.slice(0, prefixPointCount),
+          classification: result.pointData.classification?.slice(
+            0,
+            prefixPointCount,
           ),
-          blue: selectOptionalUint8Values(result.pointData.blue, sampleIndexes),
-          classification: selectOptionalUint8Values(
-            result.pointData.classification,
-            sampleIndexes,
-          ),
-          intensity: selectOptionalUint16Values(
-            result.pointData.intensity,
-            sampleIndexes,
-          ),
+          intensity: result.pointData.intensity?.slice(0, prefixPointCount),
         }
       : undefined,
   };
@@ -323,80 +464,20 @@ function limitPointGeometryBatch(
     return key === batch.key ? batch : { ...batch, key };
   }
 
-  const sampleIndexes = createDistributedSampleIndexes(
-    batch.pointCount,
-    pointCount,
-  );
-  const positions = new Float64Array(pointCount * 3);
-  const colors = new Uint8Array(pointCount * 4);
-
-  sampleIndexes.forEach((sourcePointIndex, targetPointIndex) => {
-    const sourcePositionOffset = sourcePointIndex * 3;
-    const targetPositionOffset = targetPointIndex * 3;
-    positions[targetPositionOffset] = batch.positions[sourcePositionOffset];
-    positions[targetPositionOffset + 1] =
-      batch.positions[sourcePositionOffset + 1];
-    positions[targetPositionOffset + 2] =
-      batch.positions[sourcePositionOffset + 2];
-
-    const sourceColorOffset = sourcePointIndex * 4;
-    const targetColorOffset = targetPointIndex * 4;
-    colors[targetColorOffset] = batch.colors[sourceColorOffset];
-    colors[targetColorOffset + 1] = batch.colors[sourceColorOffset + 1];
-    colors[targetColorOffset + 2] = batch.colors[sourceColorOffset + 2];
-    colors[targetColorOffset + 3] = batch.colors[sourceColorOffset + 3];
-  });
+  const positions = batch.positions.slice(0, pointCount * 3);
+  const colors = batch.colors.slice(0, pointCount * 4);
 
   return {
+    ...batch,
     key,
     pointCount,
     positions,
     colors,
+    pointDensityScale:
+      batch.pointDensityScale === undefined
+        ? undefined
+        : batch.pointDensityScale * (pointCount / batch.pointCount),
   };
-}
-
-function createDistributedSampleIndexes(
-  sourcePointCount: number,
-  sampledPointCount: number,
-): number[] {
-  if (sourcePointCount <= 0 || sampledPointCount <= 0) {
-    return [];
-  }
-
-  if (sampledPointCount === 1) {
-    return [0];
-  }
-
-  const lastSourceIndex = sourcePointCount - 1;
-
-  return Array.from({ length: sampledPointCount }, (_value, sampleIndex) =>
-    Math.round((sampleIndex * lastSourceIndex) / (sampledPointCount - 1)),
-  );
-}
-
-function selectFloat64Values(
-  values: Float64Array,
-  indexes: readonly number[],
-): Float64Array {
-  return Float64Array.from(indexes, (index) => values[index]);
-}
-
-function selectOptionalUint8Values(
-  values: Uint8Array | undefined,
-  indexes: readonly number[],
-): Uint8Array | undefined {
-  return values
-    ? Uint8Array.from(indexes, (index) => values[index])
-    : undefined;
-}
-
-function selectOptionalUint16Values(
-  values: Uint16Array | undefined,
-  indexes: readonly number[],
-): Uint16Array | undefined {
-  return values
-    ? Uint16Array.from(indexes, (index) => values[index])
-    : undefined;
 }
 
 export function markPointGeometryBatchResultCacheHit(

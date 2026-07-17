@@ -3,11 +3,33 @@ import type {
   CopcPointDataSample,
   CopcPointDataSampleArrays,
 } from "../core/copc/CopcPointDataSample";
+import type { CopcBounds } from "../core/copc/CopcInspection";
+
+export type CopcPointColorMode = "attribute" | "elevation";
+
+export type ResolvedCopcPointColorStyle =
+  | {
+      readonly mode: "attribute";
+    }
+  | {
+      readonly mode: "elevation";
+      readonly minimumZ: number;
+      readonly inverseZRange: number;
+    };
 
 const DEFAULT_CYAN = packRgb(0, 255, 255);
 const UNKNOWN_CLASSIFICATION = packRgb(158, 163, 168);
 const MINIMUM_INTENSITY_GRAY = 48;
 const MAXIMUM_INTENSITY_GRAY = 255;
+
+const ATTRIBUTE_POINT_COLOR_STYLE: ResolvedCopcPointColorStyle = Object.freeze({
+  mode: "attribute",
+});
+const ELEVATION_PALETTE = new Uint8Array([
+  68, 1, 84, 65, 68, 135, 42, 120, 142, 34, 168, 132, 122, 209, 81, 253,
+  231, 37,
+]);
+const ELEVATION_PALETTE_STOP_COUNT = ELEVATION_PALETTE.length / 3;
 
 const ASPRS_CLASSIFICATION_COLORS = createAsprsClassificationColors();
 
@@ -19,7 +41,14 @@ const ASPRS_CLASSIFICATION_COLORS = createAsprsClassificationColors();
 export function colorizeCopcPoint(
   pointData: CopcPointDataSampleArrays,
   pointIndex: number,
+  style: ResolvedCopcPointColorStyle = ATTRIBUTE_POINT_COLOR_STYLE,
 ): number {
+  if (style.mode === "elevation") {
+    return colorizeNormalizedElevation(
+      normalizeElevation(pointData.z[pointIndex], style),
+    );
+  }
+
   return colorizeCopcAttributes(
     pointData.red?.[pointIndex],
     pointData.green?.[pointIndex],
@@ -31,7 +60,14 @@ export function colorizeCopcPoint(
 
 export function colorizeCopcPointSample(
   point: CopcPointDataSample,
+  style: ResolvedCopcPointColorStyle = ATTRIBUTE_POINT_COLOR_STYLE,
 ): CopcPointColor {
+  if (style.mode === "elevation") {
+    return unpackRgb(
+      colorizeNormalizedElevation(normalizeElevation(point.z, style)),
+    );
+  }
+
   if (point.color) {
     return point.color;
   }
@@ -45,6 +81,103 @@ export function colorizeCopcPointSample(
       point.intensity,
     ),
   );
+}
+
+export function resolveCopcPointColorStyle(
+  mode: CopcPointColorMode | undefined,
+  bounds: Pick<CopcBounds, "minZ" | "maxZ">,
+): ResolvedCopcPointColorStyle {
+  const resolvedMode = mode ?? "attribute";
+
+  if (resolvedMode === "attribute") {
+    return ATTRIBUTE_POINT_COLOR_STYLE;
+  }
+
+  if (resolvedMode !== "elevation") {
+    throw new Error('pointColorMode must be "attribute" or "elevation".');
+  }
+
+  const minimumZ = bounds.minZ;
+  const range = bounds.maxZ - minimumZ;
+
+  if (
+    !Number.isFinite(minimumZ) ||
+    !Number.isFinite(bounds.maxZ) ||
+    !Number.isFinite(range) ||
+    range <= 0
+  ) {
+    return Object.freeze({
+      mode: "elevation",
+      minimumZ: 0,
+      inverseZRange: 0,
+    });
+  }
+
+  return Object.freeze({
+    mode: "elevation",
+    minimumZ,
+    inverseZRange: 1 / range,
+  });
+}
+
+function normalizeElevation(
+  z: number,
+  style: Extract<ResolvedCopcPointColorStyle, { readonly mode: "elevation" }>,
+): number {
+  if (
+    !Number.isFinite(z) ||
+    !Number.isFinite(style.minimumZ) ||
+    !Number.isFinite(style.inverseZRange) ||
+    style.inverseZRange <= 0
+  ) {
+    return 0.5;
+  }
+
+  const normalizedElevation = (z - style.minimumZ) * style.inverseZRange;
+
+  if (!Number.isFinite(normalizedElevation)) {
+    return 0.5;
+  }
+
+  return Math.max(0, Math.min(1, normalizedElevation));
+}
+
+function colorizeNormalizedElevation(normalizedElevation: number): number {
+  const palettePosition =
+    normalizedElevation * (ELEVATION_PALETTE_STOP_COUNT - 1);
+  const lowerStop = Math.min(
+    ELEVATION_PALETTE_STOP_COUNT - 1,
+    Math.floor(palettePosition),
+  );
+  const upperStop = Math.min(ELEVATION_PALETTE_STOP_COUNT - 1, lowerStop + 1);
+  const interpolation = palettePosition - lowerStop;
+  const lowerOffset = lowerStop * 3;
+  const upperOffset = upperStop * 3;
+  const red = interpolateColorChannel(
+    ELEVATION_PALETTE[lowerOffset],
+    ELEVATION_PALETTE[upperOffset],
+    interpolation,
+  );
+  const green = interpolateColorChannel(
+    ELEVATION_PALETTE[lowerOffset + 1],
+    ELEVATION_PALETTE[upperOffset + 1],
+    interpolation,
+  );
+  const blue = interpolateColorChannel(
+    ELEVATION_PALETTE[lowerOffset + 2],
+    ELEVATION_PALETTE[upperOffset + 2],
+    interpolation,
+  );
+
+  return packRgb(red, green, blue);
+}
+
+function interpolateColorChannel(
+  lower: number,
+  upper: number,
+  interpolation: number,
+): number {
+  return Math.round(lower + (upper - lower) * interpolation);
 }
 
 function colorizeCopcAttributes(

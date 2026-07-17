@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createCopcCameraStreamRuntimeSettings } from "./CopcCameraStreamSettings";
 import {
   CopcCameraStreamTerminalRenderError,
@@ -47,6 +47,7 @@ describe("runCopcCameraStreamTerminalRender", () => {
       ...createOptions(layer),
       maxActiveNodeRequests: 3,
       requestPriority: 43,
+      progressRenderMode: "incremental",
       skipInitialProgressRender: true,
       shouldRenderProgress,
       onUpdate: (update) => updates.push(update),
@@ -108,6 +109,84 @@ describe("runCopcCameraStreamTerminalRender", () => {
     });
   });
 
+  it("defaults typed terminal geometry to one final renderer commit", async () => {
+    const terminalResult = createRenderResult(REQUIRED_NODE_KEYS, 100);
+    let capturedOptions:
+      | CopcPointCloudLayerProgressiveRenderNodesOptions
+      | undefined;
+    const layer = createLayer(async (_nodeKeys, options) => {
+      capturedOptions = options;
+      return terminalResult;
+    });
+
+    await runCopcCameraStreamTerminalRender(createOptions(layer));
+
+    expect(capturedOptions?.progressRenderMode).toBe("final-only");
+  });
+
+  it("keeps adaptive incremental commits for non-typed renderers", async () => {
+    const terminalResult = createRenderResult(REQUIRED_NODE_KEYS, 100);
+    let capturedOptions:
+      | CopcPointCloudLayerProgressiveRenderNodesOptions
+      | undefined;
+    const layer = createLayer(async (_nodeKeys, options) => {
+      capturedOptions = options;
+      return terminalResult;
+    });
+
+    await runCopcCameraStreamTerminalRender({
+      ...createOptions(layer),
+      rendererKind: "primitive",
+    });
+
+    expect(capturedOptions?.progressRenderMode).toBe("incremental");
+  });
+
+  it("allows typed callers to opt back into incremental commits", async () => {
+    const terminalResult = createRenderResult(REQUIRED_NODE_KEYS, 100);
+    let capturedOptions:
+      | CopcPointCloudLayerProgressiveRenderNodesOptions
+      | undefined;
+    const layer = createLayer(async (_nodeKeys, options) => {
+      capturedOptions = options;
+      return terminalResult;
+    });
+
+    await runCopcCameraStreamTerminalRender({
+      ...createOptions(layer),
+      progressRenderMode: "incremental",
+    });
+
+    expect(capturedOptions?.progressRenderMode).toBe("incremental");
+  });
+
+  it("aligns terminal source weights to required nodes and opts into source headroom", async () => {
+    const terminalResult = createRenderResult(REQUIRED_NODE_KEYS, 100);
+    let capturedOptions:
+      | CopcPointCloudLayerProgressiveRenderNodesOptions
+      | undefined;
+    const layer = createLayer(async (_nodeKeys, options) => {
+      capturedOptions = options;
+      return terminalResult;
+    });
+
+    await runCopcCameraStreamTerminalRender({
+      ...createOptions(layer),
+      finalNodeWeights: [
+        { nodeKey: FRONTIER_NODE_KEYS[0]!, weight: 30 },
+        { nodeKey: ROOT_NODE_KEY, weight: 10 },
+      ],
+      useSourcePointBudgetHeadroom: true,
+    });
+
+    expect(capturedOptions?.nodePointCountWeights).toEqual([
+      10,
+      30,
+      ...Array(FRONTIER_NODE_KEYS.length - 1).fill(1),
+    ]);
+    expect(capturedOptions?.useSourcePointBudgetHeadroom).toBe(true);
+  });
+
   it("rejects a returned result with a missing additive node", async () => {
     const missingNodeKey = REQUIRED_NODE_KEYS.at(-1)!;
     const incompleteResult = createRenderResult(
@@ -167,6 +246,35 @@ describe("runCopcCameraStreamTerminalRender", () => {
     ).toBe(1);
   });
 
+  it("accepts an explicitly enabled mixed-depth antichain terminal render", async () => {
+    const frontierNodeKeys = ["2-0-0-0", "3-7-7-7"];
+    const requiredNodeKeys = [
+      "0-0-0-0",
+      "1-0-0-0",
+      "1-1-1-1",
+      "2-0-0-0",
+      "2-3-3-3",
+      "3-7-7-7",
+    ];
+    const terminalResult = createRenderResult(requiredNodeKeys, 100);
+    const layer = createLayer(async () => terminalResult);
+
+    const result = await runCopcCameraStreamTerminalRender({
+      ...createOptions(layer),
+      frontierNodeKeys,
+      requiredNodeKeys,
+      terminalFrontierMode: "mixed-depth-antichain",
+    });
+
+    expect(result.visualQuality).toMatchObject({
+      terminalFrontierMode: "mixed-depth-antichain",
+      frontierDepthSpan: 1,
+      isFrontierAntichain: true,
+      isFrontierDepthPolicySatisfied: true,
+      isTerminalReady: true,
+    });
+  });
+
   it("preserves AbortError and never publishes a terminal update for an aborted render", async () => {
     const abortController = new AbortController();
     const abortError = new DOMException("Aborted", "AbortError");
@@ -191,9 +299,10 @@ describe("runCopcCameraStreamTerminalRender", () => {
     const abortController = new AbortController();
     const terminalResult = createRenderResult(REQUIRED_NODE_KEYS, 100);
     const updates: CopcCameraStreamTerminalRenderUpdate[] = [];
+    const onProgressCommitted = vi.fn();
     const layer = createLayer(async (_nodeKeys, options) => {
-      options.onProgress?.(terminalResult);
       abortController.abort();
+      options.onProgress?.(terminalResult);
       return terminalResult;
     });
 
@@ -201,15 +310,18 @@ describe("runCopcCameraStreamTerminalRender", () => {
       runCopcCameraStreamTerminalRender({
         ...createOptions(layer),
         signal: abortController.signal,
+        onProgressCommitted,
         onUpdate: (update) => updates.push(update),
       }),
     ).rejects.toMatchObject({ name: "AbortError" });
     expect(updates).toEqual([]);
+    expect(onProgressCommitted).not.toHaveBeenCalled();
   });
 
   it("suppresses publication without canceling or weakening terminal verification", async () => {
     const terminalResult = createRenderResult(REQUIRED_NODE_KEYS, 100);
     const updates: CopcCameraStreamTerminalRenderUpdate[] = [];
+    const onProgressCommitted = vi.fn();
     const layer = createLayer(async (_nodeKeys, options) => {
       options.onProgress?.(terminalResult);
       return terminalResult;
@@ -218,11 +330,13 @@ describe("runCopcCameraStreamTerminalRender", () => {
     const result = await runCopcCameraStreamTerminalRender({
       ...createOptions(layer),
       shouldPublish: () => false,
+      onProgressCommitted,
       onUpdate: (update) => updates.push(update),
     });
 
     expect(result.visualQuality.isTerminalReady).toBe(true);
     expect(updates).toEqual([]);
+    expect(onProgressCommitted).not.toHaveBeenCalled();
   });
 });
 

@@ -1,4 +1,4 @@
-import type { Hierarchy } from "copc";
+import type { Copc as CopcData, Hierarchy } from "copc";
 import type {
   CesiumPointGeometryLoadingMode,
 } from "./CesiumPointGeometryWorkerPool";
@@ -24,6 +24,7 @@ import {
   type CopcDecodedPointDataCacheStats,
 } from "../core/copc/CopcDecodedPointDataCache";
 import type { CesiumPointGeometryTransform } from "./pointGeometryBatch";
+import type { ResolvedCopcPointColorStyle } from "./copcPointColorizer";
 
 export interface CesiumCopcPointGeometryWorkerPoolOptions {
   readonly pointGeometryLoading?: CesiumPointGeometryLoadingMode;
@@ -37,6 +38,7 @@ export interface CesiumCopcPointGeometryWorkerPoolOptions {
 }
 
 export interface CesiumCopcPointGeometryWorkerWarmupOptions {
+  readonly copc?: CopcData;
   readonly workerCount?: number;
   readonly source?: CopcSourceDescriptor;
   readonly url?: string;
@@ -193,12 +195,14 @@ export class CesiumCopcPointGeometryWorkerPool {
   }
 
   loadNodePointGeometryBatch(options: {
+    readonly copc?: CopcData;
     readonly source?: CopcSourceDescriptor;
     readonly url?: string;
     readonly nodeKey: string;
     readonly node: Hierarchy.Node;
     readonly maxPointCount: number;
     readonly transform: CesiumPointGeometryTransform;
+    readonly pointColorStyle?: ResolvedCopcPointColorStyle;
     readonly priority?: number;
     readonly signal?: AbortSignal;
   }): Promise<CopcNodePointGeometryBatchResult> | undefined {
@@ -271,11 +275,13 @@ export class CesiumCopcPointGeometryWorkerPool {
       const request: CesiumCopcPointGeometryWorkerLoadRequest = {
         id,
         type: "loadNodePointGeometry",
+        copc: options.copc,
         source,
         nodeKey: options.nodeKey,
         node: options.node,
         maxPointCount: options.maxPointCount,
         transform: options.transform,
+        pointColorStyle: options.pointColorStyle,
         maxDecodedPointDataViews: this.maxDecodedPointDataViewsPerWorker,
         maxDecodedPointDataViewBytes:
           this.maxDecodedPointDataViewBytesPerWorker,
@@ -299,6 +305,7 @@ export class CesiumCopcPointGeometryWorkerPool {
   }
 
   prefetchNodePointData(options: {
+    readonly copc?: CopcData;
     readonly source?: CopcSourceDescriptor;
     readonly url?: string;
     readonly nodeKey: string;
@@ -377,6 +384,7 @@ export class CesiumCopcPointGeometryWorkerPool {
       const request: CesiumCopcPointGeometryWorkerPrefetchRequest = {
         id,
         type: "prefetchNodePointData",
+        copc: options.copc,
         source,
         nodeKey: options.nodeKey,
         node: options.node,
@@ -479,6 +487,7 @@ export class CesiumCopcPointGeometryWorkerPool {
     }
 
     this.lastWarmupOptions = {
+      copc: options.copc,
       workerCount,
       source: options.source,
       url: options.url,
@@ -666,6 +675,7 @@ export class CesiumCopcPointGeometryWorkerPool {
     worker.postMessage({
       id,
       type: "warmup",
+      copc: options.copc,
       source: options.source,
       url: options.url,
     });
@@ -1342,6 +1352,7 @@ export class CesiumCopcPointGeometryWorkerPool {
     readonly maxPointCount: number;
     readonly priority: number;
     readonly transform: CesiumPointGeometryTransform;
+    readonly pointColorStyle?: ResolvedCopcPointColorStyle;
   }): PointGeometryWorkerGeometryRequestEntry | undefined {
     const exactEntry = this.coalescedRequests.get(
       createCoalescedGeometryRequestKey(options),
@@ -1511,6 +1522,7 @@ function createCoalescedGeometryRequestKey(options: {
   readonly nodeKey: string;
   readonly maxPointCount: number;
   readonly transform: CesiumPointGeometryTransform;
+  readonly pointColorStyle?: ResolvedCopcPointColorStyle;
 }): string {
   return [
     readPointGeometryRequestSource(options).key,
@@ -1522,6 +1534,7 @@ function createCoalescedGeometryRequestKey(options: {
     options.transform.sourceDefinition ?? "",
     options.transform.targetCrs ?? "",
     options.transform.targetDefinition ?? "",
+    createPointColorStyleKey(options.pointColorStyle),
   ].join("\n");
 }
 
@@ -1543,6 +1556,7 @@ function isCompatibleGeometryRequest(
     readonly source: CopcSourceDescriptor;
     readonly nodeKey: string;
     readonly transform: CesiumPointGeometryTransform;
+    readonly pointColorStyle?: ResolvedCopcPointColorStyle;
   },
 ): boolean {
   if (request.request.type !== "loadNodePointGeometry") {
@@ -1562,8 +1576,20 @@ function isCompatibleGeometryRequest(
       options.transform.sourceDefinition &&
     request.request.transform.targetCrs === options.transform.targetCrs &&
     request.request.transform.targetDefinition ===
-      options.transform.targetDefinition
+      options.transform.targetDefinition &&
+    createPointColorStyleKey(request.request.pointColorStyle) ===
+      createPointColorStyleKey(options.pointColorStyle)
   );
+}
+
+function createPointColorStyleKey(
+  style: ResolvedCopcPointColorStyle | undefined,
+): string {
+  if (style?.mode === "elevation") {
+    return `elevation:${style.minimumZ}:${style.inverseZRange}`;
+  }
+
+  return "attribute";
 }
 
 function isGeometryRequestEntry(
@@ -1644,24 +1670,11 @@ function downsampleGeometryBatchResult(
     return result;
   }
 
-  const step = sourcePointCount / sampledPointCount;
-  const positions = new Float64Array(sampledPointCount * 3);
-  const colors = new Uint8Array(sampledPointCount * 4);
-
-  for (let sampleIndex = 0; sampleIndex < sampledPointCount; sampleIndex += 1) {
-    const pointIndex = Math.min(
-      sourcePointCount - 1,
-      Math.floor(sampleIndex * step),
-    );
-    positions.set(
-      result.geometryBatch.positions.subarray(pointIndex * 3, pointIndex * 3 + 3),
-      sampleIndex * 3,
-    );
-    colors.set(
-      result.geometryBatch.colors.subarray(pointIndex * 4, pointIndex * 4 + 4),
-      sampleIndex * 4,
-    );
-  }
+  const positions = result.geometryBatch.positions.slice(
+    0,
+    sampledPointCount * 3,
+  );
+  const colors = result.geometryBatch.colors.slice(0, sampledPointCount * 4);
 
   return {
     ...result,
@@ -1671,10 +1684,16 @@ function downsampleGeometryBatchResult(
       points: [],
     },
     geometryBatch: {
+      ...result.geometryBatch,
       key: `${result.geometryBatch.key}:downsampled:${sampledPointCount}`,
       pointCount: sampledPointCount,
       positions,
       colors,
+      pointDensityScale:
+        result.geometryBatch.pointDensityScale === undefined
+          ? undefined
+          : result.geometryBatch.pointDensityScale *
+            (sampledPointCount / sourcePointCount),
     },
   };
 }

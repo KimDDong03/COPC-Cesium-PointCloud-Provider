@@ -8,7 +8,7 @@ describe("createCopcWorkerPoolSettings", () => {
       pointSampleWorkerWarmupCount: 4,
       pointGeometryWorkerConcurrency: 5,
       pointGeometryWorkerWarmupCount: 5,
-      decodedNodeWorkerFallbackDelayMilliseconds: 120,
+      decodedNodeWorkerFallbackDelayMilliseconds: Number.POSITIVE_INFINITY,
     });
   });
 
@@ -18,7 +18,7 @@ describe("createCopcWorkerPoolSettings", () => {
       pointSampleWorkerWarmupCount: 4,
       pointGeometryWorkerConcurrency: 6,
       pointGeometryWorkerWarmupCount: 6,
-      decodedNodeWorkerFallbackDelayMilliseconds: 120,
+      decodedNodeWorkerFallbackDelayMilliseconds: Number.POSITIVE_INFINITY,
     });
   });
 
@@ -28,7 +28,7 @@ describe("createCopcWorkerPoolSettings", () => {
       pointSampleWorkerWarmupCount: 4,
       pointGeometryWorkerConcurrency: 8,
       pointGeometryWorkerWarmupCount: 8,
-      decodedNodeWorkerFallbackDelayMilliseconds: 120,
+      decodedNodeWorkerFallbackDelayMilliseconds: Number.POSITIVE_INFINITY,
     });
   });
 
@@ -51,6 +51,6 @@ describe("createCopcWorkerPoolSettings", () => {
       createCopcWorkerPoolSettings({
         decodedNodeWorkerFallbackDelayMilliseconds: -1,
       }).decodedNodeWorkerFallbackDelayMilliseconds,
-    ).toBe(120);
+    ).toBe(Number.POSITIVE_INFINITY);
   });
 });

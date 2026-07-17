@@ -46,9 +46,24 @@ describe("interactive render status policy", () => {
     ).toBe(true);
   });
 
+  it("accepts an explicitly verified mixed-depth antichain", () => {
+    expect(
+      isInteractiveRenderReady(
+        retainedTerminalStatus({
+          terminalFrontierMode: "mixed-depth-antichain",
+          frontierDepthSpan: 2,
+          isFrontierDepthPolicySatisfied: true,
+        }),
+        "Camera stream retained the exact mixed-depth terminal render.",
+        expectedRenderedStatuses,
+      ),
+    ).toBe(true);
+  });
+
   it.each([
     ["nonterminal", { isTerminalReady: false }],
     ["mixed frontier", { frontierDepthSpan: 1 }],
+    ["failed depth policy", { isFrontierDepthPolicySatisfied: false }],
     ["missing node", { missingRequiredNodeCount: 1 }],
     ["unexpected node", { unexpectedRenderedNodeCount: 1 }],
     ["visible hierarchy pending", { pendingRelevantHierarchyPageCount: 1 }],
@@ -70,6 +85,19 @@ describe("interactive render status policy", () => {
           cameraStreamRenderDisposition: "new-render",
         },
         "Inspecting COPC source...",
+        expectedRenderedStatuses,
+      ),
+    ).toBe(false);
+  });
+
+  it("does not treat a retained progress frame as an exact terminal render", () => {
+    expect(
+      isInteractiveRenderReady(
+        {
+          ...retainedTerminalStatus(),
+          cameraStreamRenderDisposition: "retained-progress-render",
+        },
+        "Camera stream retained 120,000 points while target density loads.",
         expectedRenderedStatuses,
       ),
     ).toBe(false);

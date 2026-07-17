@@ -22,6 +22,7 @@ import {
   type CopcCameraStreamVisualQualityState,
   withCopcCameraStreamHierarchyQuality,
 } from "./CopcCameraStreamVisualQuality";
+import { createCopcCameraStreamSafeSwapState } from "./CopcCameraStreamTransition";
 import {
   createCopcPointCloudQualitySettings,
   type CopcPointCloudQualityPreset,
@@ -37,6 +38,7 @@ export type CopcPointCloudCameraStreamLayer = Pick<
       CopcPointCloudLayer,
       | "expandHierarchyForCamera"
       | "getCameraHeightAbovePointCloudMeters"
+      | "getRendererRevision"
       | "hierarchy"
       | "renderNodesProgressively"
       | "selectNodesForCamera"
@@ -105,6 +107,9 @@ export class CopcPointCloudCameraStream {
   #lastError: unknown;
   #lastResult: CopcPointCloudLayerAutomaticRenderResult | undefined;
   #lastVisualQuality: CopcCameraStreamVisualQualityState | undefined;
+  #lastRendererRevision: number | undefined;
+  #safeSwapPointCountHighWaterMark: number | undefined;
+  #previousMixedDepthFrontierKeys: readonly string[] = [];
   readonly #seenPendingHierarchyPageSignatures = new Set<string>();
 
   constructor(options: CopcPointCloudCameraStreamOptions) {
@@ -143,12 +148,10 @@ export class CopcPointCloudCameraStream {
         this.cancel();
       }),
       this.#camera.changed.addEventListener(() => {
-        this.#resetHierarchyFollowupGuard();
-        this.#queueRender();
+        this.#queueRenderForCameraChange();
       }),
       this.#camera.moveEnd.addEventListener(() => {
-        this.#resetHierarchyFollowupGuard();
-        this.#queueRender();
+        this.#queueRenderForCameraChange();
       }),
     );
 
@@ -165,6 +168,7 @@ export class CopcPointCloudCameraStream {
     this.#running = false;
     this.#clearScheduledRender();
     this.cancel();
+    this.#previousMixedDepthFrontierKeys = [];
 
     while (this.#removeCameraListeners.length > 0) {
       this.#removeCameraListeners.pop()?.();
@@ -201,6 +205,11 @@ export class CopcPointCloudCameraStream {
     this.#activeAbortController = abortController;
 
     try {
+      const previousFrontierKeys =
+        this.#renderOptions.coverageMode === "mixed-depth"
+          ? (this.#renderOptions.previousFrontierKeys ??
+            this.#previousMixedDepthFrontierKeys)
+          : this.#renderOptions.previousFrontierKeys;
       const automaticRenderOptions: CopcPointCloudLayerProgressiveAutomaticRenderOptions = {
         selectionMode: "coverage",
         coverageMode: "complete-depth",
@@ -235,6 +244,7 @@ export class CopcPointCloudCameraStream {
         includeAncestorNodes: true,
         showBounds: false,
         ...this.#renderOptions,
+        previousFrontierKeys,
         camera: this.#camera,
         signal: abortController.signal,
       };
@@ -244,6 +254,20 @@ export class CopcPointCloudCameraStream {
         supportsCopcCameraStreamEngineOptions(this.#renderOptions)
       ) {
         let didPublishSettledUpdate = false;
+        let didCommitCurrentRequestFrame = false;
+        const retainedRendererRevision = this.#lastRendererRevision;
+        // Intermediate progress may itself become the currently resident GPU
+        // frame, but it must not lower the density floor for the next camera
+        // transition. Anchor that floor to the exact-terminal high-water mark
+        // so rapid superseding moves cannot ratchet 60% of 60% downward.
+        const retainedRendererPointCount =
+          this.#safeSwapPointCountHighWaterMark;
+        const canHoldRetainedRendererFrame =
+          this.#qualitySettings.temporalLodSafeSwap &&
+          retainedRendererRevision !== undefined &&
+          retainedRendererPointCount !== undefined &&
+          retainedRendererPointCount > 0 &&
+          this.#layer.getRendererRevision?.() === retainedRendererRevision;
         const engineResult = await runCopcCameraStreamEngine({
           layer: this.#layer,
           lodSettings,
@@ -251,6 +275,40 @@ export class CopcPointCloudCameraStream {
           runtimeSettings: this.#runtimeSettings,
           shouldPublish: () =>
             this.#isCurrentRequest(requestId, abortController.signal),
+          onProgressCommitted: () => {
+            if (this.#isCurrentRequest(requestId, abortController.signal)) {
+              this.#lastRendererRevision =
+                this.#layer.getRendererRevision?.();
+            }
+          },
+          shouldRenderProgress: canHoldRetainedRendererFrame
+            ? (candidate, prepared) => {
+                if (didCommitCurrentRequestFrame) {
+                  return true;
+                }
+
+                if (
+                  this.#layer.getRendererRevision?.() !==
+                  retainedRendererRevision
+                ) {
+                  didCommitCurrentRequestFrame = true;
+                  return true;
+                }
+
+                const safeSwap = createCopcCameraStreamSafeSwapState({
+                  candidate,
+                  coverageNodeKeys: prepared.renderPlan.coverageNodeKeys,
+                  finalNodeKeys: prepared.renderPlan.finalNodeKeys,
+                  finalNodeWeights: prepared.finalNodeWeights,
+                  renderedPointBudget:
+                    prepared.renderPlan.renderedPointBudget,
+                  retainedRendererPointCount,
+                });
+
+                didCommitCurrentRequestFrame = safeSwap.canSwap;
+                return safeSwap.canSwap;
+              }
+            : undefined,
           onUpdate: ({ stage, result, visualQuality }) => {
             if (!this.#isCurrentRequest(requestId, abortController.signal)) {
               return;
@@ -277,6 +335,7 @@ export class CopcPointCloudCameraStream {
         }
 
         this.#lastError = undefined;
+        this.#rememberMixedDepthFrontier(engineResult.result);
         this.#scheduleHierarchyFollowup(engineResult);
 
         if (!didPublishSettledUpdate) {
@@ -323,6 +382,7 @@ export class CopcPointCloudCameraStream {
 
       const visualQuality = this.#createVisualQuality(result);
       this.#lastError = undefined;
+      this.#rememberMixedDepthFrontier(result);
       this.#publishUpdate({
         phase: "complete",
         stage:
@@ -401,6 +461,14 @@ export class CopcPointCloudCameraStream {
     }, this.#debounceMilliseconds);
   }
 
+  #queueRenderForCameraChange(): void {
+    // Abort before the debounce window so a superseded layer task cannot
+    // mutate the shared renderer after the camera epoch has changed. The
+    // renderer itself is intentionally left intact as the transition frame.
+    this.cancel();
+    this.#queueRender();
+  }
+
   #runScheduledRender(): void {
     void this.render().catch(() => undefined);
   }
@@ -468,6 +536,10 @@ export class CopcPointCloudCameraStream {
         hierarchy,
       ),
       renderedNodeKeys,
+      terminalFrontierMode:
+        result.cameraSelection.coverageMode === "mixed-depth"
+          ? "mixed-depth-antichain"
+          : "same-depth",
     });
 
     return this.#renderOptions.expandHierarchy === false
@@ -478,7 +550,32 @@ export class CopcPointCloudCameraStream {
   #publishUpdate(update: CopcPointCloudCameraStreamUpdate): void {
     this.#lastResult = update.result;
     this.#lastVisualQuality = update.visualQuality;
+    this.#lastRendererRevision = this.#layer.getRendererRevision?.();
+    if (update.stage === "terminal") {
+      const sampledPointCount = update.result.pointSamples?.sampledPointCount;
+      if (
+        typeof sampledPointCount === "number" &&
+        Number.isSafeInteger(sampledPointCount) &&
+        sampledPointCount > 0
+      ) {
+        this.#safeSwapPointCountHighWaterMark = Math.max(
+          this.#safeSwapPointCountHighWaterMark ?? 0,
+          sampledPointCount,
+        );
+      }
+    }
     this.#onUpdate?.(update);
+  }
+
+  #rememberMixedDepthFrontier(
+    result: CopcPointCloudLayerAutomaticRenderResult,
+  ): void {
+    const cameraSelection = result.cameraSelection;
+
+    this.#previousMixedDepthFrontierKeys =
+      cameraSelection?.coverageMode === "mixed-depth"
+        ? (cameraSelection.nodes?.map((node) => node.key) ?? [])
+        : [];
   }
 
   #isExplicitPreviewMode(): boolean {

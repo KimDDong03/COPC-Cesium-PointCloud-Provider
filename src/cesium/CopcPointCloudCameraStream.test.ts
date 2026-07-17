@@ -154,6 +154,66 @@ describe("CopcPointCloudCameraStream", () => {
     expect(stream.lastVisualQuality?.isTerminalReady).toBe(true);
   });
 
+  it("reuses a verified mixed-depth frontier as hysteresis input", async () => {
+    const camera = createCameraStub(550);
+    const hierarchy = createHierarchyForKeys(
+      [
+        "0-0-0-0",
+        "1-0-0-0",
+        "1-1-1-1",
+        "2-0-0-0",
+        "2-3-3-3",
+        "3-7-7-7",
+      ],
+      [],
+    );
+    const frontierKeys = ["2-0-0-0", "3-7-7-7"];
+    const selectNodesForCamera = vi.fn(async () => ({
+      nodes: hierarchy.nodes.filter((node) => frontierKeys.includes(node.key)),
+      selectedDepth: 3,
+      targetDepth: 3,
+      coverageMode: "mixed-depth",
+    }));
+    const updates: CopcPointCloudCameraStreamUpdate[] = [];
+    const layer = createEngineLayerStub({
+      getHierarchy: () => hierarchy,
+      expandHierarchyForCamera: vi.fn(async () => undefined),
+      selectNodesForCamera,
+    });
+    const stream = new CopcPointCloudCameraStream({
+      camera: camera.camera,
+      layer,
+      renderOptions: { coverageMode: "mixed-depth" },
+      onUpdate: (update) => updates.push(update),
+    });
+
+    await stream.render();
+    await stream.render();
+
+    expect(selectNodesForCamera).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        coverageMode: "mixed-depth",
+        previousFrontierKeys: [],
+      }),
+    );
+    expect(selectNodesForCamera).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        coverageMode: "mixed-depth",
+        previousFrontierKeys: frontierKeys,
+      }),
+    );
+    expect(updates.at(-1)).toMatchObject({
+      stage: "terminal",
+      visualQuality: {
+        terminalFrontierMode: "mixed-depth-antichain",
+        frontierDepthSpan: 1,
+        isTerminalReady: true,
+      },
+    });
+  });
+
   it("settles a hierarchy-disabled engine request without claiming terminal quality", async () => {
     const camera = createCameraStub(3_000);
     const updates: CopcPointCloudCameraStreamUpdate[] = [];
@@ -691,6 +751,203 @@ describe("CopcPointCloudCameraStream", () => {
     expect(updates.map((update) => update.requestId)).toEqual([2, 2]);
   });
 
+  it("aborts a render immediately when the camera changes before debounce", async () => {
+    vi.useFakeTimers();
+    const camera = createCameraStub(500);
+    let activeSignal: AbortSignal | undefined;
+    const stream = new CopcPointCloudCameraStream({
+      camera: camera.camera,
+      layer: createLayerStub(
+        (options) =>
+          new Promise(() => {
+            activeSignal = options.signal;
+          }),
+      ),
+      debounceMilliseconds: 25,
+      renderOnStart: false,
+    });
+
+    stream.start();
+    void stream.render();
+    expect(activeSignal?.aborted).toBe(false);
+
+    camera.changed.raise();
+
+    expect(activeSignal?.aborted).toBe(true);
+    stream.destroy();
+  });
+
+  it("holds a committed frame until progressive spatial coverage is safe", async () => {
+    const camera = createCameraStub(500);
+    const hierarchy = createHierarchyForKeys(
+      ["0-0-0-0", "1-0-0-0"],
+      [],
+    );
+    const progressDecisions: boolean[] = [];
+    const updates: CopcPointCloudCameraStreamUpdate[] = [];
+    let rendererRevision = 0;
+    let renderCount = 0;
+    const layer = {
+      renderAutomaticProgressively: vi.fn(async () => createRenderResult()),
+      hierarchy,
+      getRendererRevision: () => rendererRevision,
+      expandHierarchyForCamera: vi.fn(async () => undefined),
+      selectNodesForCamera: vi.fn(async () =>
+        createCameraSelection(["1-0-0-0"]),
+      ),
+      renderNodesProgressively: vi.fn(
+        async (
+          nodeKeys: readonly string[],
+          options: CopcPointCloudLayerProgressiveRenderNodesOptions,
+        ) => {
+          renderCount += 1;
+          const progressResults =
+            renderCount === 1
+              ? [createNodeRenderResult(["0-0-0-0"])]
+              : [
+                  createNodeRenderResult(["0-0-0-0"]),
+                  createNodeRenderResult(nodeKeys),
+                ];
+
+          for (const progressResult of progressResults) {
+            const candidate = {
+              nodeKeys: progressResult.pointSamples.nodeKeys,
+              sampledPointCount:
+                progressResult.pointSamples.sampledPointCount,
+              nodeSamples: progressResult.pointSamples.nodeResults.map(
+                (nodeResult) => ({
+                  nodeKey: nodeResult.nodeKey,
+                  nodePointCount: nodeResult.nodePointCount,
+                  sampledPointCount: nodeResult.sampledPointCount,
+                }),
+              ),
+            };
+            const accepted =
+              options.shouldRenderProgress?.(candidate) ?? true;
+
+            if (renderCount === 2) {
+              progressDecisions.push(accepted);
+            }
+            if (accepted) {
+              rendererRevision += 1;
+              options.onProgress?.(progressResult);
+            }
+          }
+
+          rendererRevision += 1;
+          return createNodeRenderResult(nodeKeys);
+        },
+      ),
+    } as unknown as CopcPointCloudCameraStreamLayer;
+    const stream = new CopcPointCloudCameraStream({
+      camera: camera.camera,
+      layer,
+      quality: "balanced",
+      renderOptions: { coverageMode: "complete-depth" },
+      onUpdate: (update) => updates.push(update),
+    });
+
+    await stream.render();
+    const firstRequestUpdateCount = updates.length;
+    await stream.render();
+
+    expect(progressDecisions).toEqual([false, true]);
+    expect(
+      updates.slice(firstRequestUpdateCount).map((update) => update.phase),
+    ).toEqual(["complete"]);
+    expect(stream.lastVisualQuality?.isTerminalReady).toBe(true);
+  });
+
+  it("does not ratchet the safe-swap point floor through superseded progress", async () => {
+    const camera = createCameraStub(500);
+    const hierarchy = createHierarchyForKeys(
+      ["0-0-0-0", "1-0-0-0"],
+      [],
+    );
+    const progressDecisions: boolean[] = [];
+    let rendererRevision = 0;
+    let renderCount = 0;
+    const layer = {
+      renderAutomaticProgressively: vi.fn(async () => createRenderResult()),
+      hierarchy,
+      getRendererRevision: () => rendererRevision,
+      expandHierarchyForCamera: vi.fn(async () => undefined),
+      selectNodesForCamera: vi.fn(async () =>
+        createCameraSelection(["1-0-0-0"]),
+      ),
+      renderNodesProgressively: vi.fn(
+        async (
+          nodeKeys: readonly string[],
+          options: CopcPointCloudLayerProgressiveRenderNodesOptions,
+        ) => {
+          renderCount += 1;
+          const terminalResult = createNodeRenderResultWithPointCounts(
+            nodeKeys,
+            [60_000, 60_000],
+          );
+
+          if (renderCount === 1) {
+            rendererRevision += 1;
+            return terminalResult;
+          }
+
+          const progressResult =
+            renderCount === 2
+              ? createNodeRenderResultWithPointCounts(nodeKeys, [36_000, 36_000])
+              : createNodeRenderResultWithPointCounts(nodeKeys, [22_000, 22_000]);
+          const candidate = {
+            nodeKeys: progressResult.pointSamples.nodeKeys,
+            sampledPointCount: progressResult.pointSamples.sampledPointCount,
+            nodeSamples: progressResult.pointSamples.nodeResults.map(
+              (nodeResult) => ({
+                nodeKey: nodeResult.nodeKey,
+                nodePointCount: nodeResult.nodePointCount,
+                sampledPointCount: nodeResult.sampledPointCount,
+              }),
+            ),
+          };
+          const accepted = options.shouldRenderProgress?.(candidate) ?? true;
+
+          progressDecisions.push(accepted);
+          if (accepted) {
+            rendererRevision += 1;
+            options.onProgress?.(progressResult);
+          }
+
+          if (renderCount === 2) {
+            return new Promise<CopcPointCloudLayerNodesRenderResult>(
+              (_resolve, reject) => {
+                options.signal?.addEventListener(
+                  "abort",
+                  () => reject(new DOMException("Aborted", "AbortError")),
+                  { once: true },
+                );
+              },
+            );
+          }
+
+          rendererRevision += 1;
+          return terminalResult;
+        },
+      ),
+    } as unknown as CopcPointCloudCameraStreamLayer;
+    const stream = new CopcPointCloudCameraStream({
+      camera: camera.camera,
+      layer,
+      quality: "balanced",
+      renderOptions: { coverageMode: "complete-depth" },
+    });
+
+    await stream.render();
+    const supersededRender = stream.render();
+    await vi.waitFor(() => expect(progressDecisions).toEqual([true]));
+    const finalRender = stream.render();
+
+    await expect(supersededRender).resolves.toBeUndefined();
+    await expect(finalRender).resolves.toBeDefined();
+    expect(progressDecisions).toEqual([true, false]);
+  });
+
   it("reports render failures and rejects use after destroy", async () => {
     const camera = createCameraStub(1_000);
     const failure = new Error("render failed");
@@ -903,6 +1160,35 @@ function createNodeRenderResult(
         sampledPointCount: 60_000,
       })),
       sampledPointCount: nodeKeys.length * 60_000,
+    },
+  } as unknown as CopcPointCloudLayerNodesRenderResult;
+}
+
+function createNodeRenderResultWithPointCounts(
+  nodeKeys: readonly string[],
+  sampledPointCounts: readonly number[],
+): CopcPointCloudLayerNodesRenderResult {
+  if (nodeKeys.length !== sampledPointCounts.length) {
+    throw new Error("Node keys and sampled point counts must align.");
+  }
+
+  return {
+    nodes: nodeKeys.map((key) => ({
+      key,
+      pointCount: 120_000,
+      pointDataLength: 2_000,
+    })),
+    pointSamples: {
+      nodeKeys,
+      nodeResults: nodeKeys.map((nodeKey, index) => ({
+        nodeKey,
+        nodePointCount: 120_000,
+        sampledPointCount: sampledPointCounts[index],
+      })),
+      sampledPointCount: sampledPointCounts.reduce(
+        (total, pointCount) => total + pointCount,
+        0,
+      ),
     },
   } as unknown as CopcPointCloudLayerNodesRenderResult;
 }

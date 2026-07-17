@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { Copc as CopcData } from "copc";
 import type {
   CesiumCopcPointGeometryWorkerLoadRequest,
   CesiumCopcPointGeometryWorkerRequest,
@@ -24,10 +25,18 @@ const mocks = vi.hoisted(() => ({
     },
     getter: () => (index: number) => index,
   })),
+  createSpatiallyDistributedPointIndices: vi.fn(
+    (options: { readonly pointCount: number }) =>
+      Uint32Array.from(
+        { length: options.pointCount },
+        (_value, index) => index,
+      ),
+  ),
   sampleCopcPointDataView: vi.fn((options: {
     readonly nodeKey: string;
     readonly view: { readonly pointCount: number };
     readonly maxPointCount: number;
+    readonly spatialPointOrder?: Uint32Array;
   }) => {
     const sampledPointCount = Math.min(
       options.view.pointCount,
@@ -82,6 +91,12 @@ vi.mock("../core/copc/loadCopcNodePointSamples", () => ({
   sampleCopcPointDataView: mocks.sampleCopcPointDataView,
 }));
 
+vi.mock("../core/copc/createSpatiallyDistributedPointIndices", () => ({
+  createSpatiallyDistributedPointIndices:
+    mocks.createSpatiallyDistributedPointIndices,
+  SPATIAL_POINT_ORDER_BYTES_PER_POINT: Uint32Array.BYTES_PER_ELEMENT,
+}));
+
 vi.mock("./pointGeometryBatch", () => ({
   createNodePointSampleBatchKey: mocks.createNodePointSampleBatchKey,
   createPointGeometryBatchFromSerializableTransform:
@@ -114,6 +129,100 @@ describe("CesiumCopcPointGeometryWorker decoded point data cache", () => {
     ]);
   });
 
+  it("uses supplied COPC metadata during source-aware warmup", async () => {
+    const worker = await importWorker();
+    const copc = {
+      header: {
+        pointDataRecordLength: 16,
+      },
+    } as CopcData;
+
+    worker.dispatch({
+      id: 1,
+      type: "warmup",
+      url: "https://example.com/sample.copc.laz",
+      copc,
+    });
+    await worker.waitForMessageCount(1);
+    worker.dispatch(createLoadRequest(2, "1-0-0-0", 100));
+    await worker.waitForMessageCount(2);
+
+    expect(mocks.createCopc).not.toHaveBeenCalled();
+    expect(mocks.loadCopcNodePointDataView).toHaveBeenCalledWith(
+      expect.objectContaining({ copc }),
+    );
+  });
+
+  it("recovers an existing failed source when later geometry supplies COPC metadata", async () => {
+    const worker = await importWorker();
+    const copc = {
+      header: {
+        pointDataRecordLength: 24,
+      },
+    } as CopcData;
+
+    mocks.createCopc.mockRejectedValueOnce(new Error("fallback metadata failed"));
+    worker.dispatch(createLoadRequest(1, "1-0-0-0", 100));
+    await worker.waitForMessageCount(1);
+    worker.dispatch({
+      ...createLoadRequest(2, "1-0-0-0", 100),
+      copc,
+    });
+    await worker.waitForMessageCount(2);
+
+    expect(worker.messages[0]).toMatchObject({
+      type: "loadNodePointGeometry:error",
+      error: {
+        message: "fallback metadata failed",
+      },
+    });
+    expect(worker.messages[1]).toMatchObject({
+      type: "loadNodePointGeometry:success",
+    });
+    expect(mocks.createCopc).toHaveBeenCalledTimes(1);
+    expect(mocks.loadCopcNodePointDataView).toHaveBeenCalledWith(
+      expect.objectContaining({ copc }),
+    );
+  });
+
+  it("reuses one non-transferred spatial order across density requests", async () => {
+    const worker = await importWorker();
+
+    worker.dispatch(createLoadRequest(1, "1-0-0-0", 100));
+    await worker.waitForMessageCount(1);
+    worker.dispatch(createLoadRequest(2, "1-0-0-0", 500));
+    await worker.waitForMessageCount(2);
+
+    expect(mocks.loadCopcNodePointDataView).toHaveBeenCalledTimes(1);
+    expect(mocks.createSpatiallyDistributedPointIndices).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(mocks.sampleCopcPointDataView).toHaveBeenCalledTimes(2);
+    const spatialPointOrder = mocks.createSpatiallyDistributedPointIndices.mock
+      .results[0]?.value as Uint32Array | undefined;
+
+    expect(spatialPointOrder).toBeInstanceOf(Uint32Array);
+    expect(
+      mocks.sampleCopcPointDataView.mock.calls[0]?.[0].spatialPointOrder,
+    ).toBe(spatialPointOrder);
+    expect(
+      mocks.sampleCopcPointDataView.mock.calls[1]?.[0].spatialPointOrder,
+    ).toBe(spatialPointOrder);
+    expect(worker.transferLists[0]).toHaveLength(2);
+    expect(worker.transferLists[1]).toHaveLength(2);
+    expect(worker.transferLists.flat()).not.toContain(spatialPointOrder?.buffer);
+    expect(spatialPointOrder?.byteLength).toBe(4_000);
+    expect(worker.messages[1]).toMatchObject({
+      cache: {
+        retainedViewCount: 1,
+        retainedBytes: 20_000,
+        cacheHitCount: 1,
+        cacheMissCount: 1,
+        requestedNodeRetained: true,
+      },
+    });
+  });
+
   it("evicts decoded node views using the per-request cache limits", async () => {
     const worker = await importWorker();
 
@@ -134,6 +243,9 @@ describe("CesiumCopcPointGeometryWorker decoded point data cache", () => {
     await worker.waitForMessageCount(3);
 
     expect(mocks.loadCopcNodePointDataView).toHaveBeenCalledTimes(3);
+    expect(mocks.createSpatiallyDistributedPointIndices).toHaveBeenCalledTimes(
+      3,
+    );
     expect(worker.messages.map((message) => message.type)).toEqual([
       "loadNodePointGeometry:success",
       "loadNodePointGeometry:success",
@@ -167,7 +279,7 @@ describe("CesiumCopcPointGeometryWorker decoded point data cache", () => {
     expect(worker.messages[1]).toMatchObject({
       cache: {
         retainedViewCount: 1,
-        retainedBytes: 16_000,
+        retainedBytes: 20_000,
         cacheEvictionCount: 1,
         evictedNodeKeys: [
           {
@@ -184,16 +296,19 @@ describe("CesiumCopcPointGeometryWorker decoded point data cache", () => {
 
     worker.dispatch({
       ...createLoadRequest(1, "1-0-0-0", 100),
-      maxDecodedPointDataViewBytes: 15_999,
+      maxDecodedPointDataViewBytes: 19_999,
     });
     await worker.waitForMessageCount(1);
     worker.dispatch({
       ...createLoadRequest(2, "1-0-0-0", 100),
-      maxDecodedPointDataViewBytes: 15_999,
+      maxDecodedPointDataViewBytes: 19_999,
     });
     await worker.waitForMessageCount(2);
 
     expect(mocks.loadCopcNodePointDataView).toHaveBeenCalledTimes(2);
+    expect(mocks.createSpatiallyDistributedPointIndices).toHaveBeenCalledTimes(
+      2,
+    );
     expect(worker.messages[1]).toMatchObject({
       type: "loadNodePointGeometry:success",
       cache: {
@@ -234,6 +349,29 @@ describe("CesiumCopcPointGeometryWorker decoded point data cache", () => {
       "prefetchNodePointData:success",
       "loadNodePointGeometry:success",
     ]);
+  });
+
+  it("forwards the resolved color style into integrated geometry creation", async () => {
+    const worker = await importWorker();
+    const request = {
+      ...createLoadRequest(1, "1-0-0-0", 100),
+      pointColorStyle: {
+        mode: "elevation",
+        minimumZ: 10,
+        inverseZRange: 0.01,
+      },
+    } as const;
+
+    worker.dispatch(request);
+    await worker.waitForMessageCount(1);
+
+    expect(
+      mocks.createPointGeometryBatchFromSerializableTransform,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pointColorStyle: request.pointColorStyle,
+      }),
+    );
   });
 
   it("reports evictions and rollback state when a decoded view fails", async () => {
@@ -303,7 +441,7 @@ describe("CesiumCopcPointGeometryWorker decoded point data cache", () => {
       type: "loadNodePointGeometry:canceled",
       cache: {
         retainedViewCount: 1,
-        retainedBytes: 16_000,
+        retainedBytes: 20_000,
         cacheEvictionCount: 1,
         requestedNodeRetained: true,
         evictedNodeKeys: [
@@ -331,6 +469,7 @@ function createDecodedPointDataView(pointCount: number) {
 
 async function importWorker(): Promise<{
   readonly messages: CesiumCopcPointGeometryWorkerResponse[];
+  readonly transferLists: readonly Transferable[][];
   dispatch(request: CesiumCopcPointGeometryWorkerRequest): void;
   waitForMessageCount(count: number): Promise<void>;
 }> {
@@ -338,6 +477,7 @@ async function importWorker(): Promise<{
     | ((event: { readonly data: CesiumCopcPointGeometryWorkerRequest }) => void)
     | undefined;
   const messages: CesiumCopcPointGeometryWorkerResponse[] = [];
+  const transferLists: Transferable[][] = [];
 
   vi.resetModules();
   vi.stubGlobal(
@@ -353,9 +493,16 @@ async function importWorker(): Promise<{
       }
     },
   );
-  vi.stubGlobal("postMessage", (message: CesiumCopcPointGeometryWorkerResponse) => {
-    messages.push(message);
-  });
+  vi.stubGlobal(
+    "postMessage",
+    (
+      message: CesiumCopcPointGeometryWorkerResponse,
+      transfer: readonly Transferable[] = [],
+    ) => {
+      messages.push(message);
+      transferLists.push([...transfer]);
+    },
+  );
 
   await import("./CesiumCopcPointGeometryWorker");
 
@@ -365,6 +512,7 @@ async function importWorker(): Promise<{
 
   return {
     messages,
+    transferLists,
     dispatch: (request) => {
       listener?.({ data: request });
     },

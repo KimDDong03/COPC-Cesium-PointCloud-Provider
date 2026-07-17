@@ -61,6 +61,10 @@ export { inspectCopc } from "./copc/inspectCopc";
 export { loadHierarchySummary } from "./copc/loadHierarchySummary";
 export { loadNodePointSamples } from "./copc/loadNodePointSamples";
 export {
+  createSpatiallyDistributedPointIndices,
+  type CreateSpatiallyDistributedPointIndicesOptions,
+} from "./copc/createSpatiallyDistributedPointIndices";
+export {
   selectHierarchyPagesForTarget,
   type CopcHierarchyPageTargetSelection,
   type SelectHierarchyPagesForTargetOptions,
@@ -74,6 +78,18 @@ export {
   type CopcTargetVector,
   type SelectHierarchyNodesForCameraOptions,
 } from "./copc/selectHierarchyNodesForCamera";
+export {
+  CopcMixedDepthRequiredCoverageError,
+  planMixedDepthHierarchyTraversal,
+  type CopcMixedDepthBudgetLimits,
+  type CopcMixedDepthBudgetUsage,
+  type CopcMixedDepthHierarchyTraversalPlan,
+  type CopcMixedDepthNodeViewState,
+  type CopcMixedDepthRefinementMode,
+  type CopcMixedDepthRequiredCoverageErrorReason,
+  type CopcMixedDepthTraversalDiagnostics,
+  type PlanMixedDepthHierarchyTraversalOptions,
+} from "./copc/planMixedDepthHierarchyTraversal";
 export {
   suggestHierarchyNode,
   type CopcHierarchyNodeSuggestion,

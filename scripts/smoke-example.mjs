@@ -269,6 +269,37 @@ function createSmokeFlow(baseUrl) {
     }, label);
   }
 
+  async function waitForSourcePreset(expectedSourcePreset) {
+    try {
+      await page.waitForFunction(
+        (expectedSourcePreset) => {
+          const rows = [...document.querySelectorAll("#copc-metadata dt")];
+          const sourcePreset = rows.find(
+            (row) => row.textContent === "Source preset",
+          )?.nextElementSibling?.textContent;
+          const form = document.querySelector("#copc-form");
+
+          return (
+            sourcePreset === expectedSourcePreset &&
+            form?.getAttribute("aria-busy") !== "true"
+          );
+        },
+        expectedSourcePreset,
+        { timeout: 120_000 },
+      );
+    } catch (error) {
+      throw new Error(
+        "Timed out waiting for source preset " +
+          '"' +
+          expectedSourcePreset +
+          '". Current source: "' +
+          (await metadataValue("Source preset")) +
+          '". ' +
+          error.message,
+      );
+    }
+  }
+
   async function waitForRenderedStatus() {
     try {
       await page.waitForFunction(
@@ -307,7 +338,8 @@ function createSmokeFlow(baseUrl) {
 
           return visualQuality
             ? visualQuality.isTerminalReady === true &&
-                visualQuality.frontierDepthSpan === 0 &&
+                (visualQuality.isFrontierDepthPolicySatisfied ??
+                  visualQuality.frontierDepthSpan === 0) &&
                 visualQuality.isFrontierAntichain === true &&
                 visualQuality.isAdditiveClosureComplete === true &&
                 visualQuality.missingRequiredNodeCount === 0 &&
@@ -344,7 +376,8 @@ function createSmokeFlow(baseUrl) {
           (status?.cameraStreamLodData?.cameraHeightMeters ??
             Number.POSITIVE_INFINITY) < maximumCameraHeightMeters &&
           visualQuality?.isTerminalReady === true &&
-          visualQuality.frontierDepthSpan === 0 &&
+          (visualQuality.isFrontierDepthPolicySatisfied ??
+            visualQuality.frontierDepthSpan === 0) &&
           visualQuality.isFrontierAntichain === true &&
           visualQuality.isAdditiveClosureComplete === true &&
           visualQuality.missingRequiredNodeCount === 0 &&
@@ -804,6 +837,7 @@ function createSmokeFlow(baseUrl) {
     details.open = false;
   });
   await page.getByLabel("Sample").selectOption("millsite-reservoir");
+  await waitForSourcePreset("Millsite Reservoir (USGS 3DEP)");
   await waitForRenderedStatus();
 
   await check(
@@ -988,6 +1022,7 @@ function createSmokeFlow(baseUrl) {
     .getByRole("textbox", { name: "proj4 definition" })
     .fill(millsiteDefinition);
   await page.getByRole("button", { name: "Inspect" }).click();
+  await waitForSourcePreset("Custom URL");
   await waitForRenderedStatus();
   await waitForInteractivePointCount(minDefaultInteractivePointCount);
 
@@ -1034,6 +1069,7 @@ function createSmokeFlow(baseUrl) {
       .getByRole("textbox", { name: "proj4 definition" })
       .fill("");
     await page.locator("#copc-file").setInputFiles(localFilePath);
+    await waitForSourcePreset("Local file");
     await waitForInteractivePointCount(minDefaultInteractivePointCount);
 
     localFileRendererTiming = (await metadataValue("Renderer timing")) ?? "";

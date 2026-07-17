@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { Copc as CopcData } from "copc";
 import { CesiumCopcPointGeometryWorkerPool } from "./CesiumCopcPointGeometryWorkerPool";
 import type { CopcDecodedPointDataCacheSnapshot } from "../core/copc/CopcDecodedPointDataCache";
 import type {
@@ -587,6 +588,106 @@ describe("CesiumCopcPointGeometryWorkerPool", () => {
         id: 3,
         type: "loadNodePointGeometry",
         nodeKey: "0-0-0-0",
+      },
+    ]);
+  });
+
+  it("forwards parsed COPC metadata to every source-aware warmup", () => {
+    const workers: RecordingWorker[] = [];
+    const pool = new CesiumCopcPointGeometryWorkerPool({
+      pointGeometryLoading: "integrated-worker",
+      maxConcurrentPointGeometryWorkerRequests: 2,
+      createCopcPointGeometryWorker: () => {
+        const worker = new RecordingWorker();
+        workers.push(worker);
+        return worker as unknown as Worker;
+      },
+    });
+    const copc = {
+      header: {
+        pointDataRecordLength: 16,
+      },
+    } as CopcData;
+
+    pool.warmUp({
+      workerCount: 2,
+      source: {
+        key: "url:https://example.com/a.copc.laz",
+        input: "https://example.com/a.copc.laz",
+      },
+      copc,
+    });
+
+    expect(workers).toHaveLength(2);
+    expect(workers.map((worker) => worker.messages[0])).toEqual([
+      expect.objectContaining({ copc }),
+      expect.objectContaining({ copc }),
+    ]);
+  });
+
+  it("forwards parsed COPC metadata to geometry and prefetch work requests", async () => {
+    const workers: RecordingWorker[] = [];
+    const pool = new CesiumCopcPointGeometryWorkerPool({
+      pointGeometryLoading: "integrated-worker",
+      maxConcurrentPointGeometryWorkerRequests: 1,
+      createCopcPointGeometryWorker: () => {
+        const worker = new RecordingWorker();
+        workers.push(worker);
+        return worker as unknown as Worker;
+      },
+    });
+    const copc = {
+      header: {
+        pointDataRecordLength: 16,
+      },
+    } as CopcData;
+    const geometryResult = pool.loadNodePointGeometryBatch({
+      copc,
+      url: "https://example.com/a.copc.laz",
+      nodeKey: "0-0-0-0",
+      node: createWorkerNode(),
+      maxPointCount: 5,
+      transform: {
+        kind: "geographic",
+        heightScaleToMeters: 1,
+      },
+    });
+
+    if (!geometryResult) {
+      throw new Error("Expected worker-backed geometry loading.");
+    }
+
+    await waitForScheduledQueueDrain();
+    workers[0].dispatchMessage({
+      id: 1,
+      type: "loadNodePointGeometry:success",
+      result: createWorkerResult("0-0-0-0"),
+    });
+    await geometryResult;
+
+    const prefetchResult = pool.prefetchNodePointData({
+      copc,
+      url: "https://example.com/a.copc.laz",
+      nodeKey: "1-0-0-0",
+      node: createWorkerNode(),
+    });
+
+    if (!prefetchResult) {
+      throw new Error("Expected worker-backed point data prefetch.");
+    }
+
+    await waitForScheduledQueueDrain();
+
+    expect(workers[0].messages).toMatchObject([
+      {
+        id: 1,
+        type: "loadNodePointGeometry",
+        copc,
+      },
+      {
+        id: 2,
+        type: "prefetchNodePointData",
+        copc,
       },
     ]);
   });
@@ -1760,6 +1861,75 @@ describe("CesiumCopcPointGeometryWorkerPool", () => {
     expect(workers[0].messages).toHaveLength(1);
   });
 
+  it("keeps geometry requests with different resolved color styles separate", async () => {
+    const workers: RecordingWorker[] = [];
+    const pool = new CesiumCopcPointGeometryWorkerPool({
+      pointGeometryLoading: "integrated-worker",
+      maxConcurrentPointGeometryWorkerRequests: 1,
+      createCopcPointGeometryWorker: () => {
+        const worker = new RecordingWorker();
+        workers.push(worker);
+        return worker as unknown as Worker;
+      },
+    });
+    const commonOptions = {
+      url: "https://example.com/a.copc.laz",
+      nodeKey: "0-0-0-0",
+      node: createWorkerNode(),
+      maxPointCount: 5,
+      transform: {
+        kind: "geographic",
+        heightScaleToMeters: 1,
+      },
+    } as const;
+    const attributeResult = pool.loadNodePointGeometryBatch(commonOptions);
+    const elevationResult = pool.loadNodePointGeometryBatch({
+      ...commonOptions,
+      pointColorStyle: {
+        mode: "elevation",
+        minimumZ: 10,
+        inverseZRange: 0.01,
+      },
+    });
+
+    if (!attributeResult || !elevationResult) {
+      throw new Error("Expected worker-backed geometry loading.");
+    }
+
+    await waitForScheduledQueueDrain();
+    expect(workers[0].messages).toHaveLength(1);
+
+    workers[0].dispatchMessage({
+      id: 1,
+      type: "loadNodePointGeometry:success",
+      result: createWorkerResult("0-0-0-0"),
+    });
+    await attributeResult;
+
+    expect(workers[0].messages).toMatchObject([
+      {
+        id: 1,
+        type: "loadNodePointGeometry",
+      },
+      {
+        id: 2,
+        type: "loadNodePointGeometry",
+        pointColorStyle: {
+          mode: "elevation",
+          minimumZ: 10,
+          inverseZRange: 0.01,
+        },
+      },
+    ]);
+
+    workers[0].dispatchMessage({
+      id: 2,
+      type: "loadNodePointGeometry:success",
+      result: createWorkerResult("0-0-0-0"),
+    });
+    await elevationResult;
+  });
+
   it("keeps a coalesced worker task alive when one consumer aborts", async () => {
     const workers: RecordingWorker[] = [];
     const pool = new CesiumCopcPointGeometryWorkerPool({
@@ -2127,12 +2297,13 @@ describe("CesiumCopcPointGeometryWorkerPool", () => {
       result: createWorkerResult("0-0-0-0", 10),
     });
 
-    await expect(higherDensityResult).resolves.toMatchObject({
-      geometryBatch: expect.objectContaining({
-        pointCount: 10,
-      }),
+    const higherDensity = await higherDensityResult;
+    const lowerDensity = await lowerDensityResult;
+
+    expect(higherDensity).toMatchObject({
+      geometryBatch: expect.objectContaining({ pointCount: 10 }),
     });
-    await expect(lowerDensityResult).resolves.toMatchObject({
+    expect(lowerDensity).toMatchObject({
       pointSamples: expect.objectContaining({
         sampledPointCount: 4,
       }),
@@ -2140,6 +2311,12 @@ describe("CesiumCopcPointGeometryWorkerPool", () => {
         pointCount: 4,
       }),
     });
+    expect([...lowerDensity.geometryBatch.positions]).toEqual(
+      [...higherDensity.geometryBatch.positions].slice(0, 12),
+    );
+    expect([...lowerDensity.geometryBatch.colors]).toEqual(
+      [...higherDensity.geometryBatch.colors].slice(0, 16),
+    );
     expect(workers[0].messages).toHaveLength(1);
   });
 

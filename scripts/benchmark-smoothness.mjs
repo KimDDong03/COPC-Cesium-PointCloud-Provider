@@ -663,7 +663,10 @@ function createSmoothnessFlow(
       return false;
     }
 
-    return status.cameraStreamVisualQuality?.isTerminalReady === true;
+    return (
+      status.cameraStreamVisualQuality?.isTerminalReady === true &&
+      status.cameraStreamDetailProgress?.isComplete === true
+    );
   }
 
   function hasInteractiveCameraStreamResult(
@@ -702,7 +705,8 @@ function createSmoothnessFlow(
       expectedCameraPoseFingerprint,
     );
     const structuredCompletion =
-      status.cameraStreamVisualQuality?.isTerminalReady;
+      status.cameraStreamVisualQuality?.isTerminalReady === true &&
+      status.cameraStreamDetailProgress?.isComplete === true;
     const evidenceSource =
       waitForFinalDetail && typeof structuredCompletion === "boolean"
         ? "visual-quality"
@@ -769,7 +773,8 @@ function createSmoothnessFlow(
           }
 
           const isComplete =
-            status.cameraStreamVisualQuality?.isTerminalReady === true;
+            status.cameraStreamVisualQuality?.isTerminalReady === true &&
+            status.cameraStreamDetailProgress?.isComplete === true;
           const hasFailed = status.status?.startsWith(
             "COPC inspection failed:",
           );
@@ -814,10 +819,13 @@ function createSmoothnessFlow(
           expectedCameraPoseFingerprint,
         ),
         visualQuality: currentStatus.cameraStreamVisualQuality,
+        detailProgress: currentStatus.cameraStreamDetailProgress,
         diagnostics: currentStatus.cameraStreamDiagnosticsData,
         lod: currentStatus.cameraStreamLodData,
         prefetch: currentStatus.cameraStreamPrefetchData,
         hierarchyCache: currentStatus.hierarchyCacheStats,
+        hierarchyRefinement: currentStatus.cameraHierarchyRefinement,
+        hierarchyExpansion: currentStatus.cameraHierarchyExpansion,
         statusText: currentStatus.status,
       };
       throw new Error(
@@ -1796,7 +1804,9 @@ function createSmoothnessFlow(
       failures.push(\`\${runLabel} did not expose renderer timing after camera movement.\`);
     }
 
-    const renderedPointCount = parseCameraStreamPointCount(measuredStatus.status);
+    const renderedPointCount =
+      measuredStatus.cameraStreamRenderedPointCount ??
+      parseCameraStreamPointCount(measuredStatus.status);
     const cameraStreamDetailProgress =
       measuredStatus.cameraStreamDetailProgress ??
       parseCameraStreamDetailProgress(measuredStatus.status);
@@ -1821,8 +1831,9 @@ function createSmoothnessFlow(
 
     if (
       (!pointGeometryTiming ||
-        measuredStatus.cameraStreamRenderDisposition ===
-          "retained-exact-render") &&
+        measuredStatus.cameraStreamRenderDisposition?.startsWith(
+          "retained-",
+        )) &&
       cacheResetMode === "none" &&
       Number.isSafeInteger(cameraStreamNodeReuse?.finalNodeCount) &&
       cameraStreamNodeReuse.finalNodeCount > 0 &&
@@ -1841,9 +1852,10 @@ function createSmoothnessFlow(
         sumWorkerMilliseconds: 0,
         sumQueueMilliseconds: 0,
         evidenceSource:
-          measuredStatus.cameraStreamRenderDisposition ===
-          "retained-exact-render"
-            ? "retained-exact-render"
+          measuredStatus.cameraStreamRenderDisposition?.startsWith(
+            "retained-",
+          )
+            ? measuredStatus.cameraStreamRenderDisposition
             : "camera-stream-node-sample-cache",
         geometryCacheBefore,
         geometryCacheAfter,
@@ -1861,7 +1873,9 @@ function createSmoothnessFlow(
     }
 
     if (renderedPointCount === undefined) {
-      failures.push(\`\${runLabel} did not report a camera stream point count.\`);
+      failures.push(
+        \`\${runLabel} did not report a camera stream point count. Status: \${JSON.stringify(measuredStatus.status)}; render disposition: \${measuredStatus.cameraStreamRenderDisposition ?? "not-reported"}.\`,
+      );
     } else if (renderedPointCount > appliedStreamPointBudget) {
       failures.push(
         \`\${runLabel} rendered \${renderedPointCount} points with a \${appliedStreamPointBudget} point budget.\`,
@@ -1873,8 +1887,13 @@ function createSmoothnessFlow(
     } else {
       const expectedMinSelectedDepth =
         minSelectedDepthOverride ?? sampleSnapshot.expectedMinSelectedDepth;
+      const shouldEnforceAbsoluteDepth =
+        minSelectedDepthOverride !== undefined ||
+        cameraStreamVisualQuality?.terminalFrontierMode !==
+          "mixed-depth-antichain";
 
       if (
+        shouldEnforceAbsoluteDepth &&
         expectedMinSelectedDepth !== undefined &&
         cameraStreamDiagnostics.selectedDepth < expectedMinSelectedDepth
       ) {
@@ -1885,7 +1904,9 @@ function createSmoothnessFlow(
     }
 
     if (waitForFinalDetail && !cameraStreamDetailProgress) {
-      failures.push(\`\${runLabel} did not expose camera stream detail progress.\`);
+      failures.push(
+        \`\${runLabel} did not expose camera stream detail progress. Visual quality: \${JSON.stringify(cameraStreamVisualQuality)}.\`,
+      );
     }
     if (waitForFinalDetail && !cameraStreamVisualQuality?.isTerminalReady) {
       failures.push(
@@ -1900,8 +1921,9 @@ function createSmoothnessFlow(
       failures.push(\`\${runLabel} did not expose camera stream first-response timing.\`);
     }
     const expectedFirstResponseSource =
-      cameraStreamFirstResponseEvidence?.renderDisposition ===
-      "retained-exact-render"
+      cameraStreamFirstResponseEvidence?.renderDisposition?.startsWith(
+        "retained-",
+      )
         ? "app-render-retained"
         : "app-render-commit";
     if (
@@ -2053,6 +2075,47 @@ function createSmoothnessFlow(
     );
   }
 
+  function validateMixedDepthBudgetProgression() {
+    for (const sampleCase of sampleCases) {
+      for (let runIndex = 1; runIndex <= repeatCount; runIndex += 1) {
+        const orderedRuns = results
+          .filter(
+            (result) =>
+              result.sampleId === sampleCase.id &&
+              result.runIndex === runIndex &&
+              result.measurementType === "measurement",
+          )
+          .sort(
+            (left, right) =>
+              left.streamPointBudget - right.streamPointBudget,
+          );
+
+        for (let index = 1; index < orderedRuns.length; index += 1) {
+          const previous = orderedRuns[index - 1];
+          const current = orderedRuns[index];
+          const previousDepth =
+            previous.cameraStreamDiagnostics?.selectedDepth;
+          const currentDepth = current.cameraStreamDiagnostics?.selectedDepth;
+
+          if (
+            previous.cameraStreamVisualQuality?.terminalFrontierMode ===
+              "mixed-depth-antichain" &&
+            current.cameraStreamVisualQuality?.terminalFrontierMode ===
+              "mixed-depth-antichain" &&
+            current.streamPointBudget > previous.streamPointBudget &&
+            Number.isFinite(previousDepth) &&
+            Number.isFinite(currentDepth) &&
+            currentDepth < previousDepth
+          ) {
+            failures.push(
+              \`\${sampleCase.id} run \${runIndex} mixed-depth selection regressed from depth \${previousDepth} at \${previous.streamPointBudget.toLocaleString()} points to depth \${currentDepth} at \${current.streamPointBudget.toLocaleString()} points.\`,
+            );
+          }
+        }
+      }
+    }
+  }
+
   await page.goto(${JSON.stringify(baseUrl)}, { waitUntil: "domcontentloaded" });
   await waitForBenchmarkApi();
 
@@ -2173,6 +2236,8 @@ function createSmoothnessFlow(
     }
   }
 
+  validateMixedDepthBudgetProgression();
+
   if (consoleProblems.length > 0 || pageErrors.length > 0) {
     failures.push(
       [
@@ -2195,8 +2260,8 @@ function createSmoothnessFlow(
       id: sampleCase.id,
       label: sampleCase.label,
       kind: sampleCase.kind,
-      expectedMinSelectedDepth:
-        minSelectedDepthOverride ?? sampleCase.expectedMinSelectedDepth,
+      expectedMinSelectedDepth: minSelectedDepthOverride,
+      sameDepthExpectedMinSelectedDepth: sampleCase.expectedMinSelectedDepth,
     })),
     repeatCount,
     warmupRunCount,
@@ -2488,7 +2553,7 @@ try {
         ? `${benchmarkCacheResetMode} cache reset,`
         : "",
       benchmarkMinSelectedDepthOverride === undefined
-        ? "sample depth targets"
+        ? "same-depth sample targets; mixed-depth budget progression"
         : `min selected depth ${benchmarkMinSelectedDepthOverride}`,
     ]
       .filter(Boolean)

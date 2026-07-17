@@ -14,12 +14,14 @@ import {
 } from "./CopcCameraStreamSettings";
 import {
   createCopcCameraStreamVisualQualityState,
+  type CopcCameraStreamTerminalFrontierMode,
   type CopcCameraStreamVisualQualityState,
 } from "./CopcCameraStreamVisualQuality";
 import type {
   CopcPointCloudLayer,
   CopcPointCloudLayerNodesRenderResult,
   CopcPointCloudLayerProgressiveRenderCandidate,
+  CopcPointCloudLayerProgressiveRenderMode,
 } from "./CopcPointCloudLayer";
 
 export type CopcCameraStreamTerminalRenderLayer = Pick<
@@ -57,11 +59,14 @@ export interface CopcCameraStreamTerminalRenderOptions {
   readonly frontierNodeKeys: readonly string[];
   /** Complete additive node set that must be present in the terminal render. */
   readonly requiredNodeKeys: readonly string[];
+  /** Defaults to the existing same-depth terminal frontier contract. */
+  readonly terminalFrontierMode?: CopcCameraStreamTerminalFrontierMode;
   readonly finalNodeWeights?: readonly CopcCameraStreamFinalNodeWeight[];
   readonly initialNodeResults?: readonly CopcNodePointSampleResult[];
   readonly backgroundNodeResults?: readonly CopcNodePointSampleResult[];
   readonly renderedPointBudget: number;
   readonly maxPointCountPerNode: number;
+  readonly useSourcePointBudgetHeadroom?: boolean;
   readonly maxActiveNodeRequests?: number;
   readonly rendererKind: CopcCameraStreamRendererKind;
   readonly lodSettings: Pick<
@@ -71,6 +76,13 @@ export interface CopcCameraStreamTerminalRenderOptions {
   readonly runtimeSettings?: CopcCameraStreamRuntimeSettings;
   readonly requestPriority?: number;
   readonly skipInitialProgressRender?: boolean;
+  /**
+   * Controls renderer commits while terminal geometry is still loading.
+   * Typed geometry defaults to `final-only` so the retained preview remains
+   * stable and the full point budget is uploaded exactly once. Other renderer
+   * kinds retain the adaptive progress-policy default.
+   */
+  readonly progressRenderMode?: CopcPointCloudLayerProgressiveRenderMode;
   readonly shouldRenderProgress?: (
     candidate: CopcPointCloudLayerProgressiveRenderCandidate,
   ) => boolean;
@@ -80,6 +92,8 @@ export interface CopcCameraStreamTerminalRenderOptions {
    * ownership of a retained overlapping request.
    */
   readonly shouldPublish?: () => boolean;
+  /** Called after an accepted progressive frame has mutated the renderer. */
+  readonly onProgressCommitted?: () => void;
   readonly onUpdate?: (update: CopcCameraStreamTerminalRenderUpdate) => void;
 }
 
@@ -162,6 +176,7 @@ export async function runCopcCameraStreamTerminalRender(
       frontierNodeKeys: options.frontierNodeKeys,
       requiredNodeKeys: options.requiredNodeKeys,
       renderedNodeKeys: result.pointSamples.nodeKeys,
+      terminalFrontierMode: options.terminalFrontierMode,
     });
     const becameInteractiveReady =
       detailProgress.isComplete && !interactiveReadyPublished;
@@ -200,11 +215,20 @@ export async function runCopcCameraStreamTerminalRender(
       requestPriority: options.requestPriority,
       maxPointCountPerNode: options.maxPointCountPerNode,
       maxRenderedPointCount: options.renderedPointBudget,
+      nodePointCountWeights: createAlignedPointCountWeights(
+        options.requiredNodeKeys,
+        options.finalNodeWeights,
+      ),
+      useSourcePointBudgetHeadroom: options.useSourcePointBudgetHeadroom,
       maxActiveProgressiveNodeRequests:
         options.maxActiveNodeRequests ??
         runtimeSettings.detailMaxActiveNodeRequests,
       progressBatchNodeCount: detailProgressPolicy.progressBatchNodeCount,
-      progressRenderMode: detailProgressPolicy.progressRenderMode,
+      progressRenderMode:
+        options.progressRenderMode ??
+        (options.rendererKind === "typed"
+          ? "final-only"
+          : detailProgressPolicy.progressRenderMode),
       skipInitialProgressRender: options.skipInitialProgressRender,
       shouldRenderProgress: options.shouldRenderProgress,
       nodeRequestOrder: "selection",
@@ -221,6 +245,13 @@ export async function runCopcCameraStreamTerminalRender(
         ).isComplete,
       onProgress: (progressResult) => {
         const update = createUpdate(progressResult, false);
+
+        if (
+          !options.signal?.aborted &&
+          options.shouldPublish?.() !== false
+        ) {
+          options.onProgressCommitted?.();
+        }
 
         // Terminal publication is intentionally deferred until the returned
         // final result is independently verified below.
@@ -283,4 +314,22 @@ function createDetailProgressState(
 
 function uniqueNodeKeys(nodeKeys: readonly string[]): readonly string[] {
   return [...new Set(nodeKeys.filter((nodeKey) => nodeKey.length > 0))];
+}
+
+function createAlignedPointCountWeights(
+  nodeKeys: readonly string[],
+  finalNodeWeights: readonly CopcCameraStreamFinalNodeWeight[] | undefined,
+): readonly number[] | undefined {
+  if (!finalNodeWeights || finalNodeWeights.length === 0) {
+    return undefined;
+  }
+
+  const weightByNodeKey = new Map(
+    finalNodeWeights.map(({ nodeKey, weight }) => [
+      nodeKey,
+      Number.isFinite(weight) && weight > 0 ? weight : 1,
+    ]),
+  );
+
+  return nodeKeys.map((nodeKey) => weightByNodeKey.get(nodeKey) ?? 1);
 }

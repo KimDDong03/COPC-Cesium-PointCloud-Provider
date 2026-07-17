@@ -1,5 +1,6 @@
 import {
   Cartesian3,
+  Color,
   ImageryLayer,
   TileMapServiceImageryProvider,
   Viewer,
@@ -31,6 +32,7 @@ import {
   createCopcCameraStreamDetailProgressState as createCameraStreamDetailProgressState,
   createCopcCameraStreamVisualQualityState as createCameraStreamVisualQualityState,
   createCopcCameraStreamRenderPlan as createCameraStreamRenderPlan,
+  createCopcCameraStreamSafeSwapState as createCameraStreamSafeSwapState,
   createCopcCameraStreamRequestPriority as createCameraStreamRequestPriority,
   createCopcCameraStreamRuntimeSettings as createCameraStreamRuntimeSettings,
   createCopcCameraStreamRenderNodeKeys as createCameraStreamRenderNodeKeys,
@@ -92,6 +94,11 @@ import {
   type BasicViewerDemoHudInput,
   type BasicViewerDemoStage,
 } from "./createBasicViewerDemoHudState";
+import { createCameraHierarchyFollowupSignature } from "./createCameraHierarchyFollowupSignature";
+import {
+  assertVisualBenchmarkCameraPoseAccess,
+  parseVisualBenchmarkCameraPoseFingerprint,
+} from "./visualBenchmarkCameraPose";
 import { selectCameraStreamAdaptiveBudgetState } from "./selectCameraStreamAdaptiveBudgetState";
 import {
   createLocalFileCopcSource,
@@ -115,6 +122,16 @@ const AUTO_LOD_PREVIEW_TARGET_POINT_SPACING_SCREEN_PIXELS = 12;
 const INTERACTIVE_PREVIEW_REQUEST_PRIORITY_OFFSET = 2;
 const INTERACTIVE_DETAIL_REQUEST_PRIORITY_OFFSET = 1;
 const DEFAULT_AUTO_STREAM_ON_CAMERA_MOVE = true;
+type RendererQualityVariant = "legacy" | "enhanced";
+const RENDERER_QUALITY_VARIANT = readRendererQualityVariant();
+const VISUAL_BENCHMARK_MODE = readVisualBenchmarkMode();
+const GEOMETRY_MASK_BENCHMARK_MODE = readGeometryMaskBenchmarkMode();
+const POINT_COLOR_MODE = VISUAL_BENCHMARK_MODE
+  ? ("elevation" as const)
+  : ("attribute" as const);
+const CAMERA_STREAM_COVERAGE_MODE = "mixed-depth" as const;
+const CAMERA_STREAM_TERMINAL_FRONTIER_MODE =
+  "mixed-depth-antichain" as const;
 const DEFAULT_CAMERA_STREAM_MAX_RENDERED_POINT_COUNT =
   readQualityCameraStreamMaxRenderedPointCount(
     RENDER_QUALITY_SETTINGS[DEFAULT_RENDER_QUALITY],
@@ -140,9 +157,10 @@ const WORKER_POOL_SETTINGS = createWorkerPoolSettings({
   hardwareConcurrency: readNavigatorHardwareConcurrency(),
 });
 const CAMERA_STREAM_RUNTIME_SETTINGS = createCameraStreamRuntimeSettings({
-  // The typed-array renderer retains one primitive per geometry batch. Commit
-  // newly decoded detail batches one at a time so a cold terminal refinement
-  // never uploads multiple new GPU buffers in the same animation frame.
+  // Enhanced presets can seal up to four geometry batches into one primitive,
+  // while an incomplete tail remains stable per-node. Commit newly decoded
+  // detail batches one at a time so a cold terminal refinement never seals or
+  // uploads multiple new GPU buffers in the same animation frame.
   fastRendererProgressBatchNodeCount: 1,
   previewCompletionNodeCount: 2,
   previewCompletionPointCount: 2_800,
@@ -174,7 +192,8 @@ const RETAINED_RENDER_PREFETCH_DELAY_MILLISECONDS = 350;
 type PointRendererKind = keyof typeof POINT_RENDERER_LABELS;
 type CameraStreamRenderDisposition =
   | "new-render"
-  | "retained-exact-render";
+  | "retained-exact-render"
+  | "retained-progress-render";
 
 interface BasicViewerBenchmarkCameraOptions {
   readonly steps?: number;
@@ -183,16 +202,52 @@ interface BasicViewerBenchmarkCameraOptions {
   readonly moveMeters?: number;
 }
 
+interface BasicViewerPostRenderBenchmarkOptions
+  extends BasicViewerBenchmarkCameraOptions {
+  readonly targetFrameRate?: number;
+}
+
+interface BasicViewerPostRenderPerformance {
+  readonly metricSource: "Cesium.Scene.postRender/performance.now";
+  readonly targetFrameRate?: number;
+  readonly frameCount: number;
+  readonly averageFramesPerSecond: number;
+  readonly averageFrameMilliseconds: number;
+  readonly p95FrameMilliseconds: number;
+  readonly maximumFrameMilliseconds: number;
+}
+
+interface BasicViewerPostRenderBenchmarkResult {
+  readonly status: BasicViewerBenchmarkStatus;
+  readonly performance: BasicViewerPostRenderPerformance;
+}
+
+interface BasicViewerIsolatedSceneState {
+  readonly background: "opaque-black";
+  readonly globeShown: false;
+  readonly atmosphereShown: false;
+  readonly skyBoxShown: false;
+  readonly sunShown: false;
+  readonly moonShown: false;
+  readonly fogEnabled: false;
+}
+
 interface BasicViewerBenchmarkStatus {
   readonly status: string;
   readonly cameraMovementCompletedAtMilliseconds?: number;
   readonly cameraStreamFirstResponseMilliseconds?: number;
   readonly cameraStreamForegroundCompletionMilliseconds?: number;
   readonly cameraStreamFirstResponseEvidence?: BasicViewerFirstResponseEvidence;
+  readonly cameraStreamRenderedPointCount?: number;
   readonly cameraStreamRequestId?: number;
   readonly expectedCameraStreamRequestId?: number;
   readonly cameraStreamCameraEpoch: number;
   readonly cameraStreamCameraPoseFingerprint: string;
+  readonly rendererQualityVariant: RendererQualityVariant;
+  readonly visualBenchmarkMode: boolean;
+  readonly canvasDrawingBufferWidth: number;
+  readonly canvasDrawingBufferHeight: number;
+  readonly devicePixelRatio: number;
   readonly pointRenderer?: string;
   readonly rendererTiming?: string;
   readonly rendererPayload?: string;
@@ -213,6 +268,8 @@ interface BasicViewerBenchmarkStatus {
   readonly cameraStreamLodData?: CameraStreamLodSettings;
   readonly hierarchyPages?: string;
   readonly hierarchyCacheStats?: CopcHierarchyCacheStats;
+  readonly cameraHierarchyRefinement?: CameraHierarchyRefinementState;
+  readonly cameraHierarchyExpansion?: CameraHierarchyExpansionDiagnostics;
   readonly pointCache?: string;
   readonly geometryCache?: string;
   readonly decodedWorkerCache?: string;
@@ -252,8 +309,10 @@ interface CameraStreamNodeReuseState {
 interface CameraStreamCommittedRenderState {
   readonly layer: CopcPointCloudLayer;
   readonly result: CopcPointCloudLayerNodesRenderResult;
+  readonly detailProgress?: CameraStreamDetailProgressState;
   readonly maxPointCountPerNode: number;
   readonly renderedPointBudget: number;
+  readonly renderSignature?: string;
   readonly rendererRevision: number;
   readonly visualQuality: CameraStreamVisualQualityState;
 }
@@ -303,6 +362,14 @@ interface BasicViewerBenchmarkApi {
     options: BasicViewerRendererBenchmarkOptions,
   ) => Promise<BasicViewerBenchmarkStatus>;
   readonly waitForSceneReady: (timeoutMilliseconds?: number) => Promise<void>;
+  readonly clearPointCloudForVisualBenchmark: () => number | undefined;
+  readonly setCameraPoseForVisualBenchmark: (
+    fingerprint: string,
+  ) => Promise<BasicViewerBenchmarkStatus>;
+  readonly measurePostRenderForVisualBenchmark: (
+    options?: BasicViewerPostRenderBenchmarkOptions,
+  ) => Promise<BasicViewerPostRenderBenchmarkResult>;
+  readonly isolateSceneForVisualBenchmark: () => BasicViewerIsolatedSceneState;
   readonly getStatus: () => BasicViewerBenchmarkStatus;
 }
 
@@ -322,6 +389,15 @@ interface CameraHierarchyRefinementState {
   readonly pendingRelevantHierarchyPageSignature: string | undefined;
   readonly isHierarchyCompleteForView: boolean;
   readonly refinedThroughDepth?: number;
+}
+
+interface CameraHierarchyExpansionDiagnostics {
+  readonly selectedPageKeys: readonly string[];
+  readonly loadedPageKeys: readonly string[];
+  readonly pendingRelevantHierarchyPageCount: number;
+  readonly pendingRelevantHierarchyPageSignature: string | undefined;
+  readonly isHierarchyCompleteForView: boolean;
+  readonly refinedThroughDepth: number;
 }
 
 interface CameraHierarchyPrefetchOptions {
@@ -356,6 +432,9 @@ let lastCameraStreamDiagnostics: CameraStreamDiagnostics | undefined;
 let lastCameraStreamDetailProgress: CameraStreamDetailProgressState | undefined;
 let lastCameraStreamVisualQuality: CameraStreamVisualQualityState | undefined;
 let lastCameraStreamPrefetchStatus: CameraStreamPrefetchStatus | undefined;
+let lastCameraHierarchyExpansionDiagnostics:
+  | CameraHierarchyExpansionDiagnostics
+  | undefined;
 let lastCameraStreamAppliedRequestId: number | undefined;
 let automaticAutoLodRequestId = 0;
 let automaticAutoLodAbortController: AbortController | undefined;
@@ -417,7 +496,7 @@ naturalEarthBaseLayer.errorEvent.addEventListener(
 
 const viewer = new Viewer(elements.container, {
   animation: false,
-  baseLayer: naturalEarthBaseLayer,
+  baseLayer: VISUAL_BENCHMARK_MODE ? false : naturalEarthBaseLayer,
   baseLayerPicker: false,
   fullscreenButton: false,
   geocoder: false,
@@ -432,6 +511,24 @@ const viewer = new Viewer(elements.container, {
   timeline: false,
   navigationHelpButton: false,
 });
+if (VISUAL_BENCHMARK_MODE) {
+  viewer.scene.backgroundColor = Color.BLACK;
+  viewer.scene.globe.baseColor = Color.BLACK;
+  viewer.scene.globe.showGroundAtmosphere = false;
+  viewer.scene.fog.enabled = false;
+  if (viewer.scene.skyAtmosphere) {
+    viewer.scene.skyAtmosphere.show = false;
+  }
+  if (viewer.scene.skyBox) {
+    viewer.scene.skyBox.show = false;
+  }
+  if (viewer.scene.sun) {
+    viewer.scene.sun.show = false;
+  }
+  if (viewer.scene.moon) {
+    viewer.scene.moon.show = false;
+  }
+}
 // Cesium defaults this threshold to 50%, which makes camera-driven LOD react
 // too late during wheel zoom. Debouncing below keeps the extra callbacks cheap.
 viewer.camera.percentageChanged = 0.01;
@@ -675,8 +772,230 @@ function installBasicViewerBenchmarkApi(): void {
     verifyCameraStreamController,
     renderForRendererBenchmark,
     waitForSceneReady: waitForSceneReadyForBenchmark,
+    clearPointCloudForVisualBenchmark,
+    setCameraPoseForVisualBenchmark,
+    measurePostRenderForVisualBenchmark,
+    isolateSceneForVisualBenchmark,
     getStatus: readBenchmarkStatus,
   };
+}
+
+async function setCameraPoseForVisualBenchmark(
+  fingerprint: string,
+): Promise<BasicViewerBenchmarkStatus> {
+  assertVisualBenchmarkCameraPoseAccess(VISUAL_BENCHMARK_MODE);
+  const pose = parseVisualBenchmarkCameraPoseFingerprint(fingerprint);
+  assertVisualBenchmarkCanvasMatches(pose.canvas);
+
+  beginAutomaticCameraMove();
+  suppressAutomaticCameraStreamEvents = true;
+
+  try {
+    const frustum = viewer.camera.frustum as {
+      aspectRatio: number;
+      far: number;
+      fov: number;
+      near: number;
+    };
+    frustum.fov = pose.frustum.fov;
+    frustum.aspectRatio = pose.frustum.aspectRatio;
+    frustum.near = pose.frustum.near;
+    frustum.far = pose.frustum.far;
+    viewer.camera.setView({
+      destination: new Cartesian3(
+        pose.destination.x,
+        pose.destination.y,
+        pose.destination.z,
+      ),
+      orientation: {
+        direction: new Cartesian3(
+          pose.direction.x,
+          pose.direction.y,
+          pose.direction.z,
+        ),
+        up: new Cartesian3(pose.up.x, pose.up.y, pose.up.z),
+      },
+    });
+    viewer.scene.requestRender();
+    await delayForBenchmark(0);
+
+    automaticCameraMoveInProgress = false;
+    updateSuggestedNode();
+    clearQueuedAutomaticStreamRender();
+    lastCameraStreamDiagnostics = undefined;
+    lastCameraStreamDetailProgress = undefined;
+    lastCameraStreamVisualQuality = undefined;
+    lastCameraStreamPrefetchStatus = undefined;
+    lastCameraStreamAppliedRequestId = undefined;
+    lastCameraStreamLodSettings = undefined;
+    lastCameraStreamRenderedPointBudget = undefined;
+    lastCameraStreamEffectiveBudget = undefined;
+    lastCameraStreamSelectedNodeKeys = [];
+    lastCameraStreamRenderSignature = undefined;
+    lastCameraStreamRenderDisposition = undefined;
+    lastCameraStreamNodeReuse = undefined;
+    setViewerStatus(
+      "External comparison camera stream pending...",
+      "refining",
+    );
+    await renderAutomaticNodeSetForCameraMove(true, false);
+    await delayForBenchmark(200);
+    return readBenchmarkStatus();
+  } finally {
+    automaticCameraMoveInProgress = false;
+    suppressNextAutomaticCameraStream = true;
+    captureSuppressedAutomaticCameraPose();
+    suppressAutomaticCameraStreamEvents = false;
+  }
+}
+
+async function measurePostRenderForVisualBenchmark(
+  options: BasicViewerPostRenderBenchmarkOptions = {},
+): Promise<BasicViewerPostRenderBenchmarkResult> {
+  assertVisualBenchmarkCameraPoseAccess(VISUAL_BENCHMARK_MODE);
+  const steps = readBenchmarkPositiveInteger(
+    options.steps,
+    BENCHMARK_CAMERA_STEP_COUNT,
+  );
+  const durationMilliseconds = readBenchmarkPositiveNumber(
+    options.durationMilliseconds,
+    BENCHMARK_CAMERA_DURATION_MILLISECONDS,
+  );
+  const moveMeters = readBenchmarkPositiveNumber(
+    options.moveMeters,
+    BENCHMARK_CAMERA_MOVE_METERS,
+  );
+  const targetFrameRate = readOptionalBenchmarkPositiveNumber(
+    options.targetFrameRate,
+  );
+  const previousTargetFrameRate = viewer.targetFrameRate;
+  const timestamps: number[] = [];
+  const removePostRenderListener = viewer.scene.postRender.addEventListener(
+    () => {
+      timestamps.push(performance.now());
+    },
+  );
+
+  if (targetFrameRate !== undefined) {
+    viewer.targetFrameRate = targetFrameRate;
+  }
+
+  beginAutomaticCameraMove();
+  suppressAutomaticCameraStreamEvents = true;
+
+  try {
+    const waitMilliseconds = durationMilliseconds / steps;
+    for (let index = 0; index < steps; index += 1) {
+      moveBenchmarkCamera(index, moveMeters);
+      viewer.scene.requestRender();
+      if (index % 3 === 0) {
+        queueAutomaticStreamRenderForCameraMove(false);
+      }
+      await delayForBenchmark(waitMilliseconds);
+    }
+    automaticCameraMoveInProgress = false;
+    await delayForBenchmark(200);
+    return {
+      status: readBenchmarkStatus(),
+      performance: createPostRenderPerformance(
+        timestamps,
+        targetFrameRate ?? viewer.targetFrameRate,
+      ),
+    };
+  } finally {
+    automaticCameraMoveInProgress = false;
+    suppressNextAutomaticCameraStream = true;
+    captureSuppressedAutomaticCameraPose();
+    suppressAutomaticCameraStreamEvents = false;
+    removePostRenderListener();
+    viewer.targetFrameRate = previousTargetFrameRate;
+  }
+}
+
+function isolateSceneForVisualBenchmark(): BasicViewerIsolatedSceneState {
+  assertVisualBenchmarkCameraPoseAccess(VISUAL_BENCHMARK_MODE);
+  viewer.scene.backgroundColor = Color.BLACK;
+  viewer.scene.globe.show = false;
+  viewer.scene.globe.showGroundAtmosphere = false;
+  viewer.scene.fog.enabled = false;
+  if (viewer.scene.skyAtmosphere) viewer.scene.skyAtmosphere.show = false;
+  if (viewer.scene.skyBox) viewer.scene.skyBox.show = false;
+  if (viewer.scene.sun) viewer.scene.sun.show = false;
+  if (viewer.scene.moon) viewer.scene.moon.show = false;
+  viewer.scene.requestRender();
+  return {
+    background: "opaque-black",
+    globeShown: false,
+    atmosphereShown: false,
+    skyBoxShown: false,
+    sunShown: false,
+    moonShown: false,
+    fogEnabled: false,
+  };
+}
+
+function assertVisualBenchmarkCanvasMatches(
+  expected: ReturnType<
+    typeof parseVisualBenchmarkCameraPoseFingerprint
+  >["canvas"],
+): void {
+  const actual = {
+    clientWidth: viewer.scene.canvas.clientWidth,
+    clientHeight: viewer.scene.canvas.clientHeight,
+    drawingBufferWidth: viewer.scene.canvas.width,
+    drawingBufferHeight: viewer.scene.canvas.height,
+    devicePixelRatio: window.devicePixelRatio,
+  };
+
+  for (const key of Object.keys(actual) as Array<keyof typeof actual>) {
+    if (actual[key] !== expected[key]) {
+      throw new Error(
+        `Camera pose ${key} ${expected[key]} does not match canvas ${actual[key]}.`,
+      );
+    }
+  }
+}
+
+function createPostRenderPerformance(
+  timestamps: readonly number[],
+  targetFrameRate: number | undefined,
+): BasicViewerPostRenderPerformance {
+  const frameTimes = timestamps
+    .slice(1)
+    .map((timestamp, index) => timestamp - timestamps[index]);
+  const ordered = [...frameTimes].sort((left, right) => left - right);
+  const averageFrameMilliseconds =
+    frameTimes.length === 0
+      ? 0
+      : frameTimes.reduce((total, value) => total + value, 0) /
+        frameTimes.length;
+  const p95Index = Math.min(
+    Math.max(0, Math.ceil(ordered.length * 0.95) - 1),
+    Math.max(0, ordered.length - 1),
+  );
+
+  return {
+    metricSource: "Cesium.Scene.postRender/performance.now",
+    targetFrameRate,
+    frameCount: frameTimes.length,
+    averageFramesPerSecond:
+      averageFrameMilliseconds > 0 ? 1000 / averageFrameMilliseconds : 0,
+    averageFrameMilliseconds,
+    p95FrameMilliseconds: ordered[p95Index] ?? 0,
+    maximumFrameMilliseconds: ordered.at(-1) ?? 0,
+  };
+}
+
+function clearPointCloudForVisualBenchmark(): number | undefined {
+  if (!VISUAL_BENCHMARK_MODE) {
+    throw new Error(
+      "Point-off capture is only available with visualBenchmark=1.",
+    );
+  }
+
+  currentLayer?.clear();
+  viewer.scene.requestRender();
+  return currentLayer?.getRendererRevision();
 }
 
 async function waitForSceneReadyForBenchmark(
@@ -931,7 +1250,7 @@ async function moveCameraForSmoothness(
           const responseStatus = readBenchmarkStatus();
           cameraStreamFirstResponseEvidence = {
             source:
-              renderDisposition === "retained-exact-render"
+              renderDisposition !== "new-render"
                 ? "app-render-retained"
                 : "app-render-commit",
             requestId,
@@ -1074,6 +1393,7 @@ async function clearStreamingCachesForBenchmark(
   lastCameraStreamDetailProgress = undefined;
   lastCameraStreamVisualQuality = undefined;
   lastCameraStreamPrefetchStatus = undefined;
+  lastCameraHierarchyExpansionDiagnostics = undefined;
   lastCameraStreamAppliedRequestId = undefined;
   lastCameraStreamLodSettings = undefined;
   lastCameraStreamRenderedPointBudget = undefined;
@@ -1124,6 +1444,12 @@ function readBenchmarkStatus(): BasicViewerBenchmarkStatus {
     cameraStreamCameraEpoch,
     cameraStreamCameraPoseFingerprint:
       createCameraStreamCameraPoseFingerprint(),
+    rendererQualityVariant: RENDERER_QUALITY_VARIANT,
+    visualBenchmarkMode: VISUAL_BENCHMARK_MODE,
+    canvasDrawingBufferWidth: viewer.scene.canvas.width,
+    canvasDrawingBufferHeight: viewer.scene.canvas.height,
+    devicePixelRatio: window.devicePixelRatio,
+    cameraStreamRenderedPointCount: lastCameraStreamRenderedPointBudget,
     pointRenderer: metadata["Point renderer"],
     rendererTiming: metadata["Renderer timing"],
     rendererPayload: metadata["Renderer payload"],
@@ -1146,6 +1472,8 @@ function readBenchmarkStatus(): BasicViewerBenchmarkStatus {
     cameraStreamLodData: lastCameraStreamLodSettings,
     hierarchyPages: metadata["Hierarchy pages"],
     hierarchyCacheStats: currentLayer?.source.getHierarchyCacheStats(),
+    cameraHierarchyRefinement: lastCameraHierarchyRefinement,
+    cameraHierarchyExpansion: lastCameraHierarchyExpansionDiagnostics,
     pointCache: metadata["Point cache"],
     geometryCache: metadata["Point geometry cache"],
     decodedWorkerCache: metadata["Decoded worker cache"],
@@ -1236,14 +1564,29 @@ function createCameraStreamCameraPoseFingerprint(): string {
     viewer.camera.upWC,
     viewer.camera.rightWC,
   ];
+  const frustum = viewer.camera.frustum as {
+    readonly aspectRatio?: number;
+    readonly far?: number;
+    readonly fov?: number;
+    readonly near?: number;
+  };
 
   return [
     ...cameraVectors.flatMap((vector) => [vector.x, vector.y, vector.z]),
     viewer.scene.canvas.clientWidth,
     viewer.scene.canvas.clientHeight,
+    viewer.scene.canvas.width,
+    viewer.scene.canvas.height,
+    window.devicePixelRatio,
+    frustum.fov,
+    frustum.aspectRatio,
+    frustum.near,
+    frustum.far,
   ]
     .map((value) =>
-      Number.isFinite(value) ? value.toPrecision(15) : String(value),
+      typeof value === "number" && Number.isFinite(value)
+        ? value.toPrecision(15)
+        : String(value),
     )
     .join("|");
 }
@@ -1348,7 +1691,7 @@ async function inspectSource(
       pointGeometryLoading: "integrated-worker",
       maxConcurrentPointGeometryWorkerRequests:
         POINT_GEOMETRY_WORKER_CONCURRENCY,
-      activePointGeometryWorkerCancellation: "terminate-uncached",
+      activePointGeometryWorkerCancellation: "soft",
       decodedNodeWorkerFallbackDelayMilliseconds:
         WORKER_POOL_SETTINGS.decodedNodeWorkerFallbackDelayMilliseconds,
       maxDecodedPointDataViewsPerWorker:
@@ -1357,6 +1700,7 @@ async function inspectSource(
         DECODED_POINT_DATA_VIEW_CACHE_BYTE_LIMIT_PER_WORKER,
       maxDecodedPointDataViewBytesAcrossWorkers:
         DECODED_POINT_DATA_VIEW_CACHE_BYTE_LIMIT_ACROSS_WORKERS,
+      pointColorMode: POINT_COLOR_MODE,
       createPointRenderer: createPointRendererFactory(pointRendererKind),
       showBounds: false,
       coordinateTransforms: activeSource.coordinateTransforms,
@@ -1365,10 +1709,10 @@ async function inspectSource(
     layer.warmUpPointSampleWorkers({
       workerCount: POINT_SAMPLE_WORKER_WARMUP_COUNT,
     });
+    const { inspection, hierarchy, coordinateTransform } = await layer.load();
     layer.warmUpPointGeometryWorkers({
       workerCount: POINT_GEOMETRY_WORKER_WARMUP_COUNT,
     });
-    const { inspection, hierarchy, coordinateTransform } = await layer.load();
 
     if (requestId !== inspectionRequestId || layer !== pendingInspectionLayer) {
       layer.destroy();
@@ -1597,6 +1941,7 @@ function renderInspection(
       "Point renderer",
       POINT_RENDERER_LABELS[currentPointRendererKind],
     ),
+    metadataRow("Point color", "Source RGB / classification / intensity"),
     metadataRow("Render quality", formatRenderQuality(readRenderQuality())),
     metadataRow(
       "Max points / node",
@@ -2399,7 +2744,7 @@ async function renderAutomaticNodeSetForCameraMove(
       viewportWidthPixels: viewer.scene.canvas.clientWidth,
       viewportHeightPixels: viewer.scene.canvas.clientHeight,
       selectionMode: "coverage",
-      coverageMode: "complete-depth",
+      coverageMode: CAMERA_STREAM_COVERAGE_MODE,
       maxNodes: cameraLodSettings.maxNodes,
       maxDepth: cameraLodSettings.maxDepth,
       maxNodePointCount: streamNodePointBudget,
@@ -2409,6 +2754,7 @@ async function renderAutomaticNodeSetForCameraMove(
       targetNodeScreenPixels: cameraLodSettings.targetNodeScreenPixels,
       targetPointSpacingScreenPixels:
         cameraLodSettings.targetPointSpacingScreenPixels,
+      previousFrontierKeys: lastCameraStreamSelectedNodeKeys,
       signal,
     });
     const selectNodesMilliseconds = performance.now() - selectNodesStartedAt;
@@ -2455,13 +2801,14 @@ async function renderAutomaticNodeSetForCameraMove(
     const pendingHierarchyPageCountForRender =
       readPendingCameraHierarchyPageCount();
 
+    const activeHierarchy = layer.hierarchy ?? currentHierarchy;
     const streamPlan = createCameraStreamRenderPlan({
       cameraSelection,
       configuredMaxPointCountPerNode: readMaxPointCountPerNode(),
       effectiveNodePointDataLengthBudget: streamNodePointDataLengthBudget,
       effectivePointDataLengthBudget: streamPointDataLengthBudget,
       effectiveSourcePointBudget: streamSourcePointBudget,
-      hierarchy: layer.hierarchy ?? currentHierarchy,
+      hierarchy: activeHierarchy,
       lodSettings: cameraLodSettings,
       maxFinalNodeCount: CAMERA_STREAM_RUNTIME_SETTINGS.detailMaxFinalNodeCount,
       minFinalNodeCount: cameraLodSettings.detailMinFinalNodeCount,
@@ -2483,22 +2830,10 @@ async function renderAutomaticNodeSetForCameraMove(
       previewNodeKeys,
       renderSignature,
       selectedNodeKeys,
+      useSourcePointBudgetHeadroom,
     } = streamPlan;
-    const selectedPointCountByNodeKey = new Map(
-      cameraSelection.nodes.map((node) => [node.key, node.pointCount]),
-    );
-    const finalNodeWeights = finalNodeKeys.map((nodeKey) => ({
-      nodeKey,
-      weight: selectedPointCountByNodeKey.get(nodeKey) ?? 1,
-    }));
     lastCameraStreamSelectedNodeKeys = selectedNodeKeys;
     lastCameraStreamRenderSignature = renderSignature;
-    const previewPointCountPerNode = createCameraStreamPreviewPointCountPerNode(
-      {
-        previewNodeCount: previewNodeKeys.length,
-        runtimeSettings: CAMERA_STREAM_RUNTIME_SETTINGS,
-      },
-    );
     automaticStreamRequests.setActiveNodeKeys(finalNodeKeys);
     // Superseded progressive renders can still mutate the shared Cesium
     // renderer before their publication callback is rejected. Abort every
@@ -2510,26 +2845,50 @@ async function renderAutomaticNodeSetForCameraMove(
       !forceRender &&
       automaticStreamRequests.hasRenderSignature(renderSignature)
     ) {
-      queueCameraHierarchyPrefetch(layer, {
-        prefetchGeometryBatches: true,
-        selectedDepth: cameraSelection.selectedDepth,
-      });
+      if (!automaticCameraMoveInProgress) {
+        queueCameraHierarchyPrefetch(layer, {
+          prefetchGeometryBatches: true,
+          selectedDepth: cameraSelection.selectedDepth,
+        });
+      }
       return;
     }
+
+    const finalNodeKeySet = new Set(finalNodeKeys);
+    const sourcePointCountByNodeKey = new Map(
+      activeHierarchy?.nodes.map((node) => [node.key, node.pointCount]) ?? [],
+    );
+    const finalNodeWeights = finalNodeKeys.map((nodeKey) => ({
+      nodeKey,
+      weight: normalizeCameraStreamPointCountWeight(
+        sourcePointCountByNodeKey.get(nodeKey),
+      ),
+    }));
+    const previewPointCountPerNode = createCameraStreamPreviewPointCountPerNode(
+      {
+        previewNodeCount: previewNodeKeys.length,
+        runtimeSettings: CAMERA_STREAM_RUNTIME_SETTINGS,
+      },
+    );
 
     let initialNodeResults = cameraStreamNodeSampleCache.read(
       finalNodeKeys,
       streamMaxPointCountPerNode,
     );
-    let backgroundNodeResults = mergeCameraStreamNodeSampleResults(
-      cameraStreamNodeSampleCache.read(
-        coverageNodeKeys,
-        streamMaxPointCountPerNode,
-      ),
-      cameraStreamNodeSampleCache.read(
-        [...renderNodeSet],
-        streamMaxPointCountPerNode,
-      ),
+    let backgroundNodeResults: readonly CopcNodePointSampleResult[] =
+      mergeCameraStreamNodeSampleResults(
+        cameraStreamNodeSampleCache.read(
+          coverageNodeKeys,
+          streamMaxPointCountPerNode,
+        ),
+        cameraStreamNodeSampleCache.read(
+          [...renderNodeSet],
+          streamMaxPointCountPerNode,
+        ),
+      ).filter((nodeResult) => !finalNodeKeySet.has(nodeResult.nodeKey));
+    let cachedProgressNodeResults = mergeCameraStreamNodeSampleResults(
+      backgroundNodeResults,
+      initialNodeResults,
     );
     const freshCachedFinalNodeCount = initialNodeResults.filter((nodeResult) =>
       hasFreshCameraStreamNodeResults(
@@ -2544,7 +2903,6 @@ async function renderAutomaticNodeSetForCameraMove(
       freshCachedFinalNodeCount,
       cachedCoverageNodeCount: backgroundNodeResults.length,
     };
-    const finalNodeKeySet = new Set(finalNodeKeys);
     let renderNodesMilliseconds = 0;
     let renderedInteractiveProgress = false;
     let foregroundResolved = false;
@@ -2608,20 +2966,21 @@ async function renderAutomaticNodeSetForCameraMove(
           renderedNodeKeys: committedRender.result.pointSamples.nodeKeys,
           pendingRelevantHierarchyPageCount:
             pendingHierarchyPageCountForRender,
+          terminalFrontierMode: CAMERA_STREAM_TERMINAL_FRONTIER_MODE,
         })
       : undefined;
     const canRetainExactCommittedRender =
       committedRender?.layer === layer &&
       committedRender.rendererRevision === layer.getRendererRevision() &&
       committedRender.visualQuality.isFrontierAntichain &&
-      committedRender.visualQuality.frontierDepthSpan === 0 &&
+      committedRender.visualQuality.isFrontierDepthPolicySatisfied &&
       committedRender.visualQuality.isAdditiveClosureComplete &&
       committedRender.visualQuality.unexpectedRenderedNodeCount === 0 &&
       retainedVisualQuality?.isFrontierAntichain === true &&
-      retainedVisualQuality.frontierDepthSpan === 0 &&
+      retainedVisualQuality.isFrontierDepthPolicySatisfied &&
       retainedVisualQuality.isAdditiveClosureComplete &&
       retainedVisualQuality.unexpectedRenderedNodeCount === 0 &&
-      canReuseCameraStreamCommittedRender({
+      (canReuseCameraStreamCommittedRender({
         requiredNodeKeys: finalNodeKeys,
         renderedNodeSamples:
           committedRender.result.pointSamples.nodeResults,
@@ -2630,7 +2989,9 @@ async function renderAutomaticNodeSetForCameraMove(
           committedRender.maxPointCountPerNode,
         renderedPointBudget: streamPointBudget,
         previousRenderedPointBudget: committedRender.renderedPointBudget,
-      });
+      }) ||
+        (committedRender.renderSignature === renderSignature &&
+          committedRender.detailProgress?.isComplete === true));
 
     if (
       canRetainExactCommittedRender &&
@@ -2696,7 +3057,67 @@ async function renderAutomaticNodeSetForCameraMove(
       return foregroundRenderReady;
     }
 
+    const committedPointCountByNodeKey = new Map(
+      committedRender?.result.pointSamples.nodeResults.map((nodeResult) => [
+        nodeResult.nodeKey,
+        nodeResult.sampledPointCount,
+      ]) ?? [],
+    );
+    const canRetainCommittedProgress =
+      committedRender?.layer === layer &&
+      committedRender.rendererRevision === layer.getRendererRevision() &&
+      retainedVisualQuality !== undefined &&
+      retainedVisualQuality.unexpectedRenderedNodeCount === 0 &&
+      cachedProgressNodeResults.length > 0 &&
+      sameNodeKeys(
+        committedRender.result.pointSamples.nodeKeys,
+        cachedProgressNodeResults.map((nodeResult) => nodeResult.nodeKey),
+      ) &&
+      cachedProgressNodeResults.every(
+        (candidate) =>
+          (committedPointCountByNodeKey.get(candidate.nodeKey) ?? -1) >=
+          candidate.sampledPointCount,
+      );
+
     if (
+      canRetainCommittedProgress &&
+      committedRender &&
+      retainedVisualQuality
+    ) {
+      const retainedResult = committedRender.result;
+      renderNodesMilliseconds = performance.now() - renderNodesStartedAt;
+      applyCameraStreamRenderResult({
+        layer,
+        requestId,
+        result: retainedResult,
+        cameraSelection,
+        cameraLodSettings,
+        diagnostics: {
+          expandHierarchyMilliseconds,
+          applyHierarchyMilliseconds,
+          selectNodesMilliseconds,
+          renderNodesMilliseconds,
+          totalMilliseconds: performance.now() - streamStartedAt,
+          loadedHierarchyPageCount: loadedPageKeys.length,
+          selectedNodeCount: retainedResult.pointSamples.nodeKeys.length,
+          selectedDepth: cameraSelection.selectedDepth,
+          ...summarizeCameraStreamSourceNodes(retainedResult.nodes),
+        },
+        visualQuality: retainedVisualQuality,
+        effectiveBudget: streamBudget,
+        maxPointCountPerNode: streamMaxPointCountPerNode,
+        renderedPointBudget: retainedResult.pointSamples.sampledPointCount,
+        renderDisposition: "retained-progress-render",
+        preserveCommittedRenderState: true,
+        hudStage: "refining",
+        statusText: `Camera stream retained ${retainedResult.pointSamples.sampledPointCount.toLocaleString()} points from the current ${retainedResult.pointSamples.nodeKeys.length.toLocaleString()}-node frame while target density loads for the current view (${cameraLodSettings.label}); no geometry resubmission was needed.`,
+      });
+      reportFirstAppliedRenderOnce("retained-progress-render");
+      resolveForegroundRenderOnce();
+    }
+
+    if (
+      !canRetainCommittedProgress &&
       previewNodeKeys.length > 0 &&
       !hasFreshCameraStreamNodeResults(
         previewNodeKeys,
@@ -2752,6 +3173,10 @@ async function renderAutomaticNodeSetForCameraMove(
         queuePredictiveCameraPrefetch();
       }
     }
+    cachedProgressNodeResults = mergeCameraStreamNodeSampleResults(
+      backgroundNodeResults,
+      initialNodeResults,
+    );
     const detailWarmupPolicy = selectCameraStreamDetailWarmupPolicy({
       finalNodeKeys,
       initialNodeResults,
@@ -2772,10 +3197,13 @@ async function renderAutomaticNodeSetForCameraMove(
         backgroundNodeResults.map((nodeResult) => nodeResult.nodeKey),
         [...renderNodeSet],
       );
-
-    if (backgroundNodeResults.length > 0 && !canRetainCachedCoverage) {
+    if (
+      !canRetainCommittedProgress &&
+      cachedProgressNodeResults.length > 0 &&
+      !canRetainCachedCoverage
+    ) {
       const coverageResult = await layer.renderNodeSampleResults(
-        backgroundNodeResults,
+        cachedProgressNodeResults,
         {
           includePointsInResult: false,
           maxPointCountPerNode: streamMaxPointCountPerNode,
@@ -2795,6 +3223,7 @@ async function renderAutomaticNodeSetForCameraMove(
         requiredNodeKeys: finalNodeKeys,
         renderedNodeKeys: coverageResult.pointSamples.nodeKeys,
         pendingRelevantHierarchyPageCount: pendingHierarchyPageCountForRender,
+        terminalFrontierMode: CAMERA_STREAM_TERMINAL_FRONTIER_MODE,
       });
       applyCameraStreamRenderResult({
         layer,
@@ -2817,7 +3246,7 @@ async function renderAutomaticNodeSetForCameraMove(
         maxPointCountPerNode: streamMaxPointCountPerNode,
         renderedPointBudget: coverageResult.pointSamples.sampledPointCount,
         visualQuality: coverageVisualQuality,
-        statusText: `Camera stream reused ${coverageResult.pointSamples.nodeKeys.length.toLocaleString()} cached coverage nodes while loading ${finalNodeKeys.length.toLocaleString()} detail nodes for the current view (${cameraLodSettings.label})${formatLoadedHierarchyPages(loadedPageKeys)}.`,
+        statusText: `Camera stream interactive-ready with ${coverageResult.pointSamples.sampledPointCount.toLocaleString()} points from ${coverageResult.pointSamples.nodeKeys.length.toLocaleString()} cached nodes while target density loads for the current view (${cameraLodSettings.label})${formatLoadedHierarchyPages(loadedPageKeys)}.`,
       });
       reportFirstAppliedRenderOnce();
       resolveForegroundRenderOnce();
@@ -2853,6 +3282,7 @@ async function renderAutomaticNodeSetForCameraMove(
       layer,
       frontierNodeKeys: selectedNodeKeys,
       requiredNodeKeys: finalNodeKeys,
+      terminalFrontierMode: CAMERA_STREAM_TERMINAL_FRONTIER_MODE,
       finalNodeWeights,
       initialNodeResults,
       backgroundNodeResults,
@@ -2862,6 +3292,7 @@ async function renderAutomaticNodeSetForCameraMove(
       ),
       maxPointCountPerNode: streamMaxPointCountPerNode,
       renderedPointBudget: streamPointBudget,
+      useSourcePointBudgetHeadroom,
       maxActiveNodeRequests: CAMERA_STREAM_DETAIL_MAX_ACTIVE_NODE_REQUESTS,
       rendererKind: readPointRendererKind(),
       lodSettings: cameraLodSettings,
@@ -2887,6 +3318,22 @@ async function renderAutomaticNodeSetForCameraMove(
           (lastCameraStreamAppliedRequestId === requestId ||
             canRetainCurrentGeometryUntilNewDetail);
 
+        if (
+          retainsCurrentRendererFrame &&
+          RENDERER_QUALITY_VARIANT === "enhanced" &&
+          readRenderQualitySettings().temporalLodSafeSwap
+        ) {
+          return createCameraStreamSafeSwapState({
+            candidate,
+            coverageNodeKeys,
+            finalNodeKeys,
+            finalNodeWeights,
+            renderedPointBudget: streamPointBudget,
+            retainedRendererPointCount:
+              committedRender.result.pointSamples.sampledPointCount,
+          }).canSwap;
+        }
+
         return shouldRenderCameraStreamProgress({
           candidateRenderedPointCount: candidate.sampledPointCount,
           currentRendererPointCount: currentRendererFrameIsProven
@@ -2909,6 +3356,7 @@ async function renderAutomaticNodeSetForCameraMove(
           requiredNodeKeys: finalNodeKeys,
           renderedNodeKeys: result.pointSamples.nodeKeys,
           pendingRelevantHierarchyPageCount: pendingHierarchyPageCountForRender,
+          terminalFrontierMode: CAMERA_STREAM_TERMINAL_FRONTIER_MODE,
         });
         const isTerminalReady =
           stage === "terminal" && visualQuality.isTerminalReady;
@@ -3071,6 +3519,7 @@ function settleCameraStreamEmptySelection(options: {
     requiredNodeKeys: [],
     renderedNodeKeys: [],
     pendingRelevantHierarchyPageCount: readPendingCameraHierarchyPageCount(),
+    terminalFrontierMode: CAMERA_STREAM_TERMINAL_FRONTIER_MODE,
   });
   lastCameraStreamRenderedPointBudget = 0;
   lastCameraStreamEffectiveBudget = options.effectiveBudget;
@@ -3154,6 +3603,10 @@ function beginAutomaticCameraMove(): void {
   advanceCameraStreamCameraEpoch({
     preserveKnownHierarchy: benchmarkHierarchyHoldLayer === currentLayer,
   });
+  // Invalidate render-capable work immediately. Request-id publication guards
+  // alone are insufficient because the layer mutates the shared renderer
+  // before it calls the progress callback.
+  automaticStreamRequests.cancelRequest();
   cancelAutomaticAutoLodRender();
   cancelCameraStreamPrefetch();
   clearQueuedAutomaticStreamRender();
@@ -3309,6 +3762,7 @@ async function renderCameraStreamPreview(options: {
         renderedNodeKeys: result.pointSamples.nodeKeys,
         pendingRelevantHierarchyPageCount:
           options.pendingRelevantHierarchyPageCount,
+        terminalFrontierMode: CAMERA_STREAM_TERMINAL_FRONTIER_MODE,
       });
       applyCameraStreamRenderResult({
         layer: options.layer,
@@ -3393,6 +3847,7 @@ function applyCameraStreamRenderResult(options: {
   readonly maxPointCountPerNode: number;
   readonly renderedPointBudget: number;
   readonly renderDisposition?: CameraStreamRenderDisposition;
+  readonly preserveCommittedRenderState?: boolean;
   readonly hudStage?: BasicViewerDemoStage;
   readonly statusText: string;
 }): void {
@@ -3405,12 +3860,14 @@ function applyCameraStreamRenderResult(options: {
   lastCameraStreamVisualQuality = options.visualQuality;
   lastCameraStreamRenderDisposition =
     options.renderDisposition ?? "new-render";
-  if (options.visualQuality) {
+  if (options.visualQuality && !options.preserveCommittedRenderState) {
     lastCameraStreamCommittedRender = {
       layer: options.layer,
       result: options.result,
+      detailProgress: options.detailProgress,
       maxPointCountPerNode: options.maxPointCountPerNode,
       renderedPointBudget: options.effectiveBudget.renderedPointCount,
+      renderSignature: lastCameraStreamRenderSignature,
       rendererRevision: options.layer.getRendererRevision(),
       visualQuality: options.visualQuality,
     };
@@ -3422,7 +3879,7 @@ function applyCameraStreamRenderResult(options: {
     renderRenderSetControls();
   }
 
-  if (options.renderDisposition === "retained-exact-render") {
+  if (options.renderDisposition?.startsWith("retained-")) {
     updateDemoHudForCameraStream({
       diagnostics: options.diagnostics,
       renderedSampleCount: options.result.pointSamples.sampledPointCount,
@@ -3595,6 +4052,19 @@ async function prefetchCameraHierarchy(
     }
 
     if (hierarchyExpansion) {
+      lastCameraHierarchyExpansionDiagnostics = {
+        selectedPageKeys: hierarchyExpansion.pageSelection.pages.map(
+          (page) => page.key,
+        ),
+        loadedPageKeys: [...hierarchyExpansion.loadedPageKeys],
+        pendingRelevantHierarchyPageCount:
+          hierarchyExpansion.pendingRelevantHierarchyPageCount,
+        pendingRelevantHierarchyPageSignature:
+          hierarchyExpansion.pendingRelevantHierarchyPageSignature,
+        isHierarchyCompleteForView:
+          hierarchyExpansion.isHierarchyCompleteForView,
+        refinedThroughDepth: hierarchyExpansionDepth,
+      };
       lastCameraHierarchyRefinement = createCameraHierarchyRefinementState(
         hierarchyExpansion,
         hierarchyExpansionDepth,
@@ -3730,17 +4200,6 @@ async function prefetchCameraHierarchy(
     };
     refreshCameraStreamPrefetchMetadata();
   }
-}
-
-function createCameraHierarchyFollowupSignature(
-  refinement: CameraHierarchyRefinementState,
-  selectedNodeKeys: readonly string[],
-): string {
-  const hierarchySignature = refinement.isHierarchyCompleteForView
-    ? "complete"
-    : `pending:${refinement.pendingRelevantHierarchyPageSignature ?? refinement.pendingRelevantHierarchyPageCount}`;
-
-  return `${hierarchySignature}|nodes:${[...selectedNodeKeys].sort().join("|")}`;
 }
 
 function createCameraHierarchyRefinementState(
@@ -4282,11 +4741,38 @@ function initializeRendererBenchmarkControls(): void {
   }
 }
 
+function readRendererQualityVariant(): RendererQualityVariant {
+  return new URLSearchParams(window.location.search).get("renderVariant") ===
+    "legacy"
+    ? "legacy"
+    : "enhanced";
+}
+
+function readVisualBenchmarkMode(): boolean {
+  return (
+    new URLSearchParams(window.location.search).get("visualBenchmark") === "1"
+  );
+}
+
+function readGeometryMaskBenchmarkMode(): boolean {
+  return (
+    readVisualBenchmarkMode() &&
+    new URLSearchParams(window.location.search).get("geometryMaskBenchmark") ===
+      "1"
+  );
+}
+
 function readMaxPointCountPerNode(): number {
   const maxPointCount = Number(elements.maxPointCountInput.value);
   return isPositiveSafeInteger(maxPointCount)
     ? maxPointCount
     : DEFAULT_MAX_POINT_COUNT_PER_NODE;
+}
+
+function normalizeCameraStreamPointCountWeight(
+  value: number | undefined,
+): number {
+  return value !== undefined && Number.isFinite(value) && value > 0 ? value : 1;
 }
 
 function readRenderQuality(): RenderQuality {
@@ -4574,6 +5060,11 @@ function createPointRendererFactory(
   kind: PointRendererKind,
 ): CopcPointCloudRendererFactory {
   const qualitySettings = readRenderQualitySettings();
+  const usesEnhancedPointRendering =
+    RENDERER_QUALITY_VARIANT === "enhanced";
+
+  viewer.scene.postProcessStages.fxaa.enabled =
+    usesEnhancedPointRendering && qualitySettings.sceneFxaa;
 
   if (kind === "buffer") {
     return (scene) =>
@@ -4594,6 +5085,25 @@ function createPointRendererFactory(
   return (scene) =>
     new CesiumPrimitivePointRenderer(scene, {
       pointSize: qualitySettings.pointPixelSize,
+      pointSizeMode: qualitySettings.pointSizeMode,
+      minimumPointSize: qualitySettings.minimumPointPixelSize,
+      maximumPointSize: qualitySettings.maximumPointPixelSize,
+      adaptivePointSizeScale: qualitySettings.adaptivePointSizeScale,
+      splatCoverageScale: usesEnhancedPointRendering
+        ? qualitySettings.splatCoverageScale
+        : 1,
+      splatSafetyHaloPixels: usesEnhancedPointRendering
+        ? qualitySettings.splatSafetyHaloPixels
+        : 0,
+      pointSplatShape: usesEnhancedPointRendering
+        ? qualitySettings.pointSplatShape
+        : "screen-circle",
+      eyeDomeLighting:
+        qualitySettings.eyeDomeLighting && !GEOMETRY_MASK_BENCHMARK_MODE,
+      eyeDomeLightingStrength: qualitySettings.eyeDomeLightingStrength,
+      eyeDomeLightingRadius: qualitySettings.eyeDomeLightingRadius,
+      maxGeometryBatchesPerPrimitive:
+        qualitySettings.maxGeometryBatchesPerPrimitive,
     });
 }
 
@@ -4992,20 +5502,23 @@ function formatRenderQuality(quality: RenderQuality): string {
   const settings = RENDER_QUALITY_SETTINGS[quality];
   const autoLodPointCount =
     settings.autoLodMaxRenderedPointCount.toLocaleString();
+  const pointSizing =
+    `${settings.minimumPointPixelSize}-${settings.maximumPointPixelSize}px ` +
+    `adaptive splats${settings.eyeDomeLighting ? " + EDL" : ""}`;
 
   if (quality === "preview") {
-    return `Fast preview (${autoLodPointCount} Auto LOD pts, ${settings.pointPixelSize}px points)`;
+    return `Fast preview (${autoLodPointCount} Auto LOD pts, ${pointSizing})`;
   }
 
   if (quality === "detail") {
-    return `High detail (${autoLodPointCount} Auto LOD pts, ${settings.pointPixelSize}px points)`;
+    return `High detail (${autoLodPointCount} Auto LOD pts, ${pointSizing})`;
   }
 
   if (quality === "ultra") {
-    return `Ultra density (${autoLodPointCount} Auto LOD pts, ${settings.pointPixelSize}px points)`;
+    return `Ultra density (${autoLodPointCount} Auto LOD pts, ${pointSizing})`;
   }
 
-  return `Balanced detail (${autoLodPointCount} Auto LOD pts, ${settings.pointPixelSize}px points)`;
+  return `Balanced detail (${autoLodPointCount} Auto LOD pts, ${pointSizing})`;
 }
 
 function formatAutoLodBudget(): string {

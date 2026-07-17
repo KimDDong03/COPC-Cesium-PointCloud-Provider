@@ -3,6 +3,10 @@ import {
   readCopcNodeKeyDepth,
 } from "./CopcCameraStreamNodePlan";
 
+export type CopcCameraStreamTerminalFrontierMode =
+  | "same-depth"
+  | "mixed-depth-antichain";
+
 export interface CopcCameraStreamVisualQualityOptions {
   /** Leaf/frontier nodes selected for the current camera view. */
   readonly frontierNodeKeys: readonly string[];
@@ -12,9 +16,16 @@ export interface CopcCameraStreamVisualQualityOptions {
   readonly renderedNodeKeys: readonly string[];
   /** Current-view hierarchy pages still needed before this plan can be final. */
   readonly pendingRelevantHierarchyPageCount?: number;
+  /**
+   * Controls the terminal frontier depth contract. The default preserves the
+   * existing complete-depth requirement. Mixed depths are accepted only when
+   * explicitly requested; antichain and additive-completeness checks remain.
+   */
+  readonly terminalFrontierMode?: CopcCameraStreamTerminalFrontierMode;
 }
 
 export interface CopcCameraStreamVisualQualityState {
+  readonly terminalFrontierMode: CopcCameraStreamTerminalFrontierMode;
   readonly frontierNodeCount: number;
   readonly frontierMinDepth: number | undefined;
   readonly frontierMaxDepth: number | undefined;
@@ -29,6 +40,7 @@ export interface CopcCameraStreamVisualQualityState {
   readonly pendingRelevantHierarchyPageCount: number;
   readonly isHierarchyCompleteForView: boolean;
   readonly isFrontierAntichain: boolean;
+  readonly isFrontierDepthPolicySatisfied: boolean;
   readonly isAdditiveClosureComplete: boolean;
   readonly isTerminalReady: boolean;
 }
@@ -40,9 +52,9 @@ export interface CopcCameraStreamVisualQualityState {
  * its own, because every available lower-resolution ancestor in the planned
  * closure also contributes unique points. A terminal frame must therefore
  * contain the complete required set, while excluding stale nodes from an older
- * camera request. The frontier itself must be a same-depth antichain so a
- * disjoint mixed-depth progressive selection cannot be mislabeled as uniform
- * terminal quality.
+ * camera request. Same-depth antichains remain the default terminal contract.
+ * A caller that has produced a complete view-dependent traversal may opt in to
+ * a mixed-depth antichain without weakening the other terminal checks.
  */
 export function createCopcCameraStreamVisualQualityState(
   options: CopcCameraStreamVisualQualityOptions,
@@ -50,6 +62,9 @@ export function createCopcCameraStreamVisualQualityState(
   const frontierNodeKeys = uniqueNodeKeys(options.frontierNodeKeys);
   const requiredNodeKeys = uniqueNodeKeys(options.requiredNodeKeys);
   const renderedNodeKeys = uniqueNodeKeys(options.renderedNodeKeys);
+  const terminalFrontierMode = readTerminalFrontierMode(
+    options.terminalFrontierMode,
+  );
   const pendingRelevantHierarchyPageCount =
     readPendingRelevantHierarchyPageCount(
       options.pendingRelevantHierarchyPageCount,
@@ -84,12 +99,16 @@ export function createCopcCameraStreamVisualQualityState(
     requiredNodeKeySet.has(nodeKey),
   );
   const isFrontierAntichain = frontierAncestorOverlapCount === 0;
+  const isFrontierDepthPolicySatisfied =
+    terminalFrontierMode === "mixed-depth-antichain" ||
+    frontierDepthSpan === 0;
   const isAdditiveClosureComplete =
     requiredSetContainsFrontier &&
     missingRequiredNodeCount === 0 &&
     missingFrontierNodeCount === 0;
 
   return {
+    terminalFrontierMode,
     frontierNodeCount: frontierNodeKeySet.size,
     frontierMinDepth,
     frontierMaxDepth,
@@ -104,16 +123,31 @@ export function createCopcCameraStreamVisualQualityState(
     pendingRelevantHierarchyPageCount,
     isHierarchyCompleteForView,
     isFrontierAntichain,
+    isFrontierDepthPolicySatisfied,
     isAdditiveClosureComplete,
     isTerminalReady:
       frontierNodeKeySet.size > 0 &&
       requiredNodeKeySet.size > 0 &&
-      frontierDepthSpan === 0 &&
+      isFrontierDepthPolicySatisfied &&
       isFrontierAntichain &&
       isAdditiveClosureComplete &&
       isHierarchyCompleteForView &&
       unexpectedRenderedNodeCount === 0,
   };
+}
+
+function readTerminalFrontierMode(
+  value: CopcCameraStreamTerminalFrontierMode | undefined,
+): CopcCameraStreamTerminalFrontierMode {
+  const mode = value ?? "same-depth";
+
+  if (mode !== "same-depth" && mode !== "mixed-depth-antichain") {
+    throw new Error(
+      'terminalFrontierMode must be "same-depth" or "mixed-depth-antichain".',
+    );
+  }
+
+  return mode;
 }
 
 export function withCopcCameraStreamHierarchyQuality(

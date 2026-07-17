@@ -234,6 +234,7 @@ readable by browser HTTP range requests, or `options.source` for a browser
 | `createPointGeometryWorker` | built-in worker factory | Custom worker factory for non-integrated point geometry workers. |
 | `createCopcPointGeometryWorker` | built-in worker factory | Custom worker factory for integrated COPC point geometry workers. |
 | `createPointRenderer` | `CesiumPrimitivePointRenderer` | Renderer factory implementing `CopcPointCloudRenderer`. |
+| `pointColorMode` | `"attribute"` | `"attribute"` uses RGB/classification/intensity fallbacks. `"elevation"` uses one viridis-like palette normalized against the loaded COPC file's global source-Z bounds. |
 | `showBounds` | `true` | Whether render calls draw debug hierarchy bounds by default. |
 | `coordinateTransforms` | `createDefaultCopcCoordinateTransforms` | Factory that maps COPC source XYZ to Cesium longitude, latitude, and height. |
 
@@ -247,6 +248,13 @@ a canceled request does so only when its cancellation snapshot proves the
 decoded view was retained. Error and canceled responses still synchronize the
 post-operation retained-byte and eviction snapshot, so a failed decode cannot
 leave an older node falsely marked as cached.
+
+Each retained decoded node can also own one cached `Uint32Array` spatial point
+order. Its memory is included in the decoded-view limit as exactly 4 additional
+bytes per decoded point. The order is created once from quantized XYZ Morton
+codes, a stable four-pass radix sort, and a centered bit-reversal traversal;
+subsequent density requests reuse nested prefixes of that same order rather than
+sorting or changing which already-visible points are retained.
 
 `getRendererRevision()` returns a monotonic number that advances after every
 successful mutation of the layer's point renderer, including `clear()`. It does
@@ -319,12 +327,14 @@ visible update open.
 
 `shouldRenderProgress(candidate)` is the pre-commit counterpart for
 intermediate frames. The candidate contains the post-budget `nodeKeys` and
-`sampledPointCount`; returning `false` keeps the existing point renderer,
-bounds renderer, and `getRendererRevision()` unchanged and suppresses that
-`onProgress` notification. The callback is never asked to approve the final
-candidate after all requested progressive loads finish; that frame is always
-committed. This lets an application keep an already visible same-view coverage
-frame instead of briefly replacing it with lower-density partial detail.
+`sampledPointCount`, plus `nodeSamples` entries with `nodeKey`,
+`nodePointCount`, and `sampledPointCount`. Returning `false` keeps the
+existing point renderer, bounds renderer, and `getRendererRevision()` unchanged
+and suppresses that `onProgress` notification. The callback is never asked to
+approve the final candidate after all requested progressive loads finish; that
+frame is always committed. This lets an application keep an already visible
+same-view coverage frame instead of briefly replacing it with lower-density
+partial detail.
 
 Set `continueLoadingAfterStop: true` when the stop callback marks an interactive
 readiness point but already queued target nodes should keep loading. By default,
@@ -342,6 +352,23 @@ work cannot retroactively make its rendered node set complete. A final-quality
 camera stream should use `postStopLoadingMode: "await"`,
 `postStopProgressMode: "render"`, and verify the final composition with
 `createCopcCameraStreamVisualQualityState()`.
+
+`nodePointCountWeights` is an optional array of positive finite source-point
+weights aligned with the requested node keys. When supplied, the global render
+budget is assigned with a deterministic integer weighted water-fill: allocation
+is proportional to the weights, capped by each available result and
+`maxPointCountPerNode`, and any points left by a saturated node are redistributed
+among the remaining nodes. Foreground/current-view entries are still allocated
+before retained background entries. The same allocator limits object samples,
+typed attribute channels, and integrated-worker geometry batches. Omitting the
+array preserves the previous equal-share fair allocation.
+
+`useSourcePointBudgetHeadroom: true` separates load density from submission
+density. Progressive node reads can then request up to the configured
+`maxPointCountPerNode`, while `maxRenderedPointCount` is enforced when the
+loaded results are composed. It defaults to `false`; enable it only when the
+upstream node/point/byte plan has already bounded the source work.
+
 Set `nodeRequestOrder` when the rendered node order should stay spatially
 stable but worker requests should use a different loading priority and active
 progressive request order. The
@@ -492,7 +519,26 @@ budgets for node count, hierarchy depth, compressed point-data reads, and
 screen-space point spacing. `createCopcPointCloudQualitySettings()` provides the
 same preview, balanced, detail, and ultra presets used by the basic viewer, so
 applications can start from reusable Cesium/COPC budgets instead of copying demo
-constants. `createCopcCameraStreamPrefetchSettings()` uses that same LOD target
+constants. In addition to point/node/byte budgets, each preset contains
+renderer and transition policy:
+
+| Field | Meaning |
+| --- | --- |
+| `maxGeometryBatchesPerPrimitive` | Maximum worker-prepared geometry batches in one Cesium draw primitive. |
+| `pointSizeMode`, `minimumPointPixelSize`, `maximumPointPixelSize`, `adaptivePointSizeScale` | Bounded projected-spacing point sizing. |
+| `splatCoverageScale` | Multiplier applied after sampling-density compensation; values above one overlap adjacent splats. |
+| `splatSafetyHaloPixels` | CSS-pixel radius added to both projected ellipse axes after the bounded base footprint is computed. |
+| `pointSplatShape` | `"screen-circle"` or adaptive-only ECEF tangent-plane `"ground-ellipse"`. |
+| `sceneFxaa` | Whether the reference viewer enables Cesium scene FXAA. |
+| `temporalLodSafeSwap` | Whether a proven retained frame stays visible until progressive replacement coverage is safe. |
+| `eyeDomeLighting`, `eyeDomeLightingStrength`, `eyeDomeLightingRadius` | Renderer-scoped EDL policy. |
+
+The preview preset uses one geometry batch per primitive, a screen circle, no
+safety halo, no scene FXAA, and no EDL. Balanced, detail, and ultra use up to
+four geometry batches per primitive, ground ellipses, 1.25/1/1 CSS-pixel halos,
+no scene FXAA, and renderer-scoped EDL with strength 1.4/1.5/1.7 and radius 0.8.
+
+`createCopcCameraStreamPrefetchSettings()` uses that same LOD target
 to increase background preparation density as the camera gets closer, while
 still capping per-node and total prefetch point counts. Pass
 `minPointCountPerNode` and `minRenderedPointCount` when idle prefetch should
@@ -571,9 +617,11 @@ background request is still useful after a small pan or zoom.
 ### Camera Stream Render Plan
 
 The terminal example below assumes `cameraSelection.coverageMode` is
-`"complete-depth"`. A progressive mixed-depth selection can use the same
-planning helpers for an interactive preview, but should not be labeled
-terminal.
+`"complete-depth"`, which remains the reusable high-level default. A mixed-depth
+selection may also be terminal when it comes from the coverage-baseline and
+atomic visible-sibling refinement path and is validated with
+`terminalFrontierMode: "mixed-depth-antichain"`; an arbitrary progressive
+coarse/detail set should not be labeled terminal.
 
 ```ts
 import {
@@ -635,9 +683,22 @@ coverage nodes, the terminal node set, preview nodes, a per-node point cap, and 
 stable render signature. For a `complete-depth` selection, `finalNodeKeys` is the
 full available additive ancestor closure of the selected frontier. The complete
 frontier is not truncated by the progressive final-node cap, and the rendered
-point budget is divided across the closure instead of being consumed by a
+point budget is distributed across the closure instead of being consumed by a
 contiguous node prefix. `previewMinFinalNodeCount` can still skip a temporary
 interactive preview when the terminal set is already small.
+
+The shared camera-stream engine creates `finalNodeWeights` from the hierarchy
+`pointCount` of every `finalNodeKeys` entry, including additive ancestors, and
+`runCopcCameraStreamTerminalRender()` aligns those weights with the required
+node order before passing them to `renderNodesProgressively()`. Complete-depth
+and mixed-depth terminal commits therefore use the same deterministic weighted
+water-fill. The render plan sets `useSourcePointBudgetHeadroom` automatically
+for `mixed-depth`, whose selector has already charged the full additive closure
+against source-point and compressed-byte budgets. The complete-depth default
+keeps the legacy render-budget-derived per-node load cap because its selector
+budgets the same-depth frontier before the ancestors are appended. A low-level
+caller can explicitly opt into source headroom when it has equivalent upstream
+resource accounting.
 
 COPC uses [EPT's additive hierarchy
 semantics](https://entwine.io/en/latest/entwine-point-tile.html), so descendants
@@ -649,11 +710,18 @@ interactive readiness signal.
 
 `runCopcCameraStreamTerminalRender()` packages the correctness-critical part of
 that low-level flow. It keeps a bounded request window running after interactive
-readiness, requires post-stop progress to render, and resolves only after the
-returned layer result passes the exact additive terminal gate. The caller still
-owns the request ID, `AbortSignal`, hierarchy expansion, prefetch, render
-signature, and any later camera update; a superseded request therefore cannot
-schedule an unowned follow-up render.
+readiness and resolves only after the returned layer result passes the exact
+additive terminal gate. Typed geometry defaults `progressRenderMode` to
+`"final-only"`: the caller's preview or retained frame remains visible while
+bounded worker requests finish, then the full weighted point budget is
+submitted once as the exact terminal composition. This avoids repeatedly
+reallocating and uploading the same full-budget typed primitives as individual
+nodes arrive. Non-typed renderers keep the adaptive incremental policy, and a
+low-level terminal-executor caller can explicitly set
+`progressRenderMode: "incremental"` when intermediate renderer commits are
+preferred. The caller still owns the request ID, `AbortSignal`, hierarchy
+expansion, prefetch, render signature, and any later camera update; a
+superseded request therefore cannot schedule an unowned follow-up render.
 
 ### High-Level Camera Stream
 
@@ -707,20 +775,41 @@ request settles. Use `stage` for visual semantics. Its values are `"preview"`,
 `"refining"`, `"interactive-ready"`, and `"terminal"`; only `"terminal"`
 asserts the exact additive visual-quality contract. On the default real-layer
 engine path, the terminal update is reported as `phase: "complete"` and
-`stage: "terminal"`. Structurally limited layer-like test adapters and callers
-that explicitly request mixed-depth, ancestor-omitting, or custom low-level
-progressive completion behavior retain the legacy
+`stage: "terminal"`. Mixed-depth selections also use the engine when additive
+ancestors are enabled, with the separate mixed-depth-antichain terminal check.
+Structurally limited layer-like test adapters and callers that request
+ancestor-omitting or custom low-level progressive completion behavior retain the legacy
 `renderAutomaticProgressively()` fallback. For that compatibility path,
 `phase: "complete"` means only that the requested operation settled, so callers
 must still inspect `stage` and `visualQuality` before claiming terminal quality.
 
-Each update includes `visualQuality` when the layer exposes hierarchy data;
-terminal state requires a same-depth antichain, complete ancestor closure, and
-zero missing or stale nodes. `renderOptions` can explicitly opt into mixed-depth
-progressive selection or omit ancestors for a non-terminal preview without
-replacing the lifecycle controller. `lastResult`, `lastVisualQuality`,
+Each update includes `visualQuality` when the layer exposes hierarchy data. The
+default terminal state requires a same-depth antichain; explicit mixed-depth
+selection requires a mixed-depth antichain. Both require complete ancestor
+closure and zero missing or stale nodes. `renderOptions` can opt into that
+mixed-depth path or omit ancestors for a non-terminal preview without replacing
+the lifecycle controller. `lastResult`, `lastVisualQuality`,
 `lastError`, `isRunning`, and `isRendering` expose state for application UI and
 diagnostics.
+
+When the selected quality has `temporalLodSafeSwap: true`, the high-level
+controller may keep the last committed GPU frame while the next view loads. It
+does so only when `getRendererRevision()` proves that frame is still resident.
+The first intermediate replacement must include every coarse coverage node, at
+least 65% of the source-weighted final-node set, and at least 60% of the smaller
+of the exact-terminal point-count high-water mark and new rendered-point
+budget. Intermediate frames never lower that high-water mark, preventing a
+rapid sequence from accepting 60% of 60% repeatedly. After a safe replacement,
+normal additive progress continues. The exact final candidate is never blocked
+by this policy. A `changed` or `moveEnd` camera event aborts the superseded
+render before the debounce interval begins, leaving its already committed GPU
+frame visible but preventing stale progress from mutating it.
+
+Applications implementing a custom loop can call
+`createCopcCameraStreamSafeSwapState()` with a progressive candidate, coverage
+and final node keys, optional final-node weights, point budget, and retained
+point count. Its returned diagnostics include baseline coverage, weighted
+coverage, point-retention ratio, and `canSwap`.
 
 Call `render()` directly when an application needs an awaited refresh. `start()`
 uses the same method for camera events and reports asynchronous failures through
@@ -888,9 +977,12 @@ COPC nodes while limiting worker and Cesium renderer pressure. Use
 falls back to four point-sample and five integrated geometry workers, caps
 point-sample pools at six workers, and caps integrated geometry pools at
 eight workers while reserving browser capacity for rendering. It also returns
-a 120 ms `decodedNodeWorkerFallbackDelayMilliseconds` value that the basic
-viewer passes to `CopcPointCloudLayer` to balance worker-local decoded-cache
-reuse with foreground camera-stream latency.
+`Number.POSITIVE_INFINITY` for
+`decodedNodeWorkerFallbackDelayMilliseconds`, which the basic viewer passes to
+`CopcPointCloudLayer` to keep strict worker-local decoded-cache affinity and
+avoid repeating a COPC range read and LAZ decode on a fallback worker. Pass an
+explicit finite value only after measuring that bounded wait latency is more
+important for the target workload than decoded-node reuse.
 Use
 `createCopcCameraStreamRuntimeSettings()` for the default debounce, request
 reuse, retained sample cache, prefetch, preview, warmup, and interactive-detail
@@ -1022,6 +1114,23 @@ adding distributed target-depth detail nodes inside the same selection. That
 mixed selection is suitable for an interactive preview, not a terminal
 frontier, because it can contain ancestor/descendant overlaps.
 
+Applications with their own residency manager can use the pure-core
+`planMixedDepthHierarchyTraversal()` planner for a stricter mixed-depth path.
+It reserves `requiredNodeKeys` and their complete additive closure before
+optional refinements compete for node/point/compressed-byte budget. Its default
+`refinementMode: "node"` preserves the low-level visual-benefit/resource-cost
+planner. `refinementMode: "visible-sibling-group"` requires that baseline and
+replaces a current frontier parent only when all immediate visible, renderable
+children fit atomically; a partial sibling group is never selected. Both modes
+apply separate refine/retain SSE thresholds, accept `previousFrontierKeys` for
+hysteresis, and return planned, renderable, requested, blocked, and retained
+parent node sets. Sibling-group refinement tests the current frontier parent's
+SSE against the active threshold; its children may already be below that
+threshold because they are the finer replacement. `selectHierarchyNodesForCamera({ coverageMode: "mixed-depth"
+})` uses the baseline plus sibling-group mode. The high-level camera stream
+continues to use its verified complete-depth terminal contract by default, while
+the reference viewer explicitly opts into the mixed-depth antichain contract.
+
 Hierarchy cache telemetry distinguishes global source state from current-frame
 quality. `CopcHierarchyCacheStats.pendingPageCount` may include deeper pages
 that are irrelevant to the selected frontier. Terminal camera-stream checks
@@ -1125,16 +1234,22 @@ number of selected nodes may change as the camera moves.
 ## Renderers
 
 `CopcPointCloudLayer` uses `CesiumPrimitivePointRenderer` by default. It builds
-one Cesium `Primitive` from typed position and color arrays, avoiding one
-Cesium point object per rendered COPC point. This keeps the default renderer
-Cesium-native while moving closer to the final high-density path.
+a bounded set of Cesium `Primitive` objects from typed position and color
+arrays, avoiding one Cesium point object per rendered COPC point. This keeps the
+default renderer Cesium-native while moving closer to the final high-density
+path.
 
-Decoded point attributes preserve RGB, Classification, and Intensity. Rendering
-uses complete RGB first, then fixed colors for known ASPRS classifications.
-Created-never-classified, unclassified, and unknown values use gamma-adjusted
-intensity when available, followed by a neutral gray; cyan remains the final
-fallback only when none of those attributes exists. The typed-geometry and
-object renderer paths share this policy.
+Decoded point attributes preserve RGB, Classification, and Intensity. With the
+default `pointColorMode: "attribute"`, rendering uses complete RGB first, then
+fixed colors for known ASPRS classifications. Created-never-classified,
+unclassified, and unknown values use gamma-adjusted intensity when available,
+followed by a neutral gray; cyan remains the final fallback only when none of
+those attributes exists. The reference viewer keeps this default.
+`pointColorMode: "elevation"` instead clips source Z to
+the COPC inspection's global `minZ`/`maxZ`, interpolates a six-stop viridis-like
+palette, and uses its midpoint for non-finite or degenerate bounds. The style is
+resolved once per layer and passed through main-thread, typed, object, and both
+worker geometry paths, preventing per-node color normalization seams.
 
 You can configure the default typed-array primitive renderer explicitly when you
 need to tune point size or primitive chunking.
@@ -1144,19 +1259,76 @@ import { CesiumPrimitivePointRenderer } from "copc-cesium";
 
 new CopcPointCloudLayer(viewer.scene, {
   url, // or source: fileOrBlob,
+  pointColorMode: "elevation",
   createPointRenderer: (scene) =>
     new CesiumPrimitivePointRenderer(scene, {
-      pointSize: 2,
-      maxGeometryBatchesPerPrimitive: 1,
+      pointSize: 1,
+      pointSizeMode: "adaptive",
+      minimumPointSize: 1,
+      maximumPointSize: 5.5,
+      adaptivePointSizeScale: 0.85,
+      splatCoverageScale: 1.3,
+      splatSafetyHaloPixels: 1,
+      pointSplatShape: "ground-ellipse",
+      eyeDomeLighting: true,
+      eyeDomeLightingStrength: 1.5,
+      eyeDomeLightingRadius: 0.8,
+      maxGeometryBatchesPerPrimitive: 4,
     }),
 });
 ```
 
+Adaptive sizing projects each batch's world-space point spacing into screen
+pixels and clamps the result to `minimumPointSize` / `maximumPointSize`.
+`CopcPointCloudLayer` supplies CRS-aware COPC node spacing and the retained
+sample ratio automatically. Custom geometry-batch renderers can provide the
+optional `pointSpacingMeters` and `pointDensityScale` fields on
+`PointGeometryBatch`; missing spacing keeps the fixed `pointSize` fallback.
+The renderer API itself defaults to `pointSizeMode: "fixed"` for compatibility,
+while the reference viewer's quality presets enable adaptive sizing.
+
+`splatCoverageScale` defaults to `1`. Increasing it overlaps neighbouring
+footprints after density compensation, closing small screen-space holes without
+loading more points. `pointSplatShape: "ground-ellipse"` constructs local ECEF
+east/north tangent axes for each point, projects a world-space disc through the
+current camera, and clips the fragment against the resulting ellipse. This
+avoids the foreshortening error of a screen-facing circle under oblique views.
+It requires `pointSizeMode: "adaptive"`; the constructor rejects a fixed-mode
+ground ellipse instead of silently using a screen circle. A batch without
+spacing metadata still uses the documented fixed-size circular fallback. Near
+  a grazing projection, the fragment shader reconstructs the ellipse axes and
+  clamps the minor axis to a one-pixel footprint instead of discontinuously
+  replacing it with a full circle.
+`splatSafetyHaloPixels` adds an isotropic CSS-pixel radius to both ellipse axes
+after the bounded base footprint is computed. The point-sprite bounding box uses
+the projected covariance row extents, so a rotated ellipse and its halo remain
+inside the rasterized sprite without inflating the maximum base-size clamp.
+The shader remains opaque and depth-writing so it composes with EDL; scene FXAA
+is an application/quality-preset setting rather than a renderer option, and all
+four reference presets currently keep it disabled. The renderer defaults remain
+`splatCoverageScale: 1`, `splatSafetyHaloPixels: 0`, and
+`pointSplatShape: "screen-circle"` for compatibility.
+
+`eyeDomeLighting` enables a renderer-scoped eye-dome-lighting pass for opaque
+point batches. It does not apply a post-process stage to the rest of the Cesium
+scene. The adapter feature-detects Cesium's runtime point-cloud processor and
+the required WebGL capabilities; unsupported environments keep the direct
+Primitive path. Because the processor is runtime-exported but not part of
+Cesium's public TypeScript declarations, this option defaults to `false` in the
+renderer API. The reference viewer enables it for balanced, detail, and ultra
+presets and keeps it off for preview.
+
 `maxGeometryBatchesPerPrimitive` defaults to `1` so worker-prepared COPC
 geometry batches stay as stable per-node primitives during progressive camera
 updates. This avoids rebuilding earlier node primitives when a later node
-finishes decoding. If an application prefers fewer Cesium primitives over lower
-incremental update cost, it can raise this value. The older
+finishes decoding. Balanced, detail, and ultra set it to `4`; an incomplete
+progressive tail remains as stable per-node primitives, and a group is merged
+once only after it reaches the batch or point seal instead of rebuilding a
+growing 1 -> 2 -> 3 -> 4 buffer. A single batch, or merged batches with the same
+effective Float32 spacing, embeds that spacing as one shader constant. Only a
+mixed-spacing chunk allocates the 4-byte-per-point spacing attribute. If an
+application prefers fewer Cesium primitives over lower incremental update cost,
+it can raise this value. The older
 `maxBatchesPerPrimitive` option still controls non-geometry point batches and is
 also used as the geometry fallback when `maxGeometryBatchesPerPrimitive` is not
 provided.

@@ -5,13 +5,17 @@ import {
   createCopcCoordinateTransform,
   type CopcToCesiumCoordinateTransform,
 } from "./copcCoordinateTransform";
-import { colorizeCopcPointSample } from "./copcPointColorizer";
+import {
+  colorizeCopcPointSample,
+  type ResolvedCopcPointColorStyle,
+} from "./copcPointColorizer";
 
 export function createPointSamplesFromCopc(
   points: readonly CopcPointDataSample[],
   inspection: CopcInspection,
   coordinateTransform: CopcToCesiumCoordinateTransform =
     createCopcCoordinateTransform(inspection),
+  pointColorStyle?: ResolvedCopcPointColorStyle,
 ): PointSample[] {
   return points.map((point) => {
     const coordinate = coordinateTransform(point.x, point.y, point.z);
@@ -20,7 +24,7 @@ export function createPointSamplesFromCopc(
       longitudeDegrees: coordinate.longitudeDegrees,
       latitudeDegrees: coordinate.latitudeDegrees,
       heightMeters: coordinate.heightMeters,
-      color: colorizeCopcPointSample(point),
+      color: colorizeCopcPointSample(point, pointColorStyle),
     };
   });
 }

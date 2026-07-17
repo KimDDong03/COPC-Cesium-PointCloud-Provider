@@ -11,6 +11,10 @@ import {
   sampleCopcPointDataView,
   type CopcPointDataView,
 } from "../core/copc/loadCopcNodePointSamples";
+import {
+  createSpatiallyDistributedPointIndices,
+  SPATIAL_POINT_ORDER_BYTES_PER_POINT,
+} from "../core/copc/createSpatiallyDistributedPointIndices";
 import type { CopcNodePointSampleResult } from "../core/copc/CopcPointDataSample";
 import type {
   CopcDecodedPointDataCacheNodeKey,
@@ -31,7 +35,7 @@ import {
 interface WorkerCopcSource {
   readonly sourceKey: string;
   readonly getter: Getter;
-  readonly copc: Promise<CopcData>;
+  copc: Promise<CopcData>;
 }
 
 interface WorkerDecodedNodeViewEntry {
@@ -39,10 +43,12 @@ interface WorkerDecodedNodeViewEntry {
   readonly nodeKey: string;
   readonly view: Promise<CopcPointDataView>;
   readonly estimatedByteSize: number;
+  spatialPointOrder?: Uint32Array;
 }
 
 interface WorkerPointDataViewResult {
   readonly view: CopcPointDataView;
+  readonly entry: WorkerDecodedNodeViewEntry;
   readonly cacheHit: boolean;
   readonly cache: CopcDecodedPointDataCacheSnapshot;
 }
@@ -92,7 +98,7 @@ async function handleRequest(
 
       const sourceDescriptor = readWorkerWarmupSource(request);
       if (sourceDescriptor) {
-        await getWorkerCopcSource(sourceDescriptor).copc;
+        await getWorkerCopcSource(sourceDescriptor, request.copc).copc;
       }
 
       workerScope.postMessage({
@@ -120,7 +126,10 @@ async function handleRequest(
     }
 
     const workerStartedAt = nowMilliseconds();
-    const source = getWorkerCopcSource(readWorkerRequestSource(request));
+    const source = getWorkerCopcSource(
+      readWorkerRequestSource(request),
+      request.copc,
+    );
     const pointDataViewStartedAt = nowMilliseconds();
     const pointDataView = await loadWorkerPointDataView(
       source,
@@ -131,11 +140,16 @@ async function handleRequest(
     );
     const pointDataViewEndedAt = nowMilliseconds();
     const sampleStartedAt = nowMilliseconds();
+    const spatialPointOrder = getOrCreateSpatialPointOrder(
+      pointDataView.entry,
+      pointDataView.view,
+    );
     const pointSamplesWithData = sampleCopcPointDataView({
       nodeKey: request.nodeKey,
       view: pointDataView.view,
       maxPointCount: request.maxPointCount,
       sampleFormat: "typed",
+      spatialPointOrder,
     });
     const sampleEndedAt = nowMilliseconds();
 
@@ -153,6 +167,7 @@ async function handleRequest(
       key: createNodePointSampleBatchKey(pointSamplesWithData),
       pointData: pointSamplesWithData.pointData,
       transform: request.transform,
+      pointColorStyle: request.pointColorStyle,
     });
     const geometryEndedAt = nowMilliseconds();
     const pointSamples = stripTransferOnlyPointData(pointSamplesWithData);
@@ -226,7 +241,10 @@ async function handlePrefetchNodePointDataRequest(
   onCacheSnapshot: (snapshot: CopcDecodedPointDataCacheSnapshot) => void,
 ): Promise<void> {
   const workerStartedAt = nowMilliseconds();
-  const source = getWorkerCopcSource(readWorkerRequestSource(request));
+  const source = getWorkerCopcSource(
+    readWorkerRequestSource(request),
+    request.copc,
+  );
   const pointDataViewStartedAt = nowMilliseconds();
   const pointDataView = await loadWorkerPointDataView(
     source,
@@ -319,6 +337,7 @@ function addTransferableBuffer(
 
 function getWorkerCopcSource(
   descriptor: CopcSourceDescriptor,
+  copc?: CopcData,
 ): WorkerCopcSource {
   let source = copcSources.get(descriptor.key);
 
@@ -327,12 +346,20 @@ function getWorkerCopcSource(
     source = {
       sourceKey: descriptor.key,
       getter,
-      copc: Copc.create(getter),
+      copc: copc ? Promise.resolve(copc) : createWorkerCopcPromise(getter),
     };
     copcSources.set(descriptor.key, source);
+  } else if (copc) {
+    source.copc = Promise.resolve(copc);
   }
 
   return source;
+}
+
+function createWorkerCopcPromise(getter: Getter): Promise<CopcData> {
+  const promise = Copc.create(getter);
+  void promise.catch(() => undefined);
+  return promise;
 }
 
 function readWorkerRequestSource(
@@ -398,6 +425,7 @@ async function loadWorkerPointDataView(
         onCacheSnapshot(cache);
         return {
           view,
+          entry: cached,
           cacheHit: true,
           cache,
         };
@@ -407,7 +435,9 @@ async function loadWorkerPointDataView(
     decodedNodeViewCacheMissCount += 1;
     const copc = await source.copc;
     const estimatedByteSize =
-      request.node.pointCount * copc.header.pointDataRecordLength;
+      request.node.pointCount *
+      (copc.header.pointDataRecordLength +
+        SPATIAL_POINT_ORDER_BYTES_PER_POINT);
     const view = loadCopcNodePointDataView({
       getter: source.getter,
       copc,
@@ -450,6 +480,7 @@ async function loadWorkerPointDataView(
     onCacheSnapshot(cache);
     return {
       view: loadedView,
+      entry,
       cacheHit: false,
       cache,
     };
@@ -463,6 +494,26 @@ async function loadWorkerPointDataView(
     );
     throw error;
   }
+}
+
+function getOrCreateSpatialPointOrder(
+  entry: WorkerDecodedNodeViewEntry,
+  view: CopcPointDataView,
+): Uint32Array {
+  let spatialPointOrder = entry.spatialPointOrder;
+
+  if (!spatialPointOrder) {
+    spatialPointOrder = createSpatiallyDistributedPointIndices({
+      pointCount: view.pointCount,
+      sampleCount: view.pointCount,
+      getX: view.getter("X"),
+      getY: view.getter("Y"),
+      getZ: view.getter("Z"),
+    });
+    entry.spatialPointOrder = spatialPointOrder;
+  }
+
+  return spatialPointOrder;
 }
 
 function nowMilliseconds(): number {

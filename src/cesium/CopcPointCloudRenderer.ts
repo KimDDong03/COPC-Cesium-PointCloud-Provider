@@ -11,6 +11,14 @@ export interface PointGeometryBatch {
   readonly pointCount: number;
   readonly positions: Float64Array;
   readonly colors: Uint8Array;
+  /** Representative world-space spacing of the unsampled points. */
+  readonly pointSpacingMeters?: number;
+  /**
+   * Density relative to the points represented by `pointSpacingMeters`.
+   * A value below one means that the batch was downsampled. Adaptive renderers
+   * can use this to expand the effective spacing by `1 / sqrt(densityScale)`.
+   */
+  readonly pointDensityScale?: number;
 }
 
 export interface CopcPointCloudRenderer {

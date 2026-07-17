@@ -1,5 +1,6 @@
 import type { CopcPointDataSampleArrays } from "../core/copc/CopcPointDataSample";
 import type { PointGeometryBatch } from "./CopcPointCloudRenderer";
+import type { ResolvedCopcPointColorStyle } from "./copcPointColorizer";
 import type { CesiumPointGeometryTransform } from "./pointGeometryBatch";
 
 export type CesiumPointGeometryWorkerRequest =
@@ -12,6 +13,7 @@ export interface CesiumPointGeometryWorkerBuildRequest {
   readonly key: string;
   readonly pointData: CopcPointDataSampleArrays;
   readonly transform: CesiumPointGeometryTransform;
+  readonly pointColorStyle?: ResolvedCopcPointColorStyle;
 }
 
 export interface CesiumPointGeometryWorkerCancelRequest {

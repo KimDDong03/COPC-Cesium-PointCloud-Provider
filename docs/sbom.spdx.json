@@ -1,7 +1,7 @@
 {
   "SPDXID": "SPDXRef-DOCUMENT",
   "creationInfo": {
-    "created": "2026-07-15T00:11:50.113Z",
+    "created": "2026-07-16T09:35:48.874Z",
     "creators": [
       "Tool: npm/cli-11.16.0",
       "Tool: scripts/generate-license-evidence.mjs"
@@ -11,7 +11,7 @@
   "documentDescribes": [
     "SPDXRef-Package-copc-cesium-0.1.0"
   ],
-  "documentNamespace": "https://github.com/KimDDong03/COPC_VIEWER/sbom/spdx/copc-cesium-0.1.0-63cbf4884a7c7f8f0c914f3768be93e84438d0ffb4f844f3ac77a388cde10565",
+  "documentNamespace": "https://github.com/KimDDong03/COPC_VIEWER/sbom/spdx/copc-cesium-0.1.0-3c648080a7b2123a6e57e920edee25fdc3ce6ee1f75edc710a597acb45b8c7e0",
   "name": "copc-cesium@0.1.0",
   "packages": [
     {
@@ -879,7 +879,7 @@
         }
       ],
       "filesAnalyzed": false,
-      "homepage": "https://github.com/KimDDong03/COPC_VIEWER#readme",
+      "homepage": "https://kimddong03.github.io/COPC_VIEWER/",
       "licenseDeclared": "MIT",
       "name": "copc-cesium",
       "packageFileName": "",
@@ -2196,6 +2196,31 @@
       "packageFileName": "node_modules/playwright-core",
       "sourceInfo": "Validated source URL: https://github.com/microsoft/playwright",
       "versionInfo": "1.62.0-alpha-1783623505000"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pngjs-7.0.0",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "2ca5aa589461b2dc98a3da46be0a2bfe2be4db0f787928c4dd1195bb32c696bdcd983f1b7fb45c606cded6635d10744fe9344feab32e0c7939b78e219d3472a3"
+        }
+      ],
+      "description": "PNG encoder/decoder in pure JS, supporting any bit size & interlace, async & sync with full test suite.",
+      "downloadLocation": "https://registry.npmjs.org/pngjs/-/pngjs-7.0.0.tgz",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:npm/pngjs@7.0.0",
+          "referenceType": "purl"
+        }
+      ],
+      "filesAnalyzed": false,
+      "homepage": "https://github.com/lukeapage/pngjs",
+      "licenseDeclared": "MIT",
+      "name": "pngjs",
+      "packageFileName": "node_modules/pngjs",
+      "sourceInfo": "Validated source URL: https://github.com/pngjs/pngjs",
+      "versionInfo": "7.0.0"
     },
     {
       "SPDXID": "SPDXRef-Package-postcss-8.5.16",
@@ -3530,6 +3555,11 @@
       "relatedSpdxElement": "SPDXRef-Package-copc-cesium-0.1.0",
       "relationshipType": "DEV_DEPENDENCY_OF",
       "spdxElementId": "SPDXRef-Package-playwright.cli-0.1.17"
+    },
+    {
+      "relatedSpdxElement": "SPDXRef-Package-copc-cesium-0.1.0",
+      "relationshipType": "DEV_DEPENDENCY_OF",
+      "spdxElementId": "SPDXRef-Package-pngjs-7.0.0"
     },
     {
       "relatedSpdxElement": "SPDXRef-Package-vite-7.3.6",

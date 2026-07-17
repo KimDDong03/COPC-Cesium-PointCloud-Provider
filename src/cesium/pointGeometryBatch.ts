@@ -4,9 +4,13 @@ import type {
   CopcPointDataSample,
   CopcPointDataSampleArrays,
 } from "../core/copc/CopcPointDataSample";
+import type { CopcHierarchyNodeSummary } from "../core/copc/CopcHierarchySummary";
 import type { CopcInspection } from "../core/copc/CopcInspection";
 import type { PointGeometryBatch } from "./CopcPointCloudRenderer";
-import { colorizeCopcPoint } from "./copcPointColorizer";
+import {
+  colorizeCopcPoint,
+  type ResolvedCopcPointColorStyle,
+} from "./copcPointColorizer";
 import {
   configureKnownCopcProjections,
   EPSG_2992,
@@ -90,6 +94,7 @@ export function createCesiumPointGeometryTransform(
 export function createPointGeometryBatchFromCopc(
   nodeResult: CopcNodePointSampleResult,
   coordinateTransform: CopcCoordinateTransformSet["toCesium"],
+  pointColorStyle?: ResolvedCopcPointColorStyle,
 ): PointGeometryBatch {
   return createPointGeometryBatchFromPointData({
     key: createNodePointSampleBatchKey(nodeResult),
@@ -105,13 +110,109 @@ export function createPointGeometryBatchFromCopc(
         coordinate.heightMeters,
       );
     },
+    pointColorStyle,
   });
+}
+
+/**
+ * Adds the world-space sampling metadata used by adaptive point renderers.
+ *
+ * COPC spacing is expressed in the source CRS and halves at every hierarchy
+ * depth. Measuring one source-spacing step through the configured coordinate
+ * transform keeps the renderer independent from the source CRS (including
+ * geographic coordinates and projected units such as US survey feet).
+ */
+export function withCopcPointGeometryBatchRenderMetadata(options: {
+  readonly batch: PointGeometryBatch;
+  readonly inspection: CopcInspection;
+  readonly node: CopcHierarchyNodeSummary;
+  readonly coordinateTransform: CopcCoordinateTransformSet["toCesium"];
+}): PointGeometryBatch {
+  const pointSpacingMeters = estimateCopcNodePointSpacingMeters(
+    options.inspection,
+    options.node,
+    options.coordinateTransform,
+  );
+  const pointDensityScale =
+    options.node.pointCount > 0 && options.batch.pointCount > 0
+      ? Math.min(1, options.batch.pointCount / options.node.pointCount)
+      : undefined;
+
+  if (pointSpacingMeters === undefined && pointDensityScale === undefined) {
+    return options.batch;
+  }
+
+  return {
+    ...options.batch,
+    pointSpacingMeters,
+    pointDensityScale,
+  };
+}
+
+export function estimateCopcNodePointSpacingMeters(
+  inspection: CopcInspection,
+  node: Pick<CopcHierarchyNodeSummary, "bounds" | "depth">,
+  coordinateTransform: CopcCoordinateTransformSet["toCesium"],
+): number | undefined {
+  const sourceSpacing = inspection.spacing / 2 ** node.depth;
+
+  if (!Number.isFinite(sourceSpacing) || sourceSpacing <= 0) {
+    return undefined;
+  }
+
+  try {
+    const centerX = (node.bounds.minX + node.bounds.maxX) / 2;
+    const centerY = (node.bounds.minY + node.bounds.maxY) / 2;
+    const centerZ = (node.bounds.minZ + node.bounds.maxZ) / 2;
+    const origin = coordinateTransform(centerX, centerY, centerZ);
+    const xStep = coordinateTransform(
+      centerX + sourceSpacing,
+      centerY,
+      centerZ,
+    );
+    const yStep = coordinateTransform(
+      centerX,
+      centerY + sourceSpacing,
+      centerZ,
+    );
+    const originCartesian = cartesianFromDegrees(
+      origin.longitudeDegrees,
+      origin.latitudeDegrees,
+      origin.heightMeters,
+    );
+    const distances = [xStep, yStep]
+      .map((coordinate) =>
+        distanceBetweenCartesianCoordinates(
+          originCartesian,
+          cartesianFromDegrees(
+            coordinate.longitudeDegrees,
+            coordinate.latitudeDegrees,
+            coordinate.heightMeters,
+          ),
+        ),
+      )
+      .filter((distance) => Number.isFinite(distance) && distance > 0);
+
+    if (distances.length === 0) {
+      return undefined;
+    }
+
+    return (
+      distances.reduce((total, distance) => total + distance, 0) /
+      distances.length
+    );
+  } catch {
+    // Spacing is optional render metadata. A domain-limited application
+    // transform may accept every source point yet reject this synthetic probe.
+    return undefined;
+  }
 }
 
 export function createPointGeometryBatchFromSerializableTransform(options: {
   readonly key: string;
   readonly pointData: CopcPointDataSampleArrays;
   readonly transform: CesiumPointGeometryTransform;
+  readonly pointColorStyle?: ResolvedCopcPointColorStyle;
 }): PointGeometryBatch {
   const coordinateTransform = createSerializableCoordinateTransform(
     options.pointData,
@@ -122,6 +223,7 @@ export function createPointGeometryBatchFromSerializableTransform(options: {
     key: options.key,
     pointData: options.pointData,
     coordinateTransform,
+    pointColorStyle: options.pointColorStyle,
   });
 }
 
@@ -236,6 +338,7 @@ function createPointGeometryBatchFromPointData(options: {
     y: number,
     z: number,
   ) => readonly [number, number, number];
+  readonly pointColorStyle?: ResolvedCopcPointColorStyle;
 }): PointGeometryBatch {
   const pointCount = options.pointData.x.length;
   const positions = new Float64Array(pointCount * 3);
@@ -249,7 +352,11 @@ function createPointGeometryBatchFromPointData(options: {
     );
     const positionOffset = pointIndex * 3;
     const colorOffset = pointIndex * 4;
-    const packedColor = colorizeCopcPoint(options.pointData, pointIndex);
+    const packedColor = colorizeCopcPoint(
+      options.pointData,
+      pointIndex,
+      options.pointColorStyle,
+    );
 
     positions[positionOffset] = position[0];
     positions[positionOffset + 1] = position[1];
@@ -387,6 +494,17 @@ function cartesianFromDegrees(
     (normalRadius * (1 - WGS84_FIRST_ECCENTRICITY_SQUARED) + heightMeters) *
       sinLatitude,
   ];
+}
+
+function distanceBetweenCartesianCoordinates(
+  first: readonly [number, number, number],
+  second: readonly [number, number, number],
+): number {
+  return Math.hypot(
+    second[0] - first[0],
+    second[1] - first[1],
+    second[2] - first[2],
+  );
 }
 
 function degreesToRadians(degrees: number): number {

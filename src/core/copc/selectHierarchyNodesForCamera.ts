@@ -1,5 +1,9 @@
 import type { CopcBounds } from "./CopcInspection";
 import type { CopcHierarchyNodeSummary } from "./CopcHierarchySummary";
+import {
+  planMixedDepthHierarchyTraversal,
+  type CopcMixedDepthNodeViewState,
+} from "./planMixedDepthHierarchyTraversal";
 import type { CopcTargetPoint } from "./suggestHierarchyNode";
 
 export interface SelectHierarchyNodesForCameraOptions {
@@ -25,12 +29,19 @@ export interface SelectHierarchyNodesForCameraOptions {
   readonly maxViewAngleDegrees?: number;
   readonly spacing?: number;
   readonly targetPointSpacingScreenPixels?: number;
+  /** Previous mixed-depth frontier used only for refinement hysteresis. */
+  readonly previousFrontierKeys?: readonly string[];
+  /** Mixed-depth refinement entry threshold in screen pixels. */
+  readonly refineScreenSpaceError?: number;
+  /** Mixed-depth retention threshold in screen pixels. */
+  readonly retainScreenSpaceError?: number;
 }
 
 export type CopcHierarchyNodeSelectionMode = "nearest" | "coverage";
 export type CopcHierarchyNodeCoverageMode =
   | "complete-depth"
-  | "progressive";
+  | "progressive"
+  | "mixed-depth";
 
 export interface CopcTargetVector {
   readonly x: number;
@@ -115,10 +126,11 @@ export function selectHierarchyNodesForCamera(
 
   if (
     coverageMode !== "complete-depth" &&
-    coverageMode !== "progressive"
+    coverageMode !== "progressive" &&
+    coverageMode !== "mixed-depth"
   ) {
     throw new Error(
-      'coverageMode must be "complete-depth" or "progressive".',
+      'coverageMode must be "complete-depth", "progressive", or "mixed-depth".',
     );
   }
 
@@ -165,6 +177,30 @@ export function selectHierarchyNodesForCamera(
     options.maxTotalPointDataLength,
     "maxTotalPointDataLength",
   );
+  validateNonNegativeFiniteOption(
+    options.refineScreenSpaceError,
+    "refineScreenSpaceError",
+  );
+  validateNonNegativeFiniteOption(
+    options.retainScreenSpaceError,
+    "retainScreenSpaceError",
+  );
+  const effectiveMixedDepthRefineScreenSpaceError =
+    options.refineScreenSpaceError ??
+    (options.spacing === undefined
+      ? targetNodeScreenPixels
+      : (targetPointSpacingScreenPixels ??
+        DEFAULT_TARGET_POINT_SPACING_SCREEN_PIXELS));
+
+  if (
+    options.retainScreenSpaceError !== undefined &&
+    options.retainScreenSpaceError >
+      effectiveMixedDepthRefineScreenSpaceError
+  ) {
+    throw new Error(
+      "retainScreenSpaceError must be less than or equal to refineScreenSpaceError.",
+    );
+  }
 
   const hierarchyMaxDepth = maxNodeDepth(nodes);
   const minDepth = options.minDepth ?? 0;
@@ -230,12 +266,32 @@ export function selectHierarchyNodesForCamera(
   };
   const selection =
     selectionMode === "coverage"
-      ? selectBudgetedCoverageNodes(
-          candidateNodes.nodes,
-          availableDepths,
-          targetDepth,
-          budgetOptions,
-        )
+      ? coverageMode === "mixed-depth"
+        ? selectMixedDepthCoverageNodes(
+            nodes,
+            candidateNodes.nodes,
+            availableDepths,
+            targetDepth,
+            {
+              ...budgetOptions,
+              minDepth: boundedMinDepth,
+              maxDepth: boundedMaxDepth,
+              screenSpaceOrigin,
+              viewportHeightPixels,
+              spacing: options.spacing,
+              targetNodeScreenPixels,
+              targetPointSpacingScreenPixels,
+              previousFrontierKeys: options.previousFrontierKeys,
+              refineScreenSpaceError: options.refineScreenSpaceError,
+              retainScreenSpaceError: options.retainScreenSpaceError,
+            },
+          )
+        : selectBudgetedCoverageNodes(
+            candidateNodes.nodes,
+            availableDepths,
+            targetDepth,
+            budgetOptions,
+          )
       : selectBudgetedNodes(
           candidateNodes.nodes,
           availableDepths,
@@ -449,12 +505,22 @@ function createSelectionReason(
       : ` Culled ${skippedByViewCount.toLocaleString()} off-camera candidate nodes.`;
   const modeReason =
     selectionMode === "coverage"
-      ? coverageMode === "progressive"
-        ? "progressive screen-coverage"
-        : "screen-coverage"
+      ? coverageMode === "mixed-depth"
+        ? "mixed-depth screen-coverage"
+        : coverageMode === "progressive"
+          ? "progressive screen-coverage"
+          : "screen-coverage"
       : "nearest";
+  const minimumSelectedDepth = selection.nodes.reduce(
+    (minimum, node) => Math.min(minimum, node.depth),
+    selection.selectedDepth,
+  );
+  const selectedDepthReason =
+    minimumSelectedDepth === selection.selectedDepth
+      ? `depth ${selection.selectedDepth}`
+      : `depths ${minimumSelectedDepth}-${selection.selectedDepth}`;
 
-  return `Selected ${selection.nodes.length} ${modeReason} depth ${selection.selectedDepth} nodes; nearest depth ${selection.selectedDepth} node is estimated at ${selectedDepthEstimate.estimatedNodeScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 0 })} px against a ${targetNodeScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 0 })} px target${pointSpacingReason}.${viewReason}`;
+  return `Selected ${selection.nodes.length} ${modeReason} ${selectedDepthReason} nodes; nearest depth ${selection.selectedDepth} node is estimated at ${selectedDepthEstimate.estimatedNodeScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 0 })} px against a ${targetNodeScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 0 })} px target${pointSpacingReason}.${viewReason}`;
 }
 
 interface SelectBudgetedNodesOptions {
@@ -466,6 +532,20 @@ interface SelectBudgetedNodesOptions {
   readonly maxNodePointDataLength: number | undefined;
   readonly maxTotalPointCount: number | undefined;
   readonly maxTotalPointDataLength: number | undefined;
+}
+
+interface SelectMixedDepthCoverageNodesOptions
+  extends SelectBudgetedNodesOptions {
+  readonly minDepth: number;
+  readonly maxDepth: number;
+  readonly screenSpaceOrigin: CopcTargetPoint;
+  readonly viewportHeightPixels: number;
+  readonly spacing: number | undefined;
+  readonly targetNodeScreenPixels: number;
+  readonly targetPointSpacingScreenPixels: number | undefined;
+  readonly previousFrontierKeys: readonly string[] | undefined;
+  readonly refineScreenSpaceError: number | undefined;
+  readonly retainScreenSpaceError: number | undefined;
 }
 
 interface BudgetedNodeSelection {
@@ -592,6 +672,348 @@ function selectBudgetedCoverageNodes(
     targetDepth,
     options,
   );
+}
+
+function selectMixedDepthCoverageNodes(
+  hierarchyNodes: readonly CopcHierarchyNodeSummary[],
+  visibleCandidateNodes: readonly CopcHierarchyNodeSummary[],
+  availableDepths: readonly number[],
+  targetDepth: number,
+  options: SelectMixedDepthCoverageNodesOptions,
+): BudgetedNodeSelection | undefined {
+  const maxPointCount = normalizeMixedDepthTotalBudget(
+    options.maxTotalPointCount,
+  );
+  const maxPointDataLength = normalizeMixedDepthTotalBudget(
+    options.maxTotalPointDataLength,
+  );
+
+  if (maxPointCount === 0 || maxPointDataLength === 0) {
+    return undefined;
+  }
+
+  const visibleCandidateKeys = new Set(
+    visibleCandidateNodes.map((node) => node.key),
+  );
+  const individuallyBudgetedNodes = hierarchyNodes.filter(
+    (node) =>
+      node.pointCount > 0 &&
+      node.pointDataLength > 0 &&
+      node.depth <= options.maxDepth &&
+      !isNodeOverIndividualBudget(node, options),
+  );
+  const individuallySkippedVisibleNodeCount = visibleCandidateNodes.filter(
+    (node) => isNodeOverIndividualBudget(node, options),
+  ).length;
+  const blockedRefinementParentKeys = new Set(
+    visibleCandidateNodes
+      .filter(
+        (node) =>
+          node.depth > 0 && isNodeOverIndividualBudget(node, options),
+      )
+      .map(createParentNodeKey),
+  );
+  const baselineCoverage = selectMixedDepthBaselineCoverage(
+    individuallyBudgetedNodes,
+    visibleCandidateNodes,
+    availableDepths,
+    targetDepth,
+    {
+      ...options,
+      maxTotalPointCount: maxPointCount,
+      maxTotalPointDataLength: maxPointDataLength,
+    },
+  );
+
+  if (!baselineCoverage) {
+    return undefined;
+  }
+
+  const viewStates = individuallyBudgetedNodes.map((node) =>
+    createMixedDepthNodeViewState(
+      node,
+      visibleCandidateKeys,
+      blockedRefinementParentKeys,
+      options,
+    ),
+  );
+  const refineScreenSpaceError =
+    options.refineScreenSpaceError ??
+    (options.spacing === undefined
+      ? options.targetNodeScreenPixels
+      : (options.targetPointSpacingScreenPixels ??
+        DEFAULT_TARGET_POINT_SPACING_SCREEN_PIXELS));
+  const plan = planMixedDepthHierarchyTraversal(
+    individuallyBudgetedNodes,
+    viewStates,
+    {
+      maxNodes: options.maxNodes,
+      maxPointCount: maxPointCount,
+      maxPointDataLength,
+      refineScreenSpaceError,
+      retainScreenSpaceError: options.retainScreenSpaceError,
+      previousFrontierKeys: options.previousFrontierKeys,
+      requiredNodeKeys: baselineCoverage.nodes.map((node) => node.key),
+      refinementMode: "visible-sibling-group",
+    },
+  );
+
+  if (plan.frontierNodes.length === 0) {
+    return undefined;
+  }
+
+  return {
+    nodes: plan.frontierNodes,
+    selectedDepth: maxNodeDepth(plan.frontierNodes),
+    skippedByBudgetCount:
+      individuallySkippedVisibleNodeCount +
+      baselineCoverage.skippedByBudgetCount +
+      plan.diagnostics.skippedByBudgetCount,
+  };
+}
+
+function selectMixedDepthBaselineCoverage(
+  planningNodes: readonly CopcHierarchyNodeSummary[],
+  visibleCandidateNodes: readonly CopcHierarchyNodeSummary[],
+  availableDepths: readonly number[],
+  targetDepth: number,
+  options: SelectBudgetedNodesOptions,
+): BudgetedNodeSelection | undefined {
+  const planningNodeByKey = new Map(
+    planningNodes.map((node) => [node.key, node]),
+  );
+  const desiredBaselineDepth =
+    targetDepth > 0 ? Math.max(1, targetDepth - 1) : 0;
+  const baselineDepths = mixedDepthBaselineDepths(
+    availableDepths,
+    desiredBaselineDepth,
+  );
+  let skippedByBudgetCount = 0;
+
+  for (const depth of baselineDepths) {
+    const frontierNodes = createVisibleTreeCut(
+      visibleCandidateNodes,
+      depth,
+    );
+
+    if (frontierNodes.length === 0) {
+      continue;
+    }
+
+    const additiveClosure = createMixedDepthAdditiveClosure(
+      frontierNodes,
+      planningNodeByKey,
+    );
+
+    if (
+      additiveClosure === undefined ||
+      !fitsMixedDepthAdditiveBudget(additiveClosure, options)
+    ) {
+      skippedByBudgetCount += frontierNodes.length;
+      continue;
+    }
+
+    return {
+      nodes: orderCoverageNodesByTarget(frontierNodes, options.target),
+      selectedDepth: maxNodeDepth(frontierNodes),
+      skippedByBudgetCount,
+    };
+  }
+
+  return undefined;
+}
+
+function mixedDepthBaselineDepths(
+  availableDepths: readonly number[],
+  desiredDepth: number,
+): readonly number[] {
+  if (availableDepths.length === 0) {
+    return [];
+  }
+
+  const minimumDepth = Math.min(...availableDepths);
+  const maximumDepth = Math.max(...availableDepths);
+  const clampedDesiredDepth = Math.max(
+    minimumDepth,
+    Math.min(maximumDepth, desiredDepth),
+  );
+  const initialDepth = [...availableDepths]
+    .filter((depth) => depth <= clampedDesiredDepth)
+    .sort((left, right) => right - left)[0];
+
+  if (initialDepth === undefined) {
+    return [];
+  }
+
+  return [...availableDepths]
+    .filter((depth) => depth <= initialDepth)
+    .sort((left, right) => right - left);
+}
+
+/**
+ * Creates an antichain through the visible portion of the loaded hierarchy.
+ * Branches that reach `depth` contribute their exact-depth node, while an
+ * irregular branch that ends sooner contributes its deepest visible terminal
+ * node. Additive ancestors are validated separately and remain renderable
+ * behind this frontier.
+ */
+function createVisibleTreeCut(
+  visibleNodes: readonly CopcHierarchyNodeSummary[],
+  depth: number,
+): readonly CopcHierarchyNodeSummary[] {
+  const uniqueNodes = [
+    ...new Map(
+      visibleNodes
+        .filter((node) => node.depth <= depth)
+        .map((node) => [node.key, node]),
+    ).values(),
+  ].sort(
+    (left, right) =>
+      right.depth - left.depth || compareNodesByCoverageOrder(left, right),
+  );
+  const frontierNodes: CopcHierarchyNodeSummary[] = [];
+  const frontierAncestorKeys = new Set<string>();
+
+  for (const node of uniqueNodes) {
+    if (frontierAncestorKeys.has(node.key)) {
+      continue;
+    }
+
+    frontierNodes.push(node);
+    let ancestorDepth = node.depth;
+    let ancestorX = node.x;
+    let ancestorY = node.y;
+    let ancestorZ = node.z;
+
+    while (ancestorDepth > 0) {
+      ancestorDepth -= 1;
+      ancestorX = Math.floor(ancestorX / 2);
+      ancestorY = Math.floor(ancestorY / 2);
+      ancestorZ = Math.floor(ancestorZ / 2);
+      frontierAncestorKeys.add(
+        `${ancestorDepth}-${ancestorX}-${ancestorY}-${ancestorZ}`,
+      );
+    }
+  }
+
+  return frontierNodes.sort(compareNodesByCoverageOrder);
+}
+
+function createMixedDepthAdditiveClosure(
+  frontierNodes: readonly CopcHierarchyNodeSummary[],
+  nodeByKey: ReadonlyMap<string, CopcHierarchyNodeSummary>,
+): readonly CopcHierarchyNodeSummary[] | undefined {
+  const closureByKey = new Map<string, CopcHierarchyNodeSummary>();
+
+  for (const frontierNode of frontierNodes) {
+    let current: CopcHierarchyNodeSummary | undefined = frontierNode;
+
+    while (current) {
+      closureByKey.set(current.key, current);
+
+      if (current.depth === 0) {
+        break;
+      }
+
+      current = nodeByKey.get(createParentNodeKey(current));
+
+      if (!current) {
+        return undefined;
+      }
+    }
+  }
+
+  return [...closureByKey.values()];
+}
+
+function createParentNodeKey(node: CopcHierarchyNodeSummary): string {
+  return `${node.depth - 1}-${Math.floor(node.x / 2)}-${Math.floor(
+    node.y / 2,
+  )}-${Math.floor(node.z / 2)}`;
+}
+
+function fitsMixedDepthAdditiveBudget(
+  nodes: readonly CopcHierarchyNodeSummary[],
+  options: SelectBudgetedNodesOptions,
+): boolean {
+  if (
+    nodes.length > options.maxNodes ||
+    nodes.some((node) => isNodeOverIndividualBudget(node, options))
+  ) {
+    return false;
+  }
+
+  const pointCount = nodes.reduce(
+    (total, node) => total + node.pointCount,
+    0,
+  );
+  const pointDataLength = nodes.reduce(
+    (total, node) => total + node.pointDataLength,
+    0,
+  );
+
+  return (
+    (options.maxTotalPointCount === undefined ||
+      pointCount <= options.maxTotalPointCount) &&
+    (options.maxTotalPointDataLength === undefined ||
+      pointDataLength <= options.maxTotalPointDataLength)
+  );
+}
+
+function createMixedDepthNodeViewState(
+  node: CopcHierarchyNodeSummary,
+  visibleCandidateKeys: ReadonlySet<string>,
+  blockedRefinementParentKeys: ReadonlySet<string>,
+  options: SelectMixedDepthCoverageNodesOptions,
+): CopcMixedDepthNodeViewState {
+  const estimatedNodeScreenPixels = estimateBoundsScreenPixels(
+    node.bounds,
+    options.screenSpaceOrigin,
+    options.viewportHeightPixels,
+  );
+  const screenSpaceError =
+    options.spacing === undefined
+      ? estimatedNodeScreenPixels
+      : estimateLinearScreenPixels(
+          options.spacing / 2 ** node.depth,
+          node.bounds,
+          options.screenSpaceOrigin,
+          options.viewportHeightPixels,
+        );
+  const boundedScreenPixels = Math.min(
+    estimatedNodeScreenPixels,
+    Math.sqrt(Number.MAX_SAFE_INTEGER),
+  );
+  const projectedAreaPixels = Math.max(
+    1,
+    boundedScreenPixels * boundedScreenPixels,
+  );
+  const visualBenefit = Math.min(
+    Number.MAX_SAFE_INTEGER,
+    screenSpaceError * projectedAreaPixels,
+  );
+
+  return {
+    key: node.key,
+    visible:
+      node.depth >= options.minDepth &&
+      visibleCandidateKeys.has(node.key) &&
+      (node.depth === 0 ||
+        !blockedRefinementParentKeys.has(createParentNodeKey(node))),
+    screenSpaceError,
+    projectedAreaPixels,
+    visualBenefit,
+  };
+}
+
+function normalizeMixedDepthTotalBudget(
+  value: number | undefined,
+): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  return Math.min(Number.MAX_SAFE_INTEGER, Math.floor(value));
 }
 
 function selectCompleteCoverageDepth(
@@ -1085,6 +1507,19 @@ function validatePositiveFiniteBudget(
 
   if (!Number.isFinite(value) || value <= 0) {
     throw new Error(`${name} must be a positive finite number.`);
+  }
+}
+
+function validateNonNegativeFiniteOption(
+  value: number | undefined,
+  name: string,
+): void {
+  if (value === undefined) {
+    return;
+  }
+
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative finite number.`);
   }
 }
 

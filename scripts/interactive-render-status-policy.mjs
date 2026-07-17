@@ -19,13 +19,16 @@ export function isInteractiveRenderReady(
   }
 
   const visualQuality = status?.cameraStreamVisualQuality;
+  const isFrontierDepthPolicySatisfied =
+    visualQuality?.isFrontierDepthPolicySatisfied ??
+    visualQuality?.frontierDepthSpan === 0;
 
   return (
     typeof statusText === "string" &&
     statusText.startsWith("Camera stream retained ") &&
     status?.cameraStreamRenderDisposition === "retained-exact-render" &&
     visualQuality?.isTerminalReady === true &&
-    visualQuality.frontierDepthSpan === 0 &&
+    isFrontierDepthPolicySatisfied &&
     visualQuality.isFrontierAntichain === true &&
     visualQuality.isAdditiveClosureComplete === true &&
     visualQuality.missingRequiredNodeCount === 0 &&

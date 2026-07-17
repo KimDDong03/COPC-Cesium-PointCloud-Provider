@@ -72,6 +72,7 @@ describe("createCopcCameraStreamRenderPlan", () => {
     expect(plan.renderSignature).toBe(
       "0-0-0-0|1-0-0-0|2-1-0-0|3-2-0-0|4-4-0-0|5-8-0-0|5-9-0-0@20000@2858@5@80@96@2048@900000@16384",
     );
+    expect(plan.useSourcePointBudgetHeadroom).toBe(false);
   });
 
   it("uses coverage nodes as final nodes when camera selection has no detail node keys", () => {
@@ -218,7 +219,7 @@ describe("createCopcCameraStreamRenderPlan", () => {
     expect(plan.maxPointCountPerNode).toBe(1_200);
   });
 
-  it("preserves the complete frontier and additive closure for terminal coverage", () => {
+  it("preserves the complete frontier and additive closure without bypassing the legacy load cap", () => {
     const selectedNodes = [
       node("2-0-0-0"),
       node("2-1-0-0"),
@@ -260,6 +261,73 @@ describe("createCopcCameraStreamRenderPlan", () => {
       "2-1-1-0",
     ]);
     expect(plan.maxPointCountPerNode).toBe(3_334);
+    expect(plan.useSourcePointBudgetHeadroom).toBe(false);
+    expect(plan.renderSignature).not.toContain("@source-headroom");
+  });
+
+  it("uses configured source headroom for an ancestor-budgeted mixed-depth closure", () => {
+    const selectedNodes = [
+      node("2-0-0-0"),
+      node("2-1-0-0"),
+      node("2-0-1-0"),
+      node("2-1-1-0"),
+    ];
+    const plan = createCopcCameraStreamRenderPlan({
+      cameraSelection: cameraSelection(selectedNodes, "mixed-depth"),
+      configuredMaxPointCountPerNode: 12_000,
+      effectiveNodePointDataLengthBudget: 2_048,
+      effectivePointDataLengthBudget: 16_384,
+      effectiveSourcePointBudget: 900_000,
+      hierarchy: hierarchy([
+        "0-0-0-0",
+        "1-0-0-0",
+        ...selectedNodes.map((selectedNode) => selectedNode.key),
+      ]),
+      lodSettings: {
+        maxDepth: 5,
+        maxNodes: 96,
+        targetNodeScreenPixels: 80,
+      },
+      previewMaxNodeCount: 8,
+      previewMaxPointDataLength: 8_000,
+      renderedPointBudget: 20_000,
+    });
+
+    expect(plan.finalNodeKeys).toHaveLength(6);
+    expect(plan.maxPointCountPerNode).toBe(12_000);
+    expect(plan.useSourcePointBudgetHeadroom).toBe(true);
+    expect(plan.renderSignature).toContain("@source-headroom");
+  });
+
+  it("keeps the legacy rendered-budget load cap for a non-coverage selection", () => {
+    const plan = createCopcCameraStreamRenderPlan({
+      cameraSelection: {
+        ...cameraSelection([node("2-0-0-0"), node("2-1-0-0")]),
+        coverageMode: undefined,
+      },
+      configuredMaxPointCountPerNode: 12_000,
+      effectiveNodePointDataLengthBudget: 2_048,
+      effectivePointDataLengthBudget: 16_384,
+      effectiveSourcePointBudget: 900_000,
+      hierarchy: hierarchy([
+        "0-0-0-0",
+        "1-0-0-0",
+        "2-0-0-0",
+        "2-1-0-0",
+      ]),
+      lodSettings: {
+        maxDepth: 5,
+        maxNodes: 96,
+        targetNodeScreenPixels: 80,
+      },
+      previewMaxNodeCount: 8,
+      previewMaxPointDataLength: 8_000,
+      renderedPointBudget: 10_000,
+    });
+
+    expect(plan.finalNodeKeys).toHaveLength(4);
+    expect(plan.maxPointCountPerNode).toBe(2_500);
+    expect(plan.useSourcePointBudgetHeadroom).toBe(false);
   });
 
   it("excludes zero-point selections from the terminal frontier and closure", () => {
@@ -442,6 +510,18 @@ describe("createCopcCameraStreamMaxPointCountPerNode", () => {
         maxPointCountPerFinalNode: 3_000,
       }),
     ).toBe(3_000);
+  });
+
+  it("keeps configured source headroom when explicitly enabled", () => {
+    expect(
+      createCopcCameraStreamMaxPointCountPerNode({
+        configuredMaxPointCountPerNode: 12_000,
+        nodeCount: 8,
+        renderedPointBudget: 20_000,
+        maxPointCountPerFinalNode: 1_000,
+        useSourcePointBudgetHeadroom: true,
+      }),
+    ).toBe(12_000);
   });
 });
 

@@ -632,9 +632,12 @@ function checkResult(
         `${label}: verified terminal visual composition was not reported.`,
       );
     } else {
-      if (visualQuality.frontierDepthSpan !== 0) {
+      if (
+        (visualQuality.isFrontierDepthPolicySatisfied ??
+          visualQuality.frontierDepthSpan === 0) !== true
+      ) {
         resultFailures.push(
-          `${label}: terminal frontier spans ${formatNumber(visualQuality.frontierDepthSpan)} depth levels.`,
+          `${label}: terminal frontier violates its ${visualQuality.terminalFrontierMode ?? "same-depth"} depth policy with a ${formatNumber(visualQuality.frontierDepthSpan)}-level span.`,
         );
       }
       if (visualQuality.isFrontierAntichain !== true) {
@@ -951,9 +954,12 @@ function checkPostPrefetchRefinement(result, label) {
       `${label}: post-prefetch same-camera refinement was not terminal ready.`,
     );
   } else {
-    if (visualQuality.frontierDepthSpan !== 0) {
+    if (
+      (visualQuality.isFrontierDepthPolicySatisfied ??
+        visualQuality.frontierDepthSpan === 0) !== true
+    ) {
       failures.push(
-        `${label}: post-prefetch terminal frontier spans ${formatNumber(visualQuality.frontierDepthSpan)} depth levels.`,
+        `${label}: post-prefetch terminal frontier violates its ${visualQuality.terminalFrontierMode ?? "same-depth"} depth policy with a ${formatNumber(visualQuality.frontierDepthSpan)}-level span.`,
       );
     }
     if (visualQuality.isFrontierAntichain !== true) {

@@ -73,6 +73,8 @@
     "prepublishOnly": "npm run qc",
     "preview": "vite preview examples/basic-viewer --config vite.config.ts --host localhost --port 3000 --outDir ../../dist/example",
     "benchmark:renderers": "node scripts/benchmark-renderers.mjs",
+    "benchmark:eptium-comparison": "node scripts/benchmark-eptium-comparison.mjs",
+    "benchmark:quality-ab": "node scripts/benchmark-quality-ab.mjs",
     "benchmark:smoothness": "node scripts/benchmark-smoothness.mjs",
     "benchmark:smoothness:assert": "node scripts/assert-smoothness-benchmark.mjs",
     "benchmark:smoothness:regression": "node scripts/smoothness-regression-qc.mjs",
@@ -113,6 +115,7 @@
   "devDependencies": {
     "@playwright/cli": "0.1.17",
     "cesium": "^1.140.0",
+    "pngjs": "^7.0.0",
     "typescript": "^5.9.3",
     "vite": "^7.2.7",
     "vite-plugin-cesium": "^1.2.23",

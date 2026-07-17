@@ -393,6 +393,41 @@ describe("Cesium renderer lifecycle", () => {
     expect(removedPrimitives).toHaveLength(2);
   });
 
+  it("keeps an incomplete geometry merge tail stable until the chunk is full", () => {
+    const { addedPrimitives, removedPrimitives, scene } = createSceneStub();
+    const renderer = new CesiumPrimitivePointRenderer(scene, {
+      maxGeometryBatchesPerPrimitive: 4,
+    });
+    const batches = [
+      createPointGeometryBatch("0-0-0-0:1", 127, 37, 10),
+      createPointGeometryBatch("1-0-0-0:1", 127.001, 37.001, 15),
+      createPointGeometryBatch("2-0-0-0:1", 127.002, 37.002, 20),
+      createPointGeometryBatch("3-0-0-0:1", 127.003, 37.003, 25),
+      createPointGeometryBatch("4-0-0-0:1", 127.004, 37.004, 30),
+    ];
+
+    renderer.setPointGeometryBatches(batches.slice(0, 1));
+    renderer.setPointGeometryBatches(batches.slice(0, 2));
+    renderer.setPointGeometryBatches(batches.slice(0, 3));
+
+    expect(addedPrimitives).toHaveLength(3);
+    expect(removedPrimitives).toHaveLength(0);
+
+    renderer.setPointGeometryBatches(batches.slice(0, 4));
+
+    expect(addedPrimitives).toHaveLength(4);
+    expect(removedPrimitives).toHaveLength(3);
+
+    renderer.setPointGeometryBatches(batches);
+
+    expect(addedPrimitives).toHaveLength(5);
+    expect(removedPrimitives).toHaveLength(3);
+
+    renderer.destroy();
+
+    expect(removedPrimitives).toHaveLength(5);
+  });
+
   it("rejects invalid typed-array primitive styling options", () => {
     const { scene } = createSceneStub();
 

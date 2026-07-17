@@ -19,9 +19,11 @@ refinement. The split uses the page's exact post-movement timestamp, before the
 final foreground request starts, so first response and remaining refinement
 work cannot fall between measurement windows. A first response is recorded only
 after the application either commits a frame (`app-render-commit`) or proves
-that the exact committed frame remains resident (`app-render-retained`). The
-evidence carries request identity, render disposition, and renderer revision;
-starting work or finding cached data is not sufficient. The report also records
+that a relevant committed frame remains resident (`app-render-retained`). A
+retained progress frame is not final: terminal completion still requires both
+complete detail progress and a verified visual composition. The evidence
+carries request identity, render disposition, and renderer revision; starting
+work or finding cached data is not sufficient. The report also records
 foreground completion, stream-stage timing, and the structured decoded-worker
 cache envelope.
 
@@ -151,9 +153,12 @@ When a mixed run performs new worker requests and also reuses prepared geometry,
 the minimum-hit gate uses the larger observed count from worker timing and the
 before/after layer-cache delta without adding potentially overlapping counters.
 When the renderer already contains that same exact terminal composition, the
-application may also report `app-render-retained`; this is valid only when the
-layer identity, renderer revision, node set, density, and point budgets still
-match the committed frame.
+application may also report `app-render-retained`; exact terminal reuse is valid
+only when the layer identity and renderer revision match and either the
+node/density/budget contract or the completed weighted render signature matches.
+The same evidence source may describe an explicit retained-progress frame, but
+that disposition cannot satisfy the terminal gate and must preserve the prior
+committed-frame contract while target density continues loading.
 
 `scripts/assert-smoothness-regression.mjs` first groups the two measured runs by
 sample and stream budget, then uses the median of those group summaries across
@@ -249,6 +254,14 @@ render rather than chasing a deeper screen-space ceiling or speculative
 future-zoom pages.
 The engine then reselects the same camera and keeps refining when expansion
 reveals a different frontier.
+
+For typed terminal geometry, refinement keeps the current preview or retained
+frame on screen while worker requests complete and performs one final exact
+renderer commit. Incremental full-budget commits had repeatedly changed
+per-node weighted allocations and primitive keys as nodes arrived, causing
+Cesium/WebGL upload stalls even when JavaScript submission time was small. The
+terminal executor still supports an explicit incremental override, while
+non-typed renderers retain the adaptive progress policy.
 
 The source cache's `pendingPageCount` is global and can legitimately remain
 nonzero for deeper hierarchy pages. Current-frame completion is governed by
@@ -375,25 +388,35 @@ still mandatory in every final-detail preset.
 
 ## Exact Terminal-Gate Checkpoint
 
-The latest passing checkpoint was measured on 2026-07-14 with the typed-array
-primitive renderer and the recorded RTX 3060 WebGL adapter. Every measured
-result rendered 352,441 points from all 95 required additive nodes, with a
-depth-5 antichain frontier, 100% node and weighted coverage, zero missing or
-stale/unexpected nodes, and `isTerminalReady: true`.
+The latest cold-detail checkpoint was measured on 2026-07-17 with the
+typed-array primitive renderer and the recorded RTX 3060 WebGL adapter. It
+rendered 360,000 points from all 80 required additive nodes, using a depth 3-5
+mixed-depth antichain frontier with 100% node and weighted coverage, zero
+missing or stale/unexpected nodes, zero pending current-view hierarchy pages,
+and `isTerminalReady: true`.
 
 | Profile | Runs | Points | Required nodes | Movement avg FPS | Movement p95 | Movement max | First response | First-response source |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| Cold detail Millsite | 1 | 352,441 | 95/95 | 58.4 | 17.0 ms | 33.3 ms | 23.1 ms | `app-render-commit` |
-| Warm detail Millsite | 2 | 352,441 each | 95/95 each | 52.4-53.2 | 33.35 ms average | 83.3 ms overall | 35.3 ms average | `app-render-retained` |
+| Cold detail Millsite | 1 | 360,000 | 80/80 | 59.2 | 16.8 ms | 33.4 ms | 4.4 ms | `app-render-retained` |
 
-Both warm measurements reused fresh samples for all 95 nodes and retained the
-unchanged exact renderer frame rather than resubmitting its geometry. Neither
-warm run recorded a frame over 100 ms. The cold cache reset measured worker
-recreation/warmup separately from the 23.1 ms first application commit, so that
-response figure does not claim full page-open startup latency. These values are
-machine-specific regression evidence from a dirty release-candidate source
-snapshot, not cross-device guarantees; the JSON provenance and assertion
-artifact remain authoritative.
+Frame collection continued for 24.517 seconds through hierarchy and terminal
+refinement. Across that phase it recorded 59.5 average FPS, 16.8 ms p95,
+83.3 ms maximum, three frames above 50 ms, and zero frames above 100 ms, all
+inside the cold-detail gate. The final retained exact result reported depth 5,
+selection/render/total CPU timing of 2.4/3.2/17.1 ms, renderer revision 8, and
+maximum worker decode/round-trip timing of 1,789.3/1,798.7 ms. The first visible
+response retained the existing 2,800-point frame; it is application response
+latency, not full terminal-load latency.
+
+The authoritative result is
+`output/smoothness-benchmark/smoothness-cold-detail.json` with SHA-256
+`e1be4f55e6e981822ef5c59f8239c6ba82e5a2699138facd7d013f4b57f735e4`.
+Its assertion report is
+`output/smoothness-benchmark/smoothness-cold-detail-assertion.json` with
+SHA-256
+`0d7d99f687ade681bf5c717d0f07201d300ac3fa0b597c33bce4c909fa3db9b6`.
+These values are machine-specific regression evidence from a dirty source
+snapshot, not cross-device guarantees.
 
 ## Superseded Pre-Terminal-Gate Checkpoint
 
@@ -473,19 +496,21 @@ Measured on 2026-07-02 with `COPC_BENCHMARK_POINT_COUNT=10000` and
 | `PointPrimitiveCollection` | 10,000 |   45.4 ms |          3.9 ms | 49.6 ms |
 | `BufferPointCollection`    | 10,000 |   45.8 ms |         11.4 ms | 57.6 ms |
 
-The current default `CesiumPrimitivePointRenderer` submits one typed-array
-`Primitive` instead of creating one Cesium point object per point. This checkpoint
-shows a CPU submission-time win at 10,000 points. The total render path is still
+The current default `CesiumPrimitivePointRenderer` submits typed-array
+`Primitive` chunks instead of creating one Cesium point object per point. This
+checkpoint shows a CPU submission-time win at 10,000 points. The total render path is still
 largely coordinate-transform dominated, so the next performance step should
 reduce main-thread coordinate conversion and data preparation overhead.
 
 ## Current Default
 
 The basic viewer starts in Balanced detail mode: 180,000 max points per node,
-240,000 max Auto LOD points, 360,000 max camera-stream points, and 2 px
-typed-array primitive points. The initial load renders one real COPC node to
-place the camera, then automatically renders a denser camera-selected coverage
-LOD set through depth 3. The stream input acts as a maximum budget: camera
+240,000 max Auto LOD points, 360,000 max camera-stream points, and 1.75-5 px
+projected-spacing adaptive splats. Balanced uses a 1.25 coverage scale, a 1.25
+CSS-pixel safety halo, renderer-scoped EDL at strength 1.4/radius 0.8, and no
+scene FXAA. The viewer keeps the layer's attribute-color default. The initial
+load renders one real COPC node to place the camera, then automatically renders a denser camera-selected
+coverage LOD set through depth 3. The stream input acts as a maximum budget: camera
 streaming can lower the effective point budget after slow visible updates and
 gradually recover it after repeated fast updates. This keeps the demo from
 staying overloaded on heavier samples or slower machines.
@@ -520,6 +545,12 @@ check measured expand/apply/select/render/total
 `0.0/0.0/3.0/30.4/33.5 ms`, with 59.4 average FPS, 16.80 ms p95 frame time, and
 0 frames over 50 ms.
 
+The final controlled Autzen pose also caches each immutable hierarchy node's
+transformed eight-corner bounding sphere by object identity. Frustum tests still
+run for every camera selection, but repeated legacy/enhanced selection measured
+2.1/3.0 ms instead of the earlier 8.7-12.0 ms evidence range, a roughly 66-82%
+reduction without reusing a stale camera visibility result.
+
 After allowing camera streaming to select up to two nearby depth-2 nodes, the
 same targeted check measured depth avg `2.0`, expand/apply/select/render/total
 `0.0/0.0/1.5/17.5/19.0 ms`, with 60.0 average FPS, 16.70 ms p95 frame time,
@@ -536,35 +567,33 @@ Rendering the submitted points was not the dominant cost in these runs. The
 visible camera-stream update is now mostly renderer submission time, while
 hierarchy page expansion happens in the background.
 
-The current demo selects the deepest complete same-depth frontier that fits the
-camera LOD's node, source-point, and compressed-byte budgets. It does not mix a
-few target-depth nodes into a coarse frontier for terminal output. The render
-plan expands that frontier to its complete available additive ancestor closure,
-orders the required nodes coarse-to-fine, and distributes the point budget
-across the whole closure. Progressive coverage remains useful only for preview
-or explicitly non-terminal low-level integrations.
+The current demo selects a coverage-preserving mixed-depth antichain that fits
+the camera LOD's node, source-point, and compressed-byte budgets. It reserves a
+visible baseline and only replaces a parent with a complete visible sibling
+group, rather than mixing a few greedy target-depth nodes into an unprotected
+coarse frontier. The render plan expands that frontier to its complete available
+additive ancestor closure, orders the required nodes coarse-to-fine, and
+distributes the point budget across the whole closure. The reusable high-level
+controller retains complete-depth as its default.
 
-The basic viewer also opts into
-`activePointGeometryWorkerCancellation: "terminate-uncached"` for the integrated
-COPC geometry worker path. Camera streaming no longer terminates every previous
-render immediately. On camera movement the old render is first marked stale so
-late progress cannot update the screen. After the next camera selection is
-known, the viewer compares the previous and current node families: overlapping
-zoom/pan work is allowed to finish in the background and populate the layer and
-worker caches, while unrelated stale work is aborted so fresh current-view
-requests can start on new workers. That reused background work is bounded by a
-short grace period, so a near-finished overlap can still warm caches while
-long-running previous-view detail does not keep current-view requests queued for
-seconds. The `"terminate-uncached"` policy terminates workers that have not yet
-retained decoded node data, while preserving cache-owning workers to avoid
-turning repeated zoom/pan work into cold decompression. The library default remains `"soft"` so
-applications that prioritize maximum decoded-worker cache retention can keep
-that behavior without the example's stale-work termination policy. When
-terminate cancellation does replace a worker, the integrated geometry worker
-pool remembers the most recent source-aware warmup request and replays it on
-replacement workers. That preserves fast stale-work cancellation for cold
-workers while reducing the cost of starting the next current-view request on an
-otherwise cold worker.
+The basic viewer uses the library's `activePointGeometryWorkerCancellation:
+"soft"` policy for the integrated COPC geometry worker path. On camera movement
+the old render is first marked stale so late progress cannot update the screen.
+After the next camera selection is known, the viewer compares the previous and
+current node families: overlapping zoom/pan work may finish in the background,
+while unrelated stale consumers are canceled. Soft cancellation keeps the
+worker alive long enough for an in-flight range/decode to populate its decoded
+cache before reporting cancellation, instead of terminating a cold worker and
+repeating the same large range on another worker. Independent current-view nodes
+can still use other idle workers. The controlled Eptium trace accepted this
+tradeoff only after the repeatable large-node abandonment disappeared without a
+first-ready regression.
+
+Applications can still opt into `"terminate-uncached"` or `"terminate"` when
+discarding stale work is more important than cache/network reuse. When terminate
+cancellation replaces a worker, the integrated geometry worker pool remembers
+the most recent source-aware warmup request and replays it on replacement
+workers, including the already parsed COPC metadata.
 
 Integrated COPC geometry requests and core point-sample worker requests also
 carry an optional `requestPriority`. The basic viewer assigns monotonically
@@ -768,8 +797,28 @@ terminal set.
 Likewise, the LOD-specific progressive per-final-node cap is not applied to a
 complete-depth terminal plan. The configured total render budget is divided
 across the full additive closure and bounded by the caller's general per-node
-limit. This avoids concentrating density in a few selected patches while other
-required regions remain sparse.
+limit. Both complete-depth and mixed-depth terminal paths derive weights from
+the hierarchy `pointCount` of every required key, including additive ancestors.
+A deterministic integer weighted water-fill assigns a proportionate share,
+caps each node at its available samples and per-node limit, and redistributes
+unused points when a small node saturates. The object, typed-channel, and
+integrated-worker geometry paths use the same allocator; low-level calls without
+weights keep the previous equal-share behavior.
+
+The reference viewer deliberately exercises the stricter mixed-depth terminal
+path instead of changing that public default. It reserves a visible-tree
+baseline near one depth above the target and its complete additive closure, then
+uses remaining node/point/compressed-byte budget only for atomic groups of all
+immediate visible, renderable siblings. If the whole group does not fit, the
+parent stays in the frontier. This keeps the terminal frontier an antichain and
+prevents one greedy child refinement from creating isolated dense patches over
+an otherwise coarse footprint. Since this selector has already charged the
+complete additive closure to its source-point and compressed-byte budgets, the
+mixed-depth render plan enables source headroom: it loads up to the configured
+per-node cap and applies the total point budget during composition. The
+complete-depth default retains its render-budget-derived per-node load cap
+because its selector budgets the same-depth frontier before ancestors are
+appended. The low-level headroom switch remains explicit and defaults off.
 
 For the default typed-array primitive renderer, camera-stream detail rendering
 commits at most one newly decoded node per progress step and yields to an
@@ -784,13 +833,189 @@ reports must not relabel that early timestamp as final-detail total. The early
 timestamp must itself be tied to `app-render-commit` or a revision-verified
 `app-render-retained` frame.
 
-The typed-array primitive renderer now keeps worker-prepared geometry batches
-as per-node primitives by default. Since the integrated worker already returns
+The typed-array primitive renderer API keeps worker-prepared geometry batches as
+per-node primitives by default. Since the integrated worker already returns
 node-sized typed arrays, this avoids concatenating multiple decoded nodes into a
-new large array just to submit them to Cesium. During progressive camera
-updates, previously completed nodes keep their primitive key when later nodes
-finish, so the renderer can add only the new node primitive instead of removing
-and rebuilding an accumulated chunk.
+new large array just to submit them to Cesium. Balanced, detail, and ultra use a
+four-batch ceiling to reduce draw primitives. Their incomplete progressive tail
+still keeps one stable primitive per node; when the batch or point limit seals a
+group, it is merged once instead of rebuilding a growing 1 -> 2 -> 3 -> 4
+buffer. During progressive camera updates, completed chunks retain their keys
+while later nodes finish.
+
+Adaptive splats project each batch's CRS-aware world-space spacing and retained
+sample ratio to screen pixels, then clamp the size to the active quality
+preset's minimum and maximum. Missing spacing metadata keeps the fixed-size
+fallback. A single batch, or a merged group whose effective Float32 spacing is
+uniform, embeds the spacing once as a shader constant instead of uploading a
+4-byte-per-point attribute; mixed-spacing chunks keep that attribute fallback.
+For ground ellipses, covariance row extents bound a rotated footprint, and the
+balanced/detail/ultra 1.25/1/1 CSS-pixel safety halos expand both axes after the
+  bounded base-size calculation. The fragment shader reconstructs the ellipse
+  axes from the projected covariance and applies the analytic coverage test.
+  Optional eye-dome lighting wraps only this
+renderer's opaque point commands and feature-detects the Cesium runtime/WebGL
+support; unsupported devices keep direct primitives. Balanced, detail, and
+ultra enable EDL and disable scene FXAA; preview keeps both off. Performance
+comparisons must therefore record the selected quality preset instead of
+treating either post-process policy as a scene-wide constant.
+
+The renderer-quality A/B gate isolates footprint quality from COPC selection.
+`npm run benchmark:quality-ab` renders the same source, terminal additive node
+set, point budget, camera pose, drawing buffer, DPR, and render signature with
+the compatibility renderer and the enhanced renderer. Each capture pairs a
+point-on canvas with a point-off canvas; their RGB difference removes the
+unchanged Cesium background and UI before coverage, bounded 1-3 px gaps,
+isolated pixels, edge perimeter, and morphology-based micro-hole metrics are
+calculated. The candidate mask is also checked against a 3 px dilation of the
+compatibility mask: at least 95% of baseline foreground must remain, no more
+than 0.1% of candidate foreground may lie outside that support, and no more
+than 0.1% of the remaining large baseline-void area may be painted. This keeps
+a full-canvas or halo-producing splat from passing merely by increasing
+coverage and reducing edge count. Exact string equality is used for node keys, render signatures,
+point counts, canvas dimensions, and projection state. Camera position allows
+10 micrometres and orientation allows `1e-12` only to ignore floating-point
+roundoff; the latest diagnostic observed zero position and orientation delta.
+Console and page errors invalidate the run.
+The default command runs AB then BA and exits nonzero for both incomparable
+(`invalid`) and failed quality/performance (`needs-work`) verdicts.
+
+The latest 2026-07-16 post-change checkpoint on Chromium WebGL2/ANGLE
+Direct3D11 with an RTX 3060 used the Autzen classified source response identified
+by ETag `dbb36ebb301306feb94c5e313524492c-10`, 53 required additive nodes,
+1,047,575 rendered points, and a 1600x900 drawing buffer. This diagnostic run
+used the command's normal two-repeat AB/BA order. The compatibility
+screen-circle path and enhanced ground-ellipse path produced:
+
+| Metric | Compatibility | Enhanced | Ratio |
+| --- | ---: | ---: | ---: |
+| Point-pixel canvas coverage | 62.080% | 70.939% | 1.143x |
+| Bounded 1-3 px gap ratio | 12.586% | 0.839% | 0.067x |
+| Isolated foreground ratio | 0.000447% | 0% | 0x |
+| Edge perimeter / foreground pixel | 0.3215 | 0.0328 | 0.102x |
+| Average FPS during the camera step | 60.000 | 59.997 | 1.000x |
+| p95 frame interval | 16.75 ms | 16.80 ms | 1.003x |
+
+The enhanced mask retained 99.4542% of baseline foreground; both unsupported
+candidate expansion and large-void intrusion were 0%. All
+equivalence and quality gates passed; the machine-readable report, paired
+images, and binary masks are written to `output/quality-ab`. This proves the
+enhanced renderer against this repository's compatibility path under controlled
+conditions. It is not a same-camera, same-source comparison with Eptium and
+must not be used by itself to claim product-level superiority over that viewer.
+
+## Controlled Eptium Comparison
+
+`npm run benchmark:eptium-comparison` performs the external comparison that the
+renderer-only A/B above intentionally does not claim. The harness opens live
+Eptium and the local viewer in one isolated Chromium session, verifies the same
+Autzen COPC URL, ETag, 81,123,042-byte object, 21-field ECEF camera pose,
+1600x900 drawing buffer, DPR 1, and WebGL renderer, and rejects non-terminal or
+UI-contaminated captures. Stock EDL-on visual output is preserved as a separate
+image for each configuration. Geometry-mask metrics are instead captured with
+EDL disabled for both viewers and paired with point-off counterfactuals. Eptium
+uses `Cesium3DTileStyle.show=false` plus `makeStyleDirty()` before and after its
+point-on image; those two baseline images must be byte-identical. Eptium's base
+canvas is deterministically nonblack even though the Cesium scene is configured
+opaque black, so blackness is recorded only as a diagnostic and is not treated
+as point coverage. The local point-off frames are pure black and stable. Fair
+frame timing remains on the stock visual page and uses the same discarded warmup
+and fixed 1.2-second, 12-step camera movement at a 60 FPS target. The local stock
+and geometry-mask reloads must also have identical terminal point counts, render
+signatures, selected node keys, camera fingerprints, canvas sizes, and DPR.
+
+The live 2026-07-17 two-repeat AB/BA run used Eptium's stock SSE 32, 3 px point
+style, attenuation, EDL strength 2.4/radius 0.8, MSAA 4, and its normal 10 FPS
+application cap. The fair-timing pass temporarily set both viewers to 60 FPS.
+The browser reported an NVIDIA GeForce RTX 3060 through ANGLE Direct3D11. The
+table reports the median across the two opposite-order repeats. `Product first
+ready` includes fresh page navigation, initial terminal loading, and the shared
+comparison pose; unlike frame timing, it observes browser HTTP-cache state
+rather than forcing a cold browser cache.
+
+| Configuration | Rendered points | Coverage | Bounded gaps | Edge / foreground | Fair p95 | Fair max | Product first ready | Product ranges |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Eptium stock | 1,047,575 | 86.151% | 0.2991% | 0.010569 | 17.15 ms | 18.15 ms | 16,495.0 ms | 55 |
+| Local shipped balanced | 720,000 | 86.559% | 0.2450% | 0.010168 | 17.10 ms | 19.65 ms | 15,971.0 ms | 60 |
+| Local high detail | 1,440,000 | 86.717% | 0.2230% | 0.009259 | 17.00 ms | 19.30 ms | 14,081.0 ms | 60 |
+| Local equal count | 1,047,575 | 86.678% | 0.2238% | 0.009536 | 17.15 ms | 19.35 ms | 15,555.5 ms | 60 |
+
+The shipped-default and high-detail rows are descriptive, non-equivalent
+comparisons: the former renders 31.27% fewer points than Eptium at this pose,
+while the latter renders 37.46% more. The high-detail target is the observed
+1,440,000-point terminal result, not the 720,000-point preset base budget;
+Eptium's tested discrete SSE values did not produce an equivalent point count.
+Both descriptive local rows nevertheless passed all four visual/performance
+gates at their respective point counts.
+
+The strict equal-count comparison is `passed`. With exactly 1,047,575 points,
+local coverage is 0.5266 percentage points higher, bounded gaps are 25.18%
+lower, edge perimeter per foreground pixel is 9.79% lower, and fair p95 is
+equal at 17.15 ms. Product first-ready time is 939.5 ms, or 5.70%, lower than
+Eptium; local product-ready time is also 1,797.0 ms, or 10.36%, lower because
+the local terminal is already stable when first reported. Both equal-count point-count
+pairs are exact, all visual and p95 gates pass, Eptium foreground retention is
+99.9497%, and unsupported expansion plus large-void intrusion are both zero.
+This establishes a visual-quality and product-ready advantage at this one
+controlled Autzen checkpoint, with matching p95 frame timing.
+
+This checkpoint also records product-only COPC request traffic. Eptium issued
+55 ranges, requested 16,160,948 bytes, duplicated 17,792 exact-range bytes,
+abandoned no requests, and had a 1.0011 request-amplification ratio. The local
+equal-count run issued 60 ranges, requested a 17,437,756-byte unique union,
+duplicated no exact ranges, abandoned four transition-time predictive prefetch
+requests, and had an exact 1.0 amplification ratio. The four abandoned ranges
+total 368,651 bytes and received no body before the harness moved to the
+geometry-mask reload, leaving 17,069,105 responded requested bytes. The local
+viewer therefore wins this checkpoint's visible quality, readiness, exact
+duplicate, and amplification measures, but still issues five more ranges and
+its unique requested-byte union is 1,294,600 bytes or 8.02% above Eptium's
+16,143,156 bytes.
+
+The structural optimization behind this checkpoint reuses parsed main-thread
+COPC metadata when point-sample workers start, when integrated geometry workers
+perform source-aware warmup, and on every geometry load or prefetch request. A
+later parsed value also replaces a failed worker-local bootstrap promise, so a
+pre-metadata warmup cannot poison that worker. An older one-repeat capture
+repeated the 64 KiB LAS/COPC header and COPC VLR roughly ten times across
+worker-local sources; the current captures request each once, including for
+workers created lazily after warmup.
+
+The example also keeps superseded uncached geometry work on soft cancellation
+so a nearly completed large-node fetch can populate its worker cache instead of
+terminating the worker and immediately repeating the same range. Relative to
+the original pre-change capture, strict equal-count traffic fell from 85 to 60
+ranges and from 22 exact duplicates to zero. Strict decoded-worker affinity is
+the final step in that reduction: density upgrades now wait for the worker that
+owns the decoded node instead of crossing the former 120 ms fallback boundary
+and repeating the range read and LAZ decode elsewhere. The remaining network
+gap is unique work: three extra completed nodes support the higher measured
+coverage, while four predictive prefetches are cut off only when the comparison
+harness leaves the product page. Coalescing adjacent ranges and cancelling
+transition-time prefetch earlier are the next optimization targets, without
+silently trading away the measured visual advantage.
+
+It does not establish total-network or universal superiority. The local median
+per-repeat maximum is 19.35 ms versus Eptium's 18.15 ms in this run, and this
+tail metric remains sensitive to individual browser/GPU stalls. Local request
+amplification is lower, but request count and the unique byte union remain
+higher. Both FPS results are effectively capped at 60, and other camera poses,
+COPC distributions, GPUs, drivers, browsers, and Eptium releases still require
+their own measurement.
+Different LODs may select different source point IDs, so Eptium mask support and
+void comparisons remain non-blocking diagnostics. All six local stock/mask
+workload pairs matched on point count, render signature, selected node keys,
+camera pose, canvas, and DPR. Both masks for each configuration were
+byte-identical, and every point-off pre/post pair was byte-stable.
+
+The machine-readable result and hashed paired images are in
+`output/eptium-comparison/eptium-comparison-result.json`. It records the live
+Eptium main-bundle URL and ETag because the remote application can change after
+this checkpoint. Its SHA-256 is
+`a8ac8d1e72c8a7dfc53b9e6142110704fd8e406ac5609283ba9df860a363f1e2`.
+The separately hashed raw request ledger is
+`output/eptium-comparison/eptium-comparison-network-trace.json` with SHA-256
+`9f91a00b788fbdff075da0a96be8428632232e2cda95d082bdf479aaa2646116`.
 
 For an unchanged exact terminal plan, even that stable-batch resubmission is
 unnecessary. The viewer retains the committed result only when the complete
@@ -805,10 +1030,17 @@ During preview/refinement, render point budgets are distributed across all
 currently renderable current-view nodes before leftover budget is assigned to
 retained background coverage. The terminal commit then distributes its budget
 across the exact additive closure and removes the retained preview layer. When a
-cached object, typed-channel, or geometry result must be reduced, deterministic
-whole-range sampling is used instead of a prefix slice; positions, colors, and
-attribute channels stay aligned without spatially biasing reuse toward the
-start of a node payload.
+cached object, typed-channel, or geometry result must be reduced, it keeps a
+prefix of the node's stable Morton/bit-reversal progression. The initial Morton
+order quantizes XYZ to 10 bits per axis and uses a four-pass stable radix sort;
+every density (including the full node) shares the same prefix. Positions,
+colors, and attribute channels stay aligned, density changes retain the already
+visible points, and the prefix is
+distributed through the node rather than biased toward source payload order.
+Point-sample and integrated geometry workers cache this spatial order once per
+retained decoded node. It is a `Uint32Array`, so decoded-view accounting adds
+exactly 4 bytes per decoded point; later density changes reuse the cached order
+instead of paying another sort.
 
 Point-geometry timing now separates aggregate work from the slowest single
 request. The example still shows summed decode/worker time to estimate total
@@ -826,13 +1058,13 @@ cached worker is busy with another node, `decodedNodeWorkerFallbackDelayMillisec
 controls the latency/cache tradeoff: the default `Number.POSITIVE_INFINITY`
 keeps strict decoded-cache affinity, while `0` lets the request use any idle
 worker immediately for latency-first experiments. The worker-pool helper used by
-the basic viewer returns a 120 ms fallback delay after benchmark comparisons
-showed that immediate fallback increased duplicate decompression while strict
-affinity left some foreground detail passes waiting behind one busy cached
-worker. If the exact same node is already active, the duplicate node request
-still waits for it instead of starting the same LAZ decompression twice. The
-queue still scans past that blocked request, so unrelated current-view nodes can continue to dispatch
-in parallel.
+the basic viewer now keeps the same strict default because the controlled
+Eptium request ledger showed that a short fallback delay could still re-fetch a
+node that had just been decoded on another worker. If the exact same node is
+already active, the duplicate node request still waits for it instead of
+starting the same LAZ decompression twice. The queue still scans past that
+blocked request, so unrelated current-view nodes can continue to dispatch in
+parallel.
 
 The same density-upgrade coalescing is available in the lower-level
 point-sample worker path. When `CopcSource.loadNodePointSamples()` has queued a
@@ -878,8 +1110,8 @@ The worker pool sizing policy keeps point-sample workers conservative and caps
 integrated COPC geometry workers for visible latency instead of maximum
 background throughput. The default policy falls back to four point-sample
 workers and five integrated geometry workers, caps point-sample concurrency at
-six, caps integrated geometry concurrency at eight, uses a 120 ms decoded-node
-fallback delay for the basic viewer, reserves browser capacity for rendering,
+six, caps integrated geometry concurrency at eight, keeps strict decoded-node
+worker affinity for the basic viewer, reserves browser capacity for rendering,
 and warms the selected geometry pool up front while still bounding total worker
 creation. This reflects the current bottleneck: typed-array Cesium submission is
 usually near-zero milliseconds in the current benchmark, while COPC point-data
@@ -911,10 +1143,11 @@ inside the same coverage group.
 
 At the lower COPC source boundary, URL and Blob range getters now coalesce and
 cache exact byte ranges with a bounded in-memory LRU policy. This does not
-replace node-level decoded-view caches, and it does not share bytes across
-separate browser workers, but it avoids duplicate metadata, hierarchy, or
-point-data range reads inside the same source or worker when callers ask for the
-same byte span concurrently or repeatedly.
+replace node-level decoded-view caches, and point/hierarchy bytes are still not
+shared across separate browser workers. Parsed COPC metadata is now explicitly
+seeded across that boundary; all remaining exact-range reuse is local to one
+source or worker. A future source-wide request broker is still needed to
+coalesce overlapping point-data work across worker globals.
 
 The camera-stream render plan can skip the coarse coverage preview when the
 current final detail set is already small. The basic viewer uses this for views

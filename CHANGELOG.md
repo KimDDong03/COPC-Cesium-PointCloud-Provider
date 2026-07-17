@@ -58,9 +58,87 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   telemetry. The reference viewer now enforces a 768 MiB layer-wide ceiling
   instead of allowing the per-worker ceiling to multiply with CPU-scaled
   concurrency.
+- Deterministic spatially progressive COPC sampling based on 10-bit-per-axis
+  quantized Morton codes, a stable four-pass radix sort, and centered
+  bit-reversal prefixes shared by every density. Retained decoded worker views
+  cache the order and account for its `Uint32Array` at exactly 4 bytes per
+  decoded point.
+- Optional projected-spacing adaptive splats in the typed Cesium primitive
+  renderer, with per-node CRS-aware metre spacing and sample-density metadata.
+- Optional ECEF tangent-plane ground ellipses and post-density splat coverage
+  scaling for oblique-view continuity. Covariance row extents correctly bound
+  rotated ellipses, and balanced/detail/ultra add 1.25/1/1 CSS-pixel safety
+  halos after the bounded base-size calculation. Renderer defaults retain the
+  compatible unit-scale screen circle and zero halo. Ground ellipses require
+  adaptive sizing. Projected covariance row extents bound the rotated sprite,
+  while the fragment shader reconstructs its axes and keeps a one-pixel minor
+  footprint at grazing angles.
+- Renderer-scoped optional eye-dome lighting for opaque typed point batches,
+  with Cesium runtime/WebGL feature detection and direct-primitive fallback.
+  Balanced, detail, and ultra opt in and keep scene FXAA disabled; preview keeps
+  both EDL and scene FXAA disabled.
+- Geometry-batch draw consolidation with a compatibility default of one batch
+  per primitive and a four-batch ceiling in balanced/detail/ultra. An incomplete
+  progressive tail remains stable per-node and merges once only when sealed.
+  Uniform effective spacing is embedded as one shader constant; mixed-spacing
+  chunks retain the per-point Float32 attribute fallback.
+- A renderer-independent mixed-depth hierarchy traversal planner with required
+  baseline/additive closure reservation, atomic visible-sibling refinement,
+  parent-frontier SSE hysteresis, readiness, visual-benefit/resource-cost
+  ranking, and node/point/compressed-byte budgets.
+- Layer-wide `pointColorMode` styling with backward-compatible attribute color
+  and global-bounds elevation color through a six-stop viridis-like palette,
+  shared by object, typed-array, standalone-worker, and integrated-worker paths.
+  The reference viewer keeps the backward-compatible attribute default.
+- A strict renderer-only quality A/B harness with paired point-on/point-off
+  canvas masks, exact source/node/signature/point/canvas equivalence gates,
+  camera floating-point tolerances, screen-door and baseline-support/large-void
+  preservation metrics, AB/BA ordering, frame timing, source response
+  provenance, browser error invalidation, and nonzero failed-gate exits.
+- A live Eptium comparison harness with exact source, ETag, camera, canvas,
+  terminal-state, stock-style, stable-background, and same-WebGL-adapter gates;
+  shipped-default, high-detail, and equal-point-count result classes; AB/BA
+  ordering; non-blocking cross-LOD support diagnostics; fresh-page readiness
+  timing; and a hashed product-only COPC request ledger with exact duplicate,
+  overlap, amplification, abandoned-work, and coalescing estimates. The latest
+  two-repeat controlled Autzen checkpoint passes the strict equal-count visual
+  and p95 gates and records a product-ready advantage, while retaining the
+  explicit unique-byte/request-count deficit and cross-run tail-latency caveat.
 
 ### Changed
 
+- Typed camera-stream terminal refinement now retains the current preview or
+  revision-proven frame while bounded worker requests finish, then performs one
+  exact weighted full-budget renderer commit. This avoids repeated primitive
+  reallocations and GPU uploads as individual nodes arrive. Non-typed renderers
+  keep adaptive incremental progress, and low-level terminal-executor callers
+  can explicitly opt typed rendering back into `"incremental"` mode.
+- Point-sample work, source-aware integrated-geometry warmup, and every
+  integrated geometry load/prefetch now reuse COPC metadata already parsed by
+  the main source. Later metadata recovers a worker from a rejected fallback
+  bootstrap, while soft cancellation lets superseded uncached geometry finish
+  into its worker cache. Strict decoded-worker affinity now prevents a busy
+  cache owner from sending a density upgrade through an uncached fallback
+  worker. The controlled equal-count sequence reduced product ranges from 85
+  to 60 and exact duplicate requests from 22 to zero without changing the
+  terminal node or point-count contract. Four transition-time predictive
+  prefetch requests and the larger unique-byte union remain explicit network
+  blockers.
+
+- Camera-stream temporal LOD can now retain a revision-proven GPU frame until
+  the first replacement contains the complete coarse baseline, at least 65%
+  weighted final-node coverage, and at least 60% of the comparable
+  exact-terminal point-count high-water mark. Intermediate frames cannot ratchet
+  that floor downward. Camera changes abort superseded rendering before debounce
+  so stale progress cannot mutate that transition frame; exact terminal commits
+  remain ungated.
+- Camera-stream reuse now separates cached final-node detail from non-final
+  background coverage, retains an unchanged lower-density frame as explicit
+  progress without resubmitting geometry, and promotes only a matching,
+  completed weighted render signature to exact terminal reuse. Smoothness QC
+  binds completion to both visual composition and detail progress and reads
+  rendered point counts from the applied-frame state before using legacy
+  status-text parsing.
 - Camera-stream prefetch progress, completion, cancellation, and failure now
   refresh the visible metadata row immediately; browser smoke verifies that the
   settled runtime state and panel text stay synchronized.
@@ -74,6 +152,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Progressive foreground/background point budgeting and typed/object/geometry
   payload limiting now live in a focused internal module with independent
   allocation and channel-preservation tests.
+- Complete-depth and mixed-depth terminal paths now derive source-point weights
+  for every required additive node and share a deterministic integer weighted
+  water-fill with cap-aware leftover redistribution. Low-level calls without
+  weights keep equal-share allocation. Ancestor-budgeted mixed-depth plans also
+  opt into configured per-node source headroom and apply the global point limit
+  during composition; complete-depth keeps its budget-derived load cap.
 - The reference viewer's fast foreground coverage preview now targets roughly
   2,800 points across at most two early nodes before denser refinement.
 - Cold and warm Millsite profiles now use dataset-relative height, explicit
@@ -102,9 +186,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Browser QC now executes the exact lockfile-installed Playwright, Vite, and
   TypeScript package binaries, and the development lock is current with Cesium
   1.143.0 and Vitest 4.1.10.
-- The high-level camera stream and reference viewer now use complete-depth
-  coverage and include available COPC ancestors by default. Interactive preview
-  thresholds remain separate from the exact terminal-quality contract.
+- The high-level camera stream keeps complete-depth coverage and available COPC
+  ancestors as its default. The reference viewer explicitly uses a required
+  visible coverage baseline plus atomic visible-sibling refinements to produce a
+  separately validated mixed-depth antichain. Interactive preview thresholds
+  remain separate from either exact terminal-quality contract.
 - The high-level camera stream now distributes the full LOD render budget across
   a complete-depth additive set, bounds active progressive node requests, and
   reports structural visual-quality state with each observable update.
@@ -130,6 +216,18 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Same-camera hierarchy follow-up signatures now include refined depth. A
+  hierarchy-complete depth-5 transition can no longer collide with a prior
+  depth-4 complete signature for the same visible node set and leave a cold
+  detail view permanently non-terminal.
+- Mixed-depth sibling refinement now tests the current frontier parent's SSE
+  against the refine/retain threshold. Target-depth children can legitimately
+  be below that threshold; requiring them to exceed it left qualifying branches
+  one depth too coarse.
+- Repeated camera selections now reuse each immutable hierarchy node's
+  transformed eight-corner `BoundingSphere` through an identity-keyed `WeakMap`.
+  Current camera-frustum tests still run on every selection, and replacement
+  hierarchy node identities are recomputed.
 - Camera-selected hierarchy expansion now chooses Cesium-frustum-visible
   current-view pending pages instead of only the viewport-center tile, spends
   one bounded budget across newly revealed levels, and keeps visual quality
@@ -157,9 +255,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   budgets because of a preview-oriented 5k-6.5k per-node cap. Explicit
   progressive preview mode keeps that conservative cap.
 - Terminal visual-quality checks no longer accept disjoint mixed-depth
-  frontiers. A completed frame now requires one uniform frontier depth in
-  addition to an antichain, complete additive closure, and zero missing or
-  stale nodes.
+  frontiers. The default contract requires one uniform frontier depth; the
+  explicit mixed-depth contract requires an antichain produced from preserved
+  baseline coverage and atomic sibling refinement. Both require complete
+  additive closure and zero missing or stale nodes.
 - Aborted hierarchy callers now stop waiting before page merge without
   canceling shared range work, and failed metadata, root, or hierarchy-page
   promises are removed from caches so a later request can retry cleanly.
@@ -200,7 +299,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Camera streaming no longer treats an 85-95% mixed-depth render or a cache-only
   tail as final. Bounded request windows continue through the complete required
   set, one exact terminal render removes retained preview nodes, and cached
-  density reduction samples the full source range instead of a biased prefix.
+  density reduction keeps a spatially distributed nested prefix instead of
+  either source-order bias or a density-dependent resampling pattern.
 - Fully cached progressive renders now omit retained background nodes on their
   first commit instead of waiting for a nonexistent follow-up load, and empty
   zero-point hierarchy entries are excluded from camera frontiers and additive

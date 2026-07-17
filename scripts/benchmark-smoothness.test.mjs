@@ -32,6 +32,10 @@ test("generated flow binds measured status to the expected request and preserves
   );
   assert.match(
     flow,
+    /status\.cameraStreamDetailProgress\?\.isComplete === true/,
+  );
+  assert.match(
+    flow,
     /const prefetchStatus = await waitForCameraStreamPrefetch/,
   );
   assert.doesNotMatch(
@@ -43,10 +47,13 @@ test("generated flow binds measured status to the expected request and preserves
     /parseGeometryCacheCounters\(\s*measuredStatus\.geometryCache/,
   );
   assert.match(flow, /cameraStreamPrefetchText: prefetchStatus\./);
-  assert.match(flow, /\? "retained-exact-render"\s*: "camera-stream-node-sample-cache"/);
   assert.match(
     flow,
-    /measuredStatus\.cameraStreamRenderDisposition ===\s*"retained-exact-render"/,
+    /measuredStatus\.cameraStreamRenderDisposition\?\.startsWith\(\s*"retained-"/,
+  );
+  assert.match(
+    flow,
+    /\? measuredStatus\.cameraStreamRenderDisposition\s*: "camera-stream-node-sample-cache"/,
   );
   assert.match(
     flow,
@@ -88,6 +95,10 @@ test("generated flow binds measured status to the expected request and preserves
   assert.match(
     flow,
     /renderedPointCount: parseCameraStreamPointCount\(status\?\.status\)/,
+  );
+  assert.match(
+    flow,
+    /measuredStatus\.cameraStreamRenderedPointCount \?\?\s*parseCameraStreamPointCount\(measuredStatus\.status\)/,
   );
   assert.match(flow, /selectedDepth: diagnostics\?\.selectedDepth/);
   assert.match(flow, /visualQuality,/);
@@ -268,7 +279,10 @@ test("basic viewer marks camera movement complete before final stream refinement
   assert.ok(foregroundCompletion > firstVisibleResponse);
   assert.ok(firstResponseSettle > foregroundCompletion);
   assert.ok(returnedMarker > firstResponseSettle);
-  assert.match(source, /\? "app-render-retained"\s*: "app-render-commit"/);
+  assert.match(
+    source,
+    /renderDisposition !== "new-render"\s*\? "app-render-retained"\s*: "app-render-commit"/,
+  );
   assert.match(source, /renderDisposition,/);
   assert.match(
     source,
@@ -293,8 +307,31 @@ test("basic viewer marks camera movement complete before final stream refinement
   assert.match(source, /const canRetainCachedCoverage =\s*hierarchyFollowup/);
   assert.match(
     source,
-    /backgroundNodeResults\.length > 0 && !canRetainCachedCoverage/,
+    /cachedProgressNodeResults\.length > 0 &&\s*!canRetainCachedCoverage/,
   );
+  assert.match(
+    source,
+    /\.filter\(\(nodeResult\) => !finalNodeKeySet\.has\(nodeResult\.nodeKey\)\)/,
+  );
+  assert.match(source, /renderDisposition: "retained-progress-render"/);
+  assert.match(source, /preserveCommittedRenderState: true/);
+  assert.match(
+    source,
+    /options\.visualQuality && !options\.preserveCommittedRenderState/,
+  );
+  assert.match(
+    source,
+    /committedPointCountByNodeKey\.get\(candidate\.nodeKey\)/,
+  );
+  assert.match(
+    source,
+    /committedRender\.renderSignature === renderSignature &&\s*committedRender\.detailProgress\?\.isComplete === true/,
+  );
+  assert.match(
+    source,
+    /renderSignature: lastCameraStreamRenderSignature/,
+  );
+  assert.match(source, /detailProgress: options\.detailProgress/);
   assert.match(
     source,
     /canReuseCameraStreamCommittedRender\(\{/,

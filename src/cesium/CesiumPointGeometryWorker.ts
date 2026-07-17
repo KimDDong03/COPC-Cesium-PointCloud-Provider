@@ -40,6 +40,7 @@ function handleRequest(request: CesiumPointGeometryWorkerRequest): void {
       key: request.key,
       pointData: request.pointData,
       transform: request.transform,
+      pointColorStyle: request.pointColorStyle,
     });
 
     if (canceledRequestIds.delete(request.id)) {

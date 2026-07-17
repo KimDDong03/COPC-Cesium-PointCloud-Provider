@@ -126,6 +126,11 @@ export {
   type CopcCameraStreamTimeoutScheduler,
 } from "./CopcCameraStreamController";
 export {
+  createCopcCameraStreamSafeSwapState,
+  type CopcCameraStreamSafeSwapOptions,
+  type CopcCameraStreamSafeSwapState,
+} from "./CopcCameraStreamTransition";
+export {
   createCopcCameraStreamDetailCompletionSettings,
   createCopcCameraStreamPreviewPointCountPerNode,
   createCopcCameraStreamPrefetchNodeCount,
@@ -220,6 +225,7 @@ export {
 export {
   createCopcCameraStreamVisualQualityState,
   formatCopcCameraStreamVisualQuality,
+  type CopcCameraStreamTerminalFrontierMode,
   type CopcCameraStreamVisualQualityOptions,
   type CopcCameraStreamVisualQualityState,
 } from "./CopcCameraStreamVisualQuality";
@@ -249,6 +255,7 @@ export {
   type CopcWorkerPoolSettingsOptions,
 } from "./CopcWorkerPoolSettings";
 export { createPointSamplesFromCopc } from "./createPointSamplesFromCopc";
+export type { CopcPointColorMode } from "./copcPointColorizer";
 export { createCesiumPointGeometryWorker } from "./createCesiumPointGeometryWorker";
 export { createCesiumCopcPointGeometryWorker } from "./createCesiumCopcPointGeometryWorker";
 export type {

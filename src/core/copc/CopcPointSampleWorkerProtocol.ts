@@ -1,4 +1,4 @@
-import type { Hierarchy } from "copc";
+import type { Copc as CopcData, Hierarchy } from "copc";
 import type { CopcSourceDescriptor } from "./createCopcRangeGetter";
 import type {
   CopcNodePointSampleResult,
@@ -13,6 +13,7 @@ export type CopcPointSampleWorkerRequest =
 export interface CopcPointSampleWorkerLoadRequest {
   readonly id: number;
   readonly type: "loadNodePointSamples";
+  readonly copc?: CopcData;
   readonly source?: CopcSourceDescriptor;
   readonly url?: string;
   readonly nodeKey: string;

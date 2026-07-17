@@ -127,10 +127,21 @@ export function formatCopcHierarchyNodeCameraSelection(
 ): string {
   const modeSummary =
     selection.selectionMode === "coverage"
-      ? selection.coverageMode === "progressive"
-        ? "progressive coverage"
-        : "coverage"
+      ? selection.coverageMode === "mixed-depth"
+        ? "mixed-depth coverage"
+        : selection.coverageMode === "progressive"
+          ? "progressive coverage"
+          : "coverage"
       : "nearest";
+  const selectedDepths = selection.nodes.map((node) => node.depth);
+  const selectedMinDepth =
+    selectedDepths.length > 0
+      ? Math.min(...selectedDepths)
+      : selection.selectedDepth;
+  const selectedDepthSummary =
+    selectedMinDepth === selection.selectedDepth
+      ? `depth ${selection.selectedDepth.toLocaleString()}`
+      : `depths ${selectedMinDepth.toLocaleString()}-${selection.selectedDepth.toLocaleString()}`;
   const budgetSummary =
     selection.skippedByBudgetCount > 0
       ? `, ${selection.skippedByBudgetCount.toLocaleString()} skipped by budget`
@@ -149,7 +160,7 @@ export function formatCopcHierarchyNodeCameraSelection(
       ? `, spacing ${selection.estimatedSelectedDepthPointSpacingScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 1 })} px / ${selection.targetPointSpacingScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 1 })} px target`
       : "";
 
-  return `${selection.nodes.length.toLocaleString()} ${modeSummary} nodes at depth ${selection.selectedDepth.toLocaleString()} (target depth ${selection.targetDepth.toLocaleString()}, selected depth ${selection.estimatedSelectedDepthScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 0 })} px / ${selection.targetNodeScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 0 })} px target, root ${selection.estimatedRootScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 0 })} px${spacingSummary}${frustumSummary}${viewSummary}${budgetSummary})`;
+  return `${selection.nodes.length.toLocaleString()} ${modeSummary} nodes at ${selectedDepthSummary} (target depth ${selection.targetDepth.toLocaleString()}, selected depth ${selection.estimatedSelectedDepthScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 0 })} px / ${selection.targetNodeScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 0 })} px target, root ${selection.estimatedRootScreenPixels.toLocaleString(undefined, { maximumFractionDigits: 0 })} px${spacingSummary}${frustumSummary}${viewSummary}${budgetSummary})`;
 }
 
 export function formatCopcLoadedHierarchyPages(

@@ -1,5 +1,6 @@
 import type { CopcPointDataSampleArrays } from "../core/copc/CopcPointDataSample";
 import type { PointGeometryBatch } from "./CopcPointCloudRenderer";
+import type { ResolvedCopcPointColorStyle } from "./copcPointColorizer";
 import { createCesiumPointGeometryWorker } from "./createCesiumPointGeometryWorker";
 import type {
   CesiumPointGeometryWorkerBuildRequest,
@@ -79,6 +80,7 @@ export class CesiumPointGeometryWorkerPool {
       readonly key: string;
       readonly pointData: CopcPointDataSampleArrays;
       readonly transform: CesiumPointGeometryTransform;
+      readonly pointColorStyle?: ResolvedCopcPointColorStyle;
       readonly signal?: AbortSignal;
     },
   ): Promise<PointGeometryBatch> | undefined {
@@ -95,6 +97,7 @@ export class CesiumPointGeometryWorkerPool {
       key: options.key,
       pointData: options.pointData,
       transform: options.transform,
+      pointColorStyle: options.pointColorStyle,
     };
 
     return new Promise((resolve, reject) => {
