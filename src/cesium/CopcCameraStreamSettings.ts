@@ -34,6 +34,54 @@ export interface CopcCameraStreamLodSettingsOptions {
   readonly baseMaxHierarchyPages?: number;
 }
 
+export interface CopcCameraStreamMixedDepthThresholdOptions {
+  readonly cameraSettled: boolean;
+  readonly targetPointSpacingScreenPixels: number;
+}
+
+export interface CopcCameraStreamMixedDepthThresholds {
+  readonly refineScreenSpaceError: number | undefined;
+  readonly retainScreenSpaceError: number | undefined;
+}
+
+const SETTLED_CAMERA_STREAM_HYSTERESIS_EDGE_RATIO = 0.75;
+
+/**
+ * Keeps motion hysteresis while making the final settled selection independent
+ * of the previously rendered frontier. The settled threshold matches the
+ * mixed-depth planner's default 75% retention boundary, so a fast request and a
+ * slow chain of retained requests converge to the same quality high-water mark.
+ */
+export function createCopcCameraStreamMixedDepthThresholds(
+  options: CopcCameraStreamMixedDepthThresholdOptions,
+): CopcCameraStreamMixedDepthThresholds {
+  const targetPointSpacingScreenPixels =
+    options.targetPointSpacingScreenPixels;
+  if (
+    !Number.isFinite(targetPointSpacingScreenPixels) ||
+    targetPointSpacingScreenPixels <= 0
+  ) {
+    throw new Error(
+      "targetPointSpacingScreenPixels must be a positive finite number.",
+    );
+  }
+
+  if (!options.cameraSettled) {
+    return {
+      refineScreenSpaceError: undefined,
+      retainScreenSpaceError: undefined,
+    };
+  }
+
+  const settledScreenSpaceError =
+    targetPointSpacingScreenPixels *
+    SETTLED_CAMERA_STREAM_HYSTERESIS_EDGE_RATIO;
+  return {
+    refineScreenSpaceError: settledScreenSpaceError,
+    retainScreenSpaceError: settledScreenSpaceError,
+  };
+}
+
 /**
  * Limits hierarchy refinement to the deepest complete frontier that the
  * current request can actually render. A screen-space target can be deeper

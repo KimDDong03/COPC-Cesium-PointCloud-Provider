@@ -226,6 +226,13 @@ export class CopcCameraStreamRequestController {
     return this.#reusedAbortControllers.size;
   }
 
+  get isActive(): boolean {
+    return (
+      this.#activeAbortController !== undefined ||
+      this.#queuedRenderTimeout !== undefined
+    );
+  }
+
   #trimReusedRequests(): void {
     while (
       this.#reusedAbortControllers.size > this.#maxReusedBackgroundRequests

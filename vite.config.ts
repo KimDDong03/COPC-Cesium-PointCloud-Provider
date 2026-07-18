@@ -1,10 +1,10 @@
 import { defineConfig, type ProxyOptions } from "vite";
 import cesium from "vite-plugin-cesium";
 import { configureCesiumForPublicBase } from "./config/cesium-public-base.mjs";
-import { HOBU_LIDAR_SAMPLE_ROOT } from "./config/live-copc-sources.mjs";
+import { readCopcSampleProxyRoot } from "./config/copc-sample-proxy-root.mjs";
 import { readCopcViewerPublicBase } from "./config/public-base.mjs";
 
-const hobuLidarSampleRoot = new URL(HOBU_LIDAR_SAMPLE_ROOT);
+const copcSampleProxyRoot = new URL(readCopcSampleProxyRoot());
 const publicBase = readCopcViewerPublicBase();
 
 export default defineConfig({
@@ -58,12 +58,12 @@ export default defineConfig({
 function createCopcSampleProxy(): Record<string, string | ProxyOptions> {
   return {
     "/copc-samples": {
-      target: hobuLidarSampleRoot.origin,
+      target: copcSampleProxyRoot.origin,
       changeOrigin: true,
       rewrite: (path: string) =>
         path.replace(
           /^\/copc-samples/,
-          hobuLidarSampleRoot.pathname.replace(/\/$/, ""),
+          copcSampleProxyRoot.pathname.replace(/\/$/, ""),
         ),
     },
   };

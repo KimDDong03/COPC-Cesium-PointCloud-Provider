@@ -61,6 +61,7 @@ own source layer:
 
 ```ts
 import {
+  CopcIndexedDbRangeCache,
   CopcRangeRequestError,
   createCachedRangeGetter,
   createCopcRangeGetter,
@@ -87,6 +88,97 @@ that defensive ceiling with the positive integer `maxRangeByteLength` only for
 a trusted dataset that genuinely contains a larger contiguous hierarchy or
 point-data record. Blob reads also reject ranges outside `blob.size` and verify
 the exact slice length.
+
+Remote URL getters can opt into a persistent, fixed-block IndexedDB cache. The
+default remains disabled and the default aligned block size is 64 KiB.
+Automatic validation performs a one-byte Range probe with browser-cache
+revalidation (`Request.cache = "reload"`)
+for a strong `ETag` and the complete source length before serving stored
+blocks. A changed validator creates a new cache namespace; a missing or weak
+validator, hidden `Content-Range`, or `Cache-Control: no-store` safely bypasses
+persistence. Cross-origin servers using this mode must expose both `ETag` and
+`Content-Range` through CORS. The normalized URL is SHA-256 hashed before it is
+used as a default cache namespace, so query-string credentials are not stored
+verbatim. URL fragments are removed first because they are not part of an HTTP
+resource identity. If Web Crypto cannot create that opaque key, persistent mode
+fails closed before HTTP instead of leaving an existing source cache outside a
+future `no-store` revocation. `sourceKey` is an advanced override that can be
+used in that environment, is persisted as supplied, and must never contain a
+token or other secret.
+
+```ts
+const persistentCache = new CopcIndexedDbRangeCache({
+  databaseName: "my-viewer-copc-ranges-v1",
+  maxCachedRangeBytes: 256 * 1024 * 1024,
+  maxCachedRangeCount: 4_096,
+});
+
+const getter = createCopcRangeGetter("https://cdn.example.com/cloud.copc.laz", {
+  persistentRangeCache: {
+    cache: persistentCache,
+    validation: { mode: "strong-etag" },
+  },
+});
+```
+
+An application with an immutable version contract can avoid the validator
+probe by supplying both `version` and the authoritative complete byte length.
+It must change that version whenever the source bytes change. A network miss
+whose response says `Cache-Control: no-store` is returned without being stored.
+The policy header is applied before status, Range metadata, body, or validator
+validation, so a malformed or retried response cannot suppress source
+revocation; one `no-store` response keeps the whole logical read non-cacheable.
+The in-memory cache is disabled for that getter, while the built-in IndexedDB
+store atomically purges every validator/version namespace for the stable source
+identity and keeps one identity tombstone across getter and page recreation.
+Other live getters consult that shared tombstone before reusing an in-memory
+entry, so the revocation is source-wide rather than getter-local. They also
+capture a module-session source-policy epoch. `no-store` advances that epoch
+before purge begins, permanently disabling older getters' memory and validated
+persistent namespaces even if a later fresh strong-ETag probe removes the
+tombstone. Only a getter initialized in the new epoch can resume persistence.
+If a custom or built-in store cannot confirm the atomic purge, that rejected
+revocation is retained for the source identity and both existing and newly
+created getters fail closed for the rest of the module session.
+This also bounds tombstone growth when a server rotates ETags. A fresh,
+browser-cache-revalidated strong-ETag probe that permits storage removes the
+source tombstone. Application-version mode cannot make that network assertion,
+so a prior source tombstone keeps persistence disabled until the application
+explicitly re-enables or clears the cache.
+
+Custom `CopcPersistentRangeCache` implementations must implement
+`isSourceDisabled`, `disableSource`, and `enableSource`. `disableSource` must
+atomically purge every key whose `sourceIdentityKey` matches, record one
+identity tombstone, and make `get`/`set` honor it. A custom cache without that
+policy surface is rejected rather than allowed to reuse protected blocks.
+Because a fully cached application-version read performs no HTTP request, use
+this mode only when the application's immutable-version contract itself
+authorizes browser storage.
+
+```ts
+persistentRangeCache: {
+  cache: persistentCache,
+  validation: {
+    mode: "application-version",
+    version: "cloud-2026-07-18",
+    sourceByteLength: 1_445_463_233,
+  },
+}
+```
+
+Persistent caching currently applies only to HTTP(S) sources. Enabling it for
+a browser `Blob`/`File` is rejected. Cache read/write failures fall back to the
+validated HTTP path, and malformed or wrong-length entries are discarded.
+Same-length payload corruption is not independently checksummed by this layer;
+the validator prevents reuse across source versions. The configured persistent
+block and coalesced fetch sizes remain bounded by `maxRangeByteLength`.
+`getStats()` reports hit/miss/write/eviction counts and retained bytes;
+`clear()` removes entries owned by that IndexedDB database.
+Schema version 3 clears legacy pre-source-identity entries once on upgrade so
+they cannot escape identity-scoped invalidation. The normal bounded in-memory
+cache and its `maxCachedRangeBytes`/`maxCachedRangeCount` controls remain active
+when persistence is enabled or safely bypassed; `no-store` revokes that cache
+for the lifetime of the getter.
 
 HTTP reads use a 30-second request deadline by default. Set
 `requestTimeoutMilliseconds` to another positive integer when the deployment
@@ -213,6 +305,7 @@ readable by browser HTTP range requests, or `options.source` for a browser
 | --- | --- | --- |
 | `url` | required unless `source` is set | COPC file URL readable by browser HTTP range requests. |
 | `source` | required unless `url` is set | COPC input as a URL string, browser `File`, or `Blob`. Use this for local file picker flows. |
+| `rangeGetterOptions` | unset | Options forwarded to the main `CopcSource` getter and shared integrated-worker Range broker. Configure `persistentRangeCache` here for validated IndexedDB reuse across new layer/page lifecycles. Direct worker reads used by terminating cancellation modes do not share this main-thread cache. |
 | `maxPointCountPerNode` | `5_000` inside lower-level point sampling | Default sample budget for each rendered hierarchy node. |
 | `maxCachedHierarchyPages` | `64` | Loaded hierarchy page cache limit. |
 | `maxCachedHierarchyPageBytes` | `16 * 1024 * 1024` | Estimated loaded hierarchy page byte limit. Loaded non-root leaf hierarchy pages are evicted back to pending references when either the page-count or byte limit is exceeded. |
@@ -230,6 +323,9 @@ readable by browser HTTP range requests, or `options.source` for a browser
 | `maxConcurrentPointGeometryWorkerRequests` | `2` | Backpressure limit for geometry worker requests. |
 | `activePointGeometryWorkerCancellation` | `"soft"` | `"soft"` preserves an active integrated worker and lets stale work finish; `"terminate-uncached"` terminates only active workers that have not retained decoded node data, while soft-canceling cache-owning workers so repeated zoom/pan work can reuse decompressed COPC nodes; `"terminate"` always stops the active worker so queued current-view work can start sooner, at the cost of dropping that worker's decoded cache. |
 | `decodedNodeWorkerFallbackDelayMilliseconds` | `Number.POSITIVE_INFINITY` | How long an integrated geometry request waits for the worker that last decoded the same node before using another idle worker. The default keeps strict decoded-cache affinity to avoid decompressing the same node on multiple workers; set `0` only for latency-first experiments after benchmarking the target dataset. |
+| `brokeredRangeRequests` | `true` with soft cancellation | Routes integrated-worker byte reads through one shared main-thread range broker. Terminating cancellation modes use direct worker reads so terminating a worker also stops its network work. |
+| `maxCoalescedPointDataRangeBytes` | `2 * 1024 * 1024` | Maximum half-open point-data span planned for one brokered outer range read. This cap also bounds any bytes added by gap coalescing. |
+| `maxCoalescedPointDataRangeGapBytes` | `64 * 1024` | Maximum gap allowed between adjacent point-data ranges merged into one brokered read. Set `0` for exact-contiguous-only planning. A larger value can reduce request count but deliberately fetches the intervening bytes and should be tuned with the HTTP ledger. |
 | `createPointSampleWorker` | built-in worker factory | Custom worker factory for applications with their own bundling strategy. |
 | `createPointGeometryWorker` | built-in worker factory | Custom worker factory for non-integrated point geometry workers. |
 | `createCopcPointGeometryWorker` | built-in worker factory | Custom worker factory for integrated COPC point geometry workers. |
@@ -449,8 +545,10 @@ renderer, so a later current-view render can reuse the batch cache instead of
 starting from COPC decompression again. The basic viewer keeps prefetch
 decode-only while the current detail pass is still loading, then uses
 geometry-batch prefetch after detail settles because the benchmarked public
-samples spend most of their time in point-data decode and worker queue work,
-not Cesium point submission.
+samples spend most of their time in point-data view loading and worker queue
+work, not Cesium point submission. Point-data view loading includes range
+wait, laz-perf initialization, decompression/view construction, and cache wait;
+use the structured render timing fields below to distinguish them.
 
 ### Camera Stream Settings
 
@@ -458,6 +556,7 @@ not Cesium point submission.
 import {
   createCopcCameraStreamEffectiveBudget,
   createCopcCameraStreamLodSettings,
+  createCopcCameraStreamMixedDepthThresholds,
   createCopcCameraStreamPrefetchSettings,
   createCopcPointCloudQualitySettings,
   resolveCopcCameraStreamHierarchyExpansionDepth,
@@ -468,6 +567,20 @@ const qualitySettings = createCopcPointCloudQualitySettings("balanced");
 const lod = createCopcCameraStreamLodSettings({
   cameraHeightMeters,
   qualitySettings,
+});
+const mixedDepthThresholds =
+  createCopcCameraStreamMixedDepthThresholds({
+    cameraSettled: !cameraMoving,
+    targetPointSpacingScreenPixels:
+      lod.targetPointSpacingScreenPixels,
+  });
+const cameraSelection = await layer.selectNodesForCamera({
+  camera,
+  selectionMode: "coverage",
+  coverageMode: "mixed-depth",
+  targetPointSpacingScreenPixels:
+    lod.targetPointSpacingScreenPixels,
+  ...mixedDepthThresholds,
 });
 const hierarchyExpansionDepth =
   resolveCopcCameraStreamHierarchyExpansionDepth(
@@ -514,6 +627,10 @@ const budgetUpdate = updateCopcCameraStreamAdaptiveBudget({
 adaptiveBudgetState = budgetUpdate.state;
 ```
 
+`decodeMilliseconds` is retained as the adaptive-budget input name for API
+compatibility. The value shown above is the full point-data-view wait, not a
+pure decompression CPU measurement.
+
 `createCopcCameraStreamLodSettings()` maps height above the point cloud to bounded stream
 budgets for node count, hierarchy depth, compressed point-data reads, and
 screen-space point spacing. `createCopcPointCloudQualitySettings()` provides the
@@ -521,6 +638,15 @@ same preview, balanced, detail, and ultra presets used by the basic viewer, so
 applications can start from reusable Cesium/COPC budgets instead of copying demo
 constants. In addition to point/node/byte budgets, each preset contains
 renderer and transition policy:
+
+`createCopcCameraStreamMixedDepthThresholds()` leaves the core mixed-depth
+refine/retain hysteresis unchanged while the camera is moving. After movement
+settles, it returns equal refine and retain thresholds at the default retention
+edge, 75% of the point-spacing target. Spreading those values into
+`selectNodesForCamera()` makes the final frontier independent of whether a fast
+cache path or a slower chain of retained selections reached the same camera
+pose. This intentionally chooses the denser retained high-water mark and remains
+subject to the configured node, point, and compressed-byte budgets.
 
 | Field | Meaning |
 | --- | --- |
@@ -974,9 +1100,10 @@ can replace any policy, but the defaults keep camera movement focused on visible
 COPC nodes while limiting worker and Cesium renderer pressure. Use
 `createCopcWorkerPoolSettings()` when sizing browser worker pools from
 `navigator.hardwareConcurrency`; the default policy is interactive-first, so it
-falls back to four point-sample and five integrated geometry workers, caps
-point-sample pools at six workers, and caps integrated geometry pools at
-eight workers while reserving browser capacity for rendering. It also returns
+falls back to four point-sample and four integrated geometry workers, caps
+point-sample pools at six workers, and caps integrated geometry pools at four
+workers while reserving browser capacity for rendering and remote Range reads.
+It also returns
 `Number.POSITIVE_INFINITY` for
 `decodedNodeWorkerFallbackDelayMilliseconds`, which the basic viewer passes to
 `CopcPointCloudLayer` to keep strict worker-local decoded-cache affinity and
@@ -1204,6 +1331,30 @@ the slowest request the user waited on during a parallel load. `slowestNodes`
 keeps the slowest per-node timing records with node key, source point count,
 sampled point count, optional compressed point-data length, and worker timing
 fields so applications can identify expensive COPC nodes without parsing logs.
+
+`pointDataViewMilliseconds` and `maxPointDataViewMilliseconds` remain the
+end-to-end point-data-view wait fields. They intentionally include more than
+LAZ decompression. New structured fields split successful worker work into:
+
+- `pointDataViewRangeWaitMilliseconds`, `pointDataViewRangeRequestCount`, and
+  `pointDataViewRangeBytes`: aggregate range-getter wait, successful getter
+  calls, and returned exact-range bytes. With brokered/coalesced reads, this byte
+  count is worker-visible payload rather than outer HTTP wire traffic; use the
+  network benchmark ledger for wire-byte comparisons.
+- `pointDataViewLazPerfMilliseconds`: time awaiting shared laz-perf
+  initialization. This is normally near zero after the first worker use.
+- `pointDataViewNonRangeMilliseconds`: remaining non-range view-load time after
+  subtracting range wait and laz-perf initialization. It includes
+  decompression/view construction and small setup overhead, so it must not be
+  interpreted as a pure decoder CPU profile.
+- `pointDataViewCacheWaitMilliseconds`: time awaiting an existing resolved or
+  in-flight decoded view. Cache-hit requests attribute no new range, laz-perf,
+  or non-range work.
+
+Each duration and count/byte field also has a `maxPointDataView...` counterpart
+for the slowest or largest single node. Missing split fields from older worker
+responses are normalized to zero, preserving compatibility with older timing
+artifacts.
 
 Fields:
 

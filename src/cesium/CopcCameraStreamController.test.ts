@@ -206,14 +206,31 @@ describe("CopcCameraStreamRequestController", () => {
     const controller = createRequestController();
     const request = controller.startRequest();
 
+    expect(controller.isActive).toBe(true);
     expect(controller.isCurrentRequest(request.requestId, request.signal))
       .toBe(true);
 
     controller.completeRequest(request.abortController);
 
     expect(request.signal.aborted).toBe(true);
+    expect(controller.isActive).toBe(false);
     expect(controller.isCurrentRequest(request.requestId, request.signal))
       .toBe(false);
+  });
+
+  it("reports active state while a request is started until it is cancelled", () => {
+    const controller = createRequestController();
+
+    expect(controller.isActive).toBe(false);
+
+    const request = controller.startRequest();
+
+    expect(controller.isActive).toBe(true);
+
+    controller.cancelRequest();
+
+    expect(request.signal.aborted).toBe(true);
+    expect(controller.isActive).toBe(false);
   });
 
   it("queues only the latest render callback", () => {
@@ -224,13 +241,31 @@ describe("CopcCameraStreamRequestController", () => {
     controller.queueRender(30, () => {
       renderCount += 1;
     });
+    expect(controller.isActive).toBe(true);
+
     controller.queueRender(30, () => {
       renderCount += 10;
     });
+    expect(controller.isActive).toBe(true);
 
     scheduler.flushAll();
 
     expect(renderCount).toBe(10);
+    expect(controller.isActive).toBe(false);
+    expect(scheduler.clearedHandles).toEqual([1]);
+  });
+
+  it("clears queued render active state explicitly", () => {
+    const scheduler = new FakeScheduler();
+    const controller = createRequestController({ scheduler });
+
+    controller.queueRender(30, () => undefined);
+
+    expect(controller.isActive).toBe(true);
+
+    controller.clearQueuedRender();
+
+    expect(controller.isActive).toBe(false);
     expect(scheduler.clearedHandles).toEqual([1]);
   });
 
@@ -242,6 +277,7 @@ describe("CopcCameraStreamRequestController", () => {
 
     controller.queueRender(30, () => undefined);
 
+    expect(controller.isActive).toBe(true);
     expect(controller.isCurrentRequest(activeRequest.requestId, activeRequest.signal))
       .toBe(false);
     expect(activeRequest.signal.aborted).toBe(false);

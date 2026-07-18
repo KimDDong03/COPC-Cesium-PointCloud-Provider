@@ -1,8 +1,12 @@
 import type { Getter } from "copc";
 import {
   createCachedRangeGetter,
+  createControllableCachedRangeGetter,
   type CopcRangeGetterCacheOptions,
+  type ControllableCachedRangeGetter,
 } from "./createCachedRangeGetter";
+import type { CopcPersistentRangeCache } from "./CopcPersistentRangeCache";
+import { createPersistentHttpRangeGetter } from "./createPersistentRangeGetter";
 
 const MAX_RANGE_REQUEST_ATTEMPTS = 3;
 const RANGE_REQUEST_RETRY_DELAY_MILLISECONDS = 75;
@@ -18,6 +22,46 @@ export interface CopcHttpRangeGetterOptions
   readonly requestTimeoutMilliseconds?: number;
   /** Optional lifetime signal combined with the per-request timeout signal. */
   readonly signal?: AbortSignal;
+  /** Opt-in browser-persistent fixed-block cache. Disabled by default. */
+  readonly persistentRangeCache?: CopcPersistentHttpRangeCacheOptions;
+}
+
+export type CopcPersistentHttpRangeCacheOptions =
+  | false
+  | {
+      readonly enabled?: boolean;
+      /** Storage implementation shared by getters. Defaults to IndexedDB. */
+      readonly cache?: CopcPersistentRangeCache;
+      /**
+       * Advanced stable namespace override. By default the normalized URL is
+       * SHA-256 hashed so query-string credentials are not stored verbatim.
+       * Caller-provided values are persisted as-is and must not contain secrets.
+       */
+      readonly sourceKey?: string;
+      /** Fixed persistent block size. The default is 64 KiB. */
+      readonly blockByteLength?: number;
+      /** Maximum coalesced miss fetched underneath the block cache. */
+      readonly maxUnderlyingFetchByteLength?: number;
+      readonly validation?:
+        | CopcPersistentStrongEtagValidationOptions
+        | CopcPersistentApplicationVersionValidationOptions;
+    };
+
+export interface CopcPersistentStrongEtagValidationOptions {
+  readonly mode: "strong-etag";
+}
+
+export interface CopcPersistentApplicationVersionValidationOptions {
+  readonly mode: "application-version";
+  readonly version: string;
+  readonly sourceByteLength: number;
+}
+
+export interface CopcHttpRangeResponse {
+  readonly bytes: Uint8Array;
+  readonly etag?: string;
+  readonly cacheControl?: string;
+  readonly sourceByteLength?: number;
 }
 
 export type CopcRangeRequestErrorCode =
@@ -80,21 +124,75 @@ export function createHttpRangeGetter(
     MAX_TIMER_DELAY_MILLISECONDS,
   );
 
-  return createCachedRangeGetter(async (begin: number, end: number) => {
+  const fetcher = async (begin: number, end: number): Promise<Uint8Array> => {
     const byteLength = validateByteRange(begin, end, maxRangeByteLength);
 
     if (byteLength === 0) {
       return new Uint8Array();
     }
 
-    return fetchRangeWithRetries(
+    return (await fetchRangeWithRetries(
       parsedUrl,
       begin,
       end,
       requestTimeoutMilliseconds,
       options.signal,
+    )).bytes;
+  };
+
+  if (
+    typeof options.persistentRangeCache === "object" &&
+    options.persistentRangeCache.enabled !== false
+  ) {
+    let memoryCache: ControllableCachedRangeGetter | undefined;
+    let canUsePersistentMemoryCache: () => Promise<boolean> = async () => true;
+    const persistentGetter = createPersistentHttpRangeGetter(
+      parsedUrl,
+      options.persistentRangeCache,
+      async (begin, end, requestOptions) => {
+        validateByteRange(begin, end, maxRangeByteLength);
+
+        if (begin === end) {
+          return {
+            bytes: new Uint8Array(),
+          };
+        }
+
+        return fetchRangeWithRetries(
+          parsedUrl,
+          begin,
+          end,
+          requestTimeoutMilliseconds,
+          options.signal,
+          requestOptions?.forceOriginRevalidation ? "reload" : undefined,
+          requestOptions?.onCacheStorageForbidden,
+        );
+      },
+      maxRangeByteLength,
+      () => memoryCache?.disable(),
+      (canUseMemoryCache) => {
+        canUsePersistentMemoryCache = canUseMemoryCache;
+      },
     );
-  }, options);
+    const controlledMemoryCache = createControllableCachedRangeGetter(
+      persistentGetter,
+      options,
+      () => canUsePersistentMemoryCache(),
+    );
+    memoryCache = controlledMemoryCache;
+
+    return async (begin: number, end: number): Promise<Uint8Array> => {
+      const byteLength = validateByteRange(begin, end, maxRangeByteLength);
+
+      if (byteLength === 0) {
+        return new Uint8Array();
+      }
+
+      return controlledMemoryCache.getter(begin, end);
+    };
+  }
+
+  return createCachedRangeGetter(fetcher, options);
 }
 
 async function fetchRangeWithRetries(
@@ -103,7 +201,9 @@ async function fetchRangeWithRetries(
   end: number,
   requestTimeoutMilliseconds: number,
   signal: AbortSignal | undefined,
-): Promise<Uint8Array> {
+  requestCache?: RequestCache,
+  onCacheStorageForbidden?: () => Promise<void>,
+): Promise<CopcHttpRangeResponse> {
   let lastError: unknown;
 
   throwIfAborted(signal);
@@ -116,6 +216,8 @@ async function fetchRangeWithRetries(
         end,
         requestTimeoutMilliseconds,
         signal,
+        requestCache,
+        onCacheStorageForbidden,
       );
     } catch (error) {
       lastError = error;
@@ -140,7 +242,9 @@ async function fetchRange(
   end: number,
   requestTimeoutMilliseconds: number,
   callerSignal: AbortSignal | undefined,
-): Promise<Uint8Array> {
+  requestCache?: RequestCache,
+  onCacheStorageForbidden?: () => Promise<void>,
+): Promise<CopcHttpRangeResponse> {
   const timeoutError = createRangeRequestTimeoutError(
     begin,
     end,
@@ -151,11 +255,13 @@ async function fetchRange(
     requestTimeoutMilliseconds,
     timeoutError,
   );
+  let cachePolicyCallbackFailed = false;
 
   try {
     throwIfRequestAborted(abortContext, callerSignal);
 
     const response = await fetch(parsedUrl.toString(), {
+      cache: requestCache,
       headers: {
         Range: `bytes=${begin}-${end - 1}`,
       },
@@ -163,6 +269,19 @@ async function fetchRange(
     });
 
     throwIfRequestAborted(abortContext, callerSignal);
+    const cacheControl = response.headers.get("Cache-Control") ?? undefined;
+
+    if (
+      cacheControlDisallowsStore(cacheControl) &&
+      onCacheStorageForbidden
+    ) {
+      try {
+        await onCacheStorageForbidden();
+      } catch (error) {
+        cachePolicyCallbackFailed = true;
+        throw error;
+      }
+    }
 
     if (!response.ok) {
       throw new CopcRangeRequestError(
@@ -191,9 +310,15 @@ async function fetchRange(
     }
 
     const contentRange = response.headers.get("Content-Range");
+    let sourceByteLength: number | undefined;
 
     if (contentRange !== null) {
-      validateContentRange(contentRange, begin, end, response.status);
+      sourceByteLength = validateContentRange(
+        contentRange,
+        begin,
+        end,
+        response.status,
+      );
     }
 
     const expectedByteLength = end - begin;
@@ -205,7 +330,12 @@ async function fetchRange(
     );
 
     throwIfRequestAborted(abortContext, callerSignal);
-    return bytes;
+    return {
+      bytes,
+      cacheControl,
+      etag: response.headers.get("ETag") ?? undefined,
+      sourceByteLength,
+    };
   } catch (error) {
     if (abortContext.abortSource === "caller") {
       throw createAbortError(callerSignal);
@@ -219,6 +349,10 @@ async function fetchRange(
       throw error;
     }
 
+    if (cachePolicyCallbackFailed) {
+      throw error;
+    }
+
     if (error instanceof TypeError) {
       throw createNetworkOrCorsError(begin, end, error);
     }
@@ -227,6 +361,12 @@ async function fetchRange(
   } finally {
     abortContext.cleanup();
   }
+}
+
+function cacheControlDisallowsStore(cacheControl: string | undefined): boolean {
+  return cacheControl
+    ?.split(",")
+    .some((directive) => directive.trim().toLowerCase() === "no-store") ?? false;
 }
 
 function createRangeRequestTimeoutError(
@@ -424,7 +564,7 @@ function validateContentRange(
   begin: number,
   end: number,
   status: number,
-): void {
+): number | undefined {
   const match = /^bytes (\d+)-(\d+)\/(\d+|\*)$/i.exec(contentRange);
 
   if (!match) {
@@ -491,6 +631,27 @@ function validateContentRange(
       },
     );
   }
+
+  if (completeLength === "*") {
+    return undefined;
+  }
+
+  const sourceByteLength = Number(completeLength);
+
+  if (!Number.isSafeInteger(sourceByteLength)) {
+    throw new CopcRangeRequestError(
+      `COPC range response has malformed Content-Range: ${contentRange}.`,
+      {
+        code: "malformed-content-range",
+        begin,
+        end,
+        status,
+        retriable: false,
+      },
+    );
+  }
+
+  return sourceByteLength;
 }
 
 function createHttpUrl(url: string): URL {

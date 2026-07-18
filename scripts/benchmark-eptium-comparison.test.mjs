@@ -60,6 +60,35 @@ describe("external Eptium comparison benchmark contract", () => {
     expect(orchestrator).toContain("observed ours-high-detail terminal point count");
   });
 
+  it("accepts an optional non-negative coalesced-range gap and threads it through local benchmark evidence", () => {
+    expect(orchestrator).toContain(
+      "readOptionalNonNegativeSafeIntegerArgument(",
+    );
+    expect(orchestrator).toContain('"--max-coalesced-range-gap-bytes"');
+    expect(orchestrator).toContain("maxCoalescedRangeGapBytes");
+    expect(orchestrator).toContain("maxCoalescedPointDataRangeGapBytes");
+    expect(browserFlow).toContain("configuration.maxCoalescedRangeGapBytes");
+    expect(browserFlow).toContain(
+      "maxCoalescedPointDataRangeGapBytes=",
+    );
+    expect(browserFlow).toContain("geometryMask: geometryMaskUrl");
+    expect(browserFlow).toContain("product: oursUrl");
+  });
+
+  it("threads an optional point-geometry worker count through local comparison URLs and evidence", () => {
+    expect(orchestrator).toContain(
+      '"--point-geometry-worker-concurrency"',
+    );
+    expect(orchestrator).toContain("pointGeometryWorkerConcurrency");
+    expect(orchestrator).toContain(
+      "--point-geometry-worker-concurrency must be at most 8",
+    );
+    expect(browserFlow).toContain(
+      "configuration.pointGeometryWorkerConcurrency",
+    );
+    expect(browserFlow).toContain("pointGeometryWorkerConcurrency=");
+  });
+
   it("hard-gates local stock visual/performance and geometry-mask reloads to the same terminal workload", () => {
     expect(browserFlow).toContain("stockWorkloadStatus");
     expect(browserFlow).toContain("summarizeOursWorkloadStatus");

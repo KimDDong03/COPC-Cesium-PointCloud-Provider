@@ -80,6 +80,12 @@ export interface CopcNodePointGeometryBatchResult {
 export interface CopcPointGeometryBatchTiming {
   readonly pointDataViewMilliseconds: number;
   readonly pointDataViewCacheHit: boolean;
+  readonly pointDataViewRangeWaitMilliseconds?: number;
+  readonly pointDataViewRangeRequestCount?: number;
+  readonly pointDataViewRangeBytes?: number;
+  readonly pointDataViewLazPerfMilliseconds?: number;
+  readonly pointDataViewNonRangeMilliseconds?: number;
+  readonly pointDataViewCacheWaitMilliseconds?: number;
   readonly sampleMilliseconds: number;
   readonly geometryMilliseconds: number;
   readonly workerTotalMilliseconds: number;
@@ -95,6 +101,12 @@ export interface CopcNodePointDataPrefetchResult {
 export interface CopcPointDataPrefetchTiming {
   readonly pointDataViewMilliseconds: number;
   readonly pointDataViewCacheHit: boolean;
+  readonly pointDataViewRangeWaitMilliseconds?: number;
+  readonly pointDataViewRangeRequestCount?: number;
+  readonly pointDataViewRangeBytes?: number;
+  readonly pointDataViewLazPerfMilliseconds?: number;
+  readonly pointDataViewNonRangeMilliseconds?: number;
+  readonly pointDataViewCacheWaitMilliseconds?: number;
   readonly workerTotalMilliseconds: number;
   readonly requestQueueMilliseconds?: number;
   readonly requestRoundTripMilliseconds?: number;

@@ -426,16 +426,7 @@ export async function runEptiumComparisonBrowserFlow(page, configuration) {
     const geometryMaskScope = capture.captureId + ":geometry-mask";
     await transitionEvidenceScope(productScope);
     const captureStartedAt = Date.now();
-    let oursUrl =
-      configuration.oursBaseUrl +
-      "/?renderer=typed&visualBenchmark=1&renderVariant=enhanced";
-    if (capture.quality === "detail") {
-      oursUrl += "&quality=detail";
-    }
-    if (capture.pointBudget !== undefined) {
-      oursUrl +=
-        "&cameraStreamMaxPoints=" + encodeURIComponent(capture.pointBudget);
-    }
+    const oursUrl = createOursBenchmarkUrl(capture);
     await activePage.goto(oursUrl, { waitUntil: "domcontentloaded" });
     const navigationReadyAt = Date.now();
     await activePage.waitForFunction(
@@ -564,8 +555,16 @@ export async function runEptiumComparisonBrowserFlow(page, configuration) {
         renderVariant: stockStatus.rendererQualityVariant,
         quality: capture.quality,
         configuredPointBudget: capture.pointBudget,
+        maxCoalescedPointDataRangeGapBytes:
+          configuration.maxCoalescedRangeGapBytes,
+        pointGeometryWorkerConcurrency:
+          configuration.pointGeometryWorkerConcurrency,
         cameraStreamLod: stockStatus.cameraStreamLodData,
         targetFrameRate: configuration.fairTargetFrameRate,
+      },
+      navigationUrls: {
+        product: oursUrl,
+        geometryMask: geometryMaskUrl,
       },
       isolatedScene,
       metricIsolatedScene,
@@ -592,6 +591,30 @@ export async function runEptiumComparisonBrowserFlow(page, configuration) {
       pointOffVerificationCleanCapture,
       clearedRevision,
     };
+  }
+
+  function createOursBenchmarkUrl(capture) {
+    let oursUrl =
+      configuration.oursBaseUrl +
+      "/?renderer=typed&visualBenchmark=1&renderVariant=enhanced";
+    if (capture.quality === "detail") {
+      oursUrl += "&quality=detail";
+    }
+    if (capture.pointBudget !== undefined) {
+      oursUrl +=
+        "&cameraStreamMaxPoints=" + encodeURIComponent(capture.pointBudget);
+    }
+    if (configuration.maxCoalescedRangeGapBytes !== undefined) {
+      oursUrl +=
+        "&maxCoalescedPointDataRangeGapBytes=" +
+        encodeURIComponent(configuration.maxCoalescedRangeGapBytes);
+    }
+    if (configuration.pointGeometryWorkerConcurrency !== undefined) {
+      oursUrl +=
+        "&pointGeometryWorkerConcurrency=" +
+        encodeURIComponent(configuration.pointGeometryWorkerConcurrency);
+    }
+    return oursUrl;
   }
 
   async function setEptiumGeometryMaskVisibility(

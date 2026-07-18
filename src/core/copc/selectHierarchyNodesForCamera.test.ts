@@ -345,6 +345,33 @@ describe("selectHierarchyNodesForCamera", () => {
     ]);
   });
 
+  it("returns the same mixed-depth frontier when settled thresholds are equal", () => {
+    const nodes = createMixedDepthHysteresisTree();
+    const options = {
+      target: { x: 75, y: 25, z: 10 },
+      cameraPosition: { x: 200, y: 25, z: 25 },
+      viewportHeightPixels: 720,
+      selectionMode: "coverage",
+      coverageMode: "mixed-depth",
+      maxNodes: 4,
+      refineScreenSpaceError: 300,
+      retainScreenSpaceError: 300,
+    } as const;
+    const initialSelection = selectHierarchyNodesForCamera(nodes, options);
+    const retainedSelection = selectHierarchyNodesForCamera(nodes, {
+      ...options,
+      previousFrontierKeys: ["2-3-0-0"],
+    });
+
+    expect(initialSelection?.nodes.map((node) => node.key)).toEqual([
+      "1-0-0-0",
+      "2-3-0-0",
+    ]);
+    expect(retainedSelection?.nodes.map((node) => node.key)).toEqual(
+      initialSelection?.nodes.map((node) => node.key),
+    );
+  });
+
   it("uses projected COPC spacing as mixed-depth screen-space error", () => {
     const nodes = createMixedDepthHysteresisTree();
     const options = {

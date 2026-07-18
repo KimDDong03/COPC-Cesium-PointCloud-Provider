@@ -10,6 +10,7 @@ import {
   createCopcRangeGetter,
   createCopcSourceDescriptor,
   createCopcSourceLabel,
+  type CopcRangeGetterOptions,
   type CopcSourceDescriptor,
   type CopcSourceInput,
 } from "./createCopcRangeGetter";
@@ -74,6 +75,7 @@ export interface LoadHierarchyOptions {
 }
 
 export interface CopcSourceOptions {
+  readonly rangeGetterOptions?: CopcRangeGetterOptions;
   readonly maxCachedHierarchyPages?: number;
   readonly maxCachedHierarchyPageBytes?: number;
   readonly maxCachedSampleSets?: number;
@@ -305,7 +307,7 @@ export class CopcSource {
       (options.createPointSampleWorker ? "worker" : "main-thread");
     this.createPointSampleWorker =
       options.createPointSampleWorker ?? createCopcPointSampleWorker;
-    this.getter = createCopcRangeGetter(input);
+    this.getter = createCopcRangeGetter(input, options.rangeGetterOptions);
   }
 
   getDescriptor(): CopcSourceDescriptor {

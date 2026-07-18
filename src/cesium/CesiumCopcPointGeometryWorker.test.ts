@@ -17,6 +17,9 @@ const mocks = vi.hoisted(() => ({
   loadCopcNodePointDataView: vi.fn(async (options: {
     readonly getter?: (begin: number, end: number) => Promise<Uint8Array>;
     readonly node: { readonly pointCount: number };
+    readonly timing?: {
+      onLazPerfInitialized(milliseconds: number): void;
+    };
   }) => ({
     pointCount: options.node.pointCount,
     dimensions: {
@@ -277,6 +280,135 @@ describe("CesiumCopcPointGeometryWorker decoded point data cache", () => {
     expect(worker.messages[1]).toMatchObject({
       type: "loadNodePointGeometry:success",
     });
+  });
+
+  it("reports point-data range and decode timing breakdowns on cache misses", async () => {
+    stubMonotonicPerformanceNow();
+    const worker = await importWorker();
+    mocks.loadCopcNodePointDataView.mockImplementationOnce(
+      async (options: {
+        readonly getter?: (
+          begin: number,
+          end: number,
+        ) => Promise<Uint8Array>;
+        readonly node: { readonly pointCount: number };
+        readonly timing?: {
+          onLazPerfInitialized(milliseconds: number): void;
+        };
+      }) => {
+        options.timing?.onLazPerfInitialized(4);
+
+        if (!options.getter) {
+          throw new Error("Expected a brokered getter.");
+        }
+
+        await options.getter(120, 132);
+        return createDecodedPointDataView(options.node.pointCount);
+      },
+    );
+
+    worker.dispatch({
+      ...createLoadRequest(1, "1-0-0-0", 100),
+      brokeredRangeRequests: true,
+      pointDataRange: {
+        begin: 100,
+        end: 200,
+      },
+    });
+    await worker.waitForMessageCount(1);
+    worker.dispatch({
+      type: "range:success",
+      rangeRequestId:
+        worker.messages[0].type === "range:request"
+          ? worker.messages[0].rangeRequestId
+          : -1,
+      buffer: new ArrayBuffer(12),
+    });
+    await worker.waitForMessageCount(2);
+
+    expect(worker.messages[1]).toMatchObject({
+      type: "loadNodePointGeometry:success",
+      result: {
+        timing: {
+          pointDataViewCacheHit: false,
+          pointDataViewRangeRequestCount: 1,
+          pointDataViewRangeBytes: 12,
+          pointDataViewLazPerfMilliseconds: 4,
+          pointDataViewCacheWaitMilliseconds: 0,
+        },
+      },
+    });
+
+    if (worker.messages[1].type !== "loadNodePointGeometry:success") {
+      throw new Error("Expected geometry success.");
+    }
+
+    expect(
+      worker.messages[1].result.timing?.pointDataViewRangeWaitMilliseconds,
+    ).toBeGreaterThan(0);
+    expect(
+      worker.messages[1].result.timing?.pointDataViewNonRangeMilliseconds,
+    ).toBeGreaterThanOrEqual(0);
+  });
+
+  it("attributes in-flight decoded view reuse to cache wait without duplicate range work", async () => {
+    stubMonotonicPerformanceNow();
+    const worker = await importWorker();
+    let resolveDecodedView!: (
+      view: ReturnType<typeof createDecodedPointDataView>,
+    ) => void;
+    const pendingDecodedView = new Promise<
+      ReturnType<typeof createDecodedPointDataView>
+    >((resolve) => {
+      resolveDecodedView = resolve;
+    });
+    mocks.loadCopcNodePointDataView.mockReturnValueOnce(pendingDecodedView);
+
+    worker.dispatch(createLoadRequest(1, "1-0-0-0", 100));
+    await Promise.resolve();
+    await Promise.resolve();
+    worker.dispatch(createLoadRequest(2, "1-0-0-0", 100));
+    resolveDecodedView(createDecodedPointDataView(1_000));
+    await worker.waitForMessageCount(2);
+
+    expect(mocks.loadCopcNodePointDataView).toHaveBeenCalledTimes(1);
+
+    const first = worker.messages.find(
+      (message) =>
+        message.type === "loadNodePointGeometry:success" && message.id === 1,
+    );
+    const second = worker.messages.find(
+      (message) =>
+        message.type === "loadNodePointGeometry:success" && message.id === 2,
+    );
+
+    expect(first).toMatchObject({
+      result: {
+        timing: {
+          pointDataViewCacheHit: false,
+        },
+      },
+    });
+    expect(second).toMatchObject({
+      result: {
+        timing: {
+          pointDataViewCacheHit: true,
+          pointDataViewRangeRequestCount: 0,
+          pointDataViewRangeBytes: 0,
+          pointDataViewRangeWaitMilliseconds: 0,
+          pointDataViewLazPerfMilliseconds: 0,
+          pointDataViewNonRangeMilliseconds: 0,
+        },
+      },
+    });
+
+    if (second?.type !== "loadNodePointGeometry:success") {
+      throw new Error("Expected second geometry success.");
+    }
+
+    expect(
+      second.result.timing?.pointDataViewCacheWaitMilliseconds,
+    ).toBeGreaterThan(0);
   });
 
   it("uses supplied COPC metadata during source-aware warmup", async () => {
@@ -720,4 +852,14 @@ function createPrefetchRequest(
       pointDataLength: 2_000,
     },
   };
+}
+
+function stubMonotonicPerformanceNow(): void {
+  let time = 0;
+  vi.stubGlobal("performance", {
+    now: vi.fn(() => {
+      time += 5;
+      return time;
+    }),
+  });
 }

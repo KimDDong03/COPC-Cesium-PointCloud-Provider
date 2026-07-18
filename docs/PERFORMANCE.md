@@ -298,7 +298,7 @@ performance guarantee:
 | Current-view node coverage              |                        100% by default in final mode; interactive presets may disable it |
 | Current-view weighted node coverage     |                                                   supplemental close-detail density gate |
 | Terminal visual composition             |             antichain frontier, complete additive closure, 0 missing, 0 stale/unexpected |
-| Point-geometry worker timing            |                                        optional max round-trip/decode/worker/queue gates |
+| Point-geometry worker timing            |                              optional max round-trip/point-data-view/worker/queue gates |
 | Selected LOD depth                      |                                                          sample expectation, or override |
 
 The end-to-end overrun gate compares `measuredDurationMilliseconds` with the
@@ -338,6 +338,14 @@ Higher-density presets also enable point-geometry timing gates with
 `COPC_SMOOTHNESS_ASSERT_MAX_AVG_GEOMETRY_QUEUE_MS` catch regressions where
 Cesium frames remain smooth but visible COPC nodes are stuck behind slow
 range-read, LAZ decode, or worker queue work.
+
+`COPC_SMOOTHNESS_ASSERT_MAX_GEOMETRY_DECODE_MS` keeps its historical name for
+artifact and environment compatibility, but it limits the full point-data-view
+wait rather than pure decompression CPU. Current structured artifacts also
+record range wait/count/bytes, laz-perf initialization, non-range view work,
+and decoded-view cache wait separately. The non-range remainder includes setup
+and view construction as well as decompression, so it is intentionally not
+labeled as a pure decoder profile.
 
 The default frame thresholds are calibrated for short headless/browser smoke
 runs, where `requestAnimationFrame` can be quantized around 30 fps even when
@@ -404,7 +412,8 @@ refinement. Across that phase it recorded 59.5 average FPS, 16.8 ms p95,
 83.3 ms maximum, three frames above 50 ms, and zero frames above 100 ms, all
 inside the cold-detail gate. The final retained exact result reported depth 5,
 selection/render/total CPU timing of 2.4/3.2/17.1 ms, renderer revision 8, and
-maximum worker decode/round-trip timing of 1,789.3/1,798.7 ms. The first visible
+maximum worker point-data-view/round-trip timing of 1,789.3/1,798.7 ms (the
+historical artifact labeled the first value as decode). The first visible
 response retained the existing 2,800-point frame; it is application response
 latency, not full terminal-load latency.
 
@@ -447,7 +456,7 @@ prefetch targets during a 6.701-second settle before measuring:
 
 | Profile/run   |  Points | Final nodes rendered/selected | Raw/weighted coverage | Avg FPS | Final total | Geometry evidence     |
 | ------------- | ------: | ----------------------------: | --------------------: | ------: | ----------: | --------------------- |
-| Cold detail 1 |  56,715 |                         27/28 |        96.4% / 100.0% |    59.3 |  6,798.3 ms | max decode 2,604.9 ms |
+| Cold detail 1 |  56,715 |                         27/28 |        96.4% / 100.0% |    59.3 |  6,798.3 ms | max view 2,604.9 ms   |
 | Warm detail 1 | 185,715 |                         27/29 |         93.1% / 95.6% |    60.0 |  1,828.0 ms | timing cache hits 2   |
 | Warm detail 2 | 250,590 |                         37/41 |         90.2% / 91.4% |    60.0 |     12.9 ms | cache-counter delta 2 |
 
@@ -668,7 +677,7 @@ placeholder and is never counted as terminal composition.
 
 The basic viewer's camera-stream adaptive budget now also adjusts the per-node
 source-point and point-data caps. When a completed camera stream reports slow
-source work, especially a high max decode or worker round-trip time, the next
+source work, especially a high max point-data-view or worker round-trip time, the next
 stream update reduces not only the render/source/total compressed budgets but
 also the maximum source points and compressed bytes allowed for any single
 selected node. Background prefetch uses the same adaptive caps, so stale or
@@ -974,9 +983,10 @@ the higher measured coverage, but the local request count is 39.09% lower.
 The structural optimization behind this checkpoint adds a pool-owned
 main-thread range broker. Integrated geometry workers use a proxy COPC Getter,
 so one validated URL or Blob getter and its bounded raw-byte cache are shared
-across workers while LAZ decode remains parallel. Each render or prefetch wave
-sorts required node offsets and lazily groups exact-contiguous point data into
-spans capped at 2 MiB with zero configured gap. Completed and in-flight larger
+across workers while LAZ decode remains parallel. At that checkpoint, each
+render or prefetch wave sorted required node offsets and lazily grouped
+exact-contiguous point data into spans capped at 2 MiB with zero configured
+gap. Completed and in-flight larger
 ranges can serve contained requests without another source read. Later plans
 exclude nodes whose geometry or decoded point view is already reusable, which
 removed the 1,393,625 bytes of partial overlap seen in the first broker
@@ -1019,6 +1029,190 @@ The separately hashed raw request ledger is
 `output/eptium-comparison/eptium-comparison-network-trace.json` with SHA-256
 `eb871d0ad738d038910bbed95cc5ef54464e553c634205579292dbc93bc80326`.
 
+### Range-Wait Follow-up and 64 KiB Default
+
+The next 2026-07-17 Millsite investigation added a browser HTTP Range ledger to
+the smoothness harness and split point-data-view time into range wait,
+laz-perf initialization, non-range view work, and decoded-view cache wait. The
+ledger keeps the exact `Range` header, response status and `Content-Range`,
+requested and received sizes, timing, outcome, duplicate bytes, and overlap
+union for every measured request. Each result also contains summaries for
+`camera-movement`, `terminal-refinement`, and `post-terminal-prefetch`.
+
+The per-result request list and combined summary are the canonical workload
+scope. The artifact-level list can also contain setup traffic outside a
+measured result. Phases are assigned from request-start time against controller
+boundaries, so a request racing a boundary can move between adjacent phase
+counts; combined count and bytes remain canonical. The harness waits for
+pending browser size records before finalizing successful requests and detaches
+abandoned requests so late browser events cannot mutate a completed artifact.
+
+Before changing range planning, an AB/BA experiment serialized workers that
+asked for the same planned outer range. The two disabled runs averaged
+22,434 ms total versus 23,416 ms with serialization, making the experimental
+path 4.4% slower while both sides issued the same 138 requests and 17,526,206
+requested bytes. It also reduced decoded-view cache hits from 16 to 11. The
+coordination path was removed. Deferring predictive prefetch likewise left the
+same 138 requests, bytes, and phase allocation and changed total time by only
+2.5%, so that experiment was also removed rather than retained as inactive
+complexity.
+
+A later A/B/B/A trial started eight already-planned terminal point-data ranges
+ahead of worker demand. Disabled runs averaged 20,825.2 ms terminal refinement;
+enabled runs averaged 20,501.4 ms, only 1.6% lower on the live network. More
+importantly, summed range wait increased from 28,632.9 to 28,896.0 ms and the
+average maximum per-node range wait increased from 1,572.1 to 3,005.7 ms. Every
+run rendered 360,000 points with 80/80 nodes, 100% weighted coverage, 134 HTTP
+ranges, 17,584,657 requested bytes, and zero duplicate, overlap, or abandoned
+requests. Because the small terminal-time movement was noise-sized while tail
+range wait regressed by 91%, planned-range prewarm and its benchmark flag were
+removed.
+
+The remaining controlled sweep changed only the maximum gap bridged within the
+existing 2 MiB span cap. All runs retained 59.2 average FPS, 16.8 ms p95 frame
+time, and 100% terminal node and weighted-node coverage.
+
+| Maximum gap | Run | Terminal refinement | Movement + refinement | HTTP ranges | Requested bytes |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 1 | 21,612.3 ms | 23,111.0 ms | 138 | 17,526,206 |
+| 64 KiB | 1 | 20,230.7 ms | 21,750.2 ms | 134 | 17,584,657 |
+| 64 KiB | 2 | 20,230.0 ms | 21,723.9 ms | 134 | 17,584,657 |
+| 128 KiB | 1 | 20,326.3 ms | 21,804.8 ms | 132 | 17,812,624 |
+| 256 KiB | 1 | 20,822.6 ms | 22,329.5 ms | 117 | 19,821,404 |
+
+The 64 KiB setting was adopted as the integrated-worker pool default because
+it deterministically removed four requests for 58,451 extra bytes, a 0.33%
+increase, and repeated without changing quality. The 128 KiB setting fetched
+more bytes without a meaningful time win, while 256 KiB crossed into 13.1%
+overfetch and worse tail network timing. These are live-network samples rather
+than a latency guarantee; the conservative default is justified primarily by
+the repeatable request/byte tradeoff, with `0` remaining available for sources
+where gap overfetch is expensive.
+
+A final no-override run confirmed that the default itself produced the expected
+134 requests and 17,584,657 requested bytes: 9 / 1,676,486 during movement,
+82 / 8,557,857 during terminal refinement, and 43 / 7,350,314 during
+post-terminal prefetch. It held 59.2 FPS, 16.8 ms p95, 33.3 ms maximum frame,
+and 100% terminal node/weight coverage. The adjacent-phase split can vary when
+requests race a boundary, while the combined total is deterministic for this
+workload.
+
+The current default then passed a fresh one-repeat controlled Eptium comparison
+through the direct command:
+
+```text
+node scripts/benchmark-eptium-comparison.mjs --repeats=1 --max-coalesced-range-gap-bytes=65536
+```
+
+| Strict equal-count metric | Eptium | Local 64 KiB |
+| --- | ---: | ---: |
+| Rendered points | 1,047,575 | 1,047,575 |
+| Product ready | 16,972 ms | 8,314 ms |
+| Product range requests | 55 | 35 |
+| Requested bytes | 16,160,948 | 17,437,756 |
+| Canvas coverage | 86.151% | 86.678% |
+| Bounded 1-3 px gaps | 0.2991% | 0.2238% |
+| Fair p95 frame interval | 17.1 ms | 17.0 ms |
+
+The strict equal-count verdict passed: this local run reached product-ready in
+51.0% less time with 36.4% fewer requests, higher coverage, and fewer bounded
+gaps, while requesting 7.9% more bytes. Because this is one live remote repeat,
+it confirms the current configuration under the controlled Autzen contract but
+does not attribute the entire timing difference to the 64 KiB change or prove
+universal superiority. The earlier two-repeat zero-gap checkpoint already beat
+Eptium on product-ready time and request count; the new result primarily shows
+that the conservative gap default preserves those quality and performance
+gates.
+
+A controlled worker-concurrency sweep then varied only the integrated geometry
+worker count for Millsite cold-detail runs. Workers 2, 4, 6, and 8 averaged
+20,546.9 ms, 20,098.4 ms, 20,513.2 ms, and 20,665.0 ms terminal refinement,
+respectively. Each setting had two repeats except worker 8, which had three.
+Every run rendered 360,000 points with 80/80 nodes, 100% weighted coverage, 134
+ranges, 17,584,657 requested bytes, zero duplicate/overlap/abandoned bytes, and
+16.8-16.9 ms p95 frame time.
+
+| Integrated geometry workers | Terminal refinement mean | Range-wait sum mean | Max range wait mean | Queue sum mean | Max queue mean |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 2 | 20,546.9 ms | 10,032.4 ms | 553.6 ms | 11,781.1 ms | 769.9 ms |
+| 4 | 20,098.4 ms | 19,368.5 ms | 1,085.6 ms | 3,933.5 ms | 317.7 ms |
+| 6 | 20,513.2 ms | 28,870.6 ms | 1,568.7 ms | 1.7 ms | 0.4 ms |
+| 8 | 20,665.0 ms | 28,500.1 ms | 1,560.5 ms | 1.4 ms | 0.3 ms |
+
+The same pass included a controlled Autzen A/B/A comparison against Eptium:
+local workers 4 produced 7,949 ms, Eptium 15,704 ms; local workers 8 produced
+11,233 ms, Eptium 15,795 ms; then local workers 4 produced 9,533 ms, Eptium
+15,904 ms. All three strict comparisons rendered exactly 1,047,575 points,
+passed strict quality, kept local p95 at 16.9 ms, 16.9 ms, and 17.0 ms, used
+33-35 local product ranges, and responded with 17,069,105 requested bytes.
+Worker 4 averaged 8,741 ms versus worker 8 at 11,233 ms, about 22.2% lower,
+but this remains live-network evidence only. An auxiliary high-detail worker-4
+second run also showed a 33.7 ms p95 anomaly, so frame gates remain required
+instead of treating worker count as a standalone pass condition.
+
+The adopted cap of four integrated geometry workers is therefore limited to
+`createCopcWorkerPoolSettings()` and the basic viewer policy. The reusable
+library layer still defaults to two integrated geometry workers, and explicit
+application overrides remain supported for local Blob workloads, alternate
+transports, or other measured environments.
+
+After adoption, a no-override verification also clamped background prefetch to
+three requests so one of the four integrated workers remains available to a
+new foreground camera request. Millsite cold detail still rendered 360,000
+points from 80/80 nodes with 100% weighted coverage, 134 ranges, and 17,584,657
+requested bytes. Terminal refinement was 20,270.2 ms; summed/max range wait was
+19,365.5/1,145.6 ms and summed/max queue wait was 1.1/0.3 ms. Movement frames
+held 16.8 ms p95 and 33.3 ms maximum. Terminal-refinement frames held 16.8 ms
+p95; one 100.2 ms frame used the cold-detail profile's single-frame allowance
+and remained below its 150 ms hard ceiling.
+
+The final no-override Autzen run also passed the strict equal-count contract:
+both viewers rendered exactly 1,047,575 points, Eptium reached product-ready in
+15,895 ms, and the local viewer reached it in 9,517 ms, 40.1% lower in this
+repeat. Local p95 was 17.0 ms versus 17.2 ms, coverage was 86.678% versus
+86.151%, and bounded gaps were 0.2238% versus 0.2990%. The local product issued
+34 ranges versus 55, with zero exact duplicate or overlapping requested bytes;
+it requested 17,394,176 bytes and received responses for 17,069,105 bytes. This
+closes the default-wiring check, but it remains one live Autzen repeat rather
+than a device-, dataset-, or network-independent guarantee.
+
+A subsequent warm-detail investigation separated one remaining long frame from
+network and decode cost. The failing run had 75/75 point-geometry cache hits,
+zero Range requests, zero worker/queue time, and a complete 360,000-point,
+80-node terminal composition, but exact 88-to-80-node renderer reconciliation
+took 55.1 ms inside an 82.6 ms camera-stream pass and landed on a 100.0 ms
+frame. The second repeat performed the same handoff in 66.7 ms, just below the
+67 ms p95 gate. Re-running until this noise passed would not remove the viewer
+stall.
+
+The reference viewer now retains a revision-proven committed world-space point
+frame during camera motion, continues current-view selection and cache-only
+warming, cancels the last in-motion render before the settled request, and only
+replaces Cesium geometry after movement when the exact additive plan changed.
+The warm hierarchy harness also snapshots and restores the settled frontier so
+both measured repeats receive the same hysteresis input rather than whichever
+movement request happened to finish last.
+
+The no-override warm-detail rerun passed both repeats with 360,000 points,
+80/80 required nodes, selected depth 5, and 100% node and weighted coverage.
+Both runs retained the exact render at the same renderer revision, recorded
+60.0 FPS, 16.8 ms p95, 16.8 ms maximum, and zero frames above 50 ms. The
+no-override cold-detail rerun also passed with the same point/node/depth/coverage
+contract, 134 requests and 17,584,657 requested bytes. Camera movement recorded
+59.2 FPS, 16.8 ms p95, 33.4 ms maximum, and zero frames above 50 ms; the 19.948
+second cold terminal-refinement window recorded 16.8 ms p95 and 83.4 ms maximum.
+
+The post-change direct `--repeats=1` Autzen comparison passed the strict
+equal-count contract again. At exactly 1,047,575 points, Eptium/local coverage
+was 86.151%/86.678%, bounded gaps were 0.2991%/0.2238%, and fair p95 was
+17.1/17.1 ms. Eptium/local product first-ready was 15,467/8,411 ms, so local was
+45.6% lower in this repeat; stable product-ready was 16,344/8,411 ms. Local used
+34 product ranges versus 55, with zero exact duplicates or overlapping requested
+bytes. It requested 17,394,176 bytes and received 17,069,105 bytes, so the lower
+request count and timing still carry the previously documented higher-byte
+tradeoff. This is one live remote repeat on one GPU and pose, not a universal
+superiority claim.
+
 For an unchanged exact terminal plan, even that stable-batch resubmission is
 unnecessary. The viewer retains the committed result only when the complete
 node set, per-node density, total point budget, layer identity, and the layer's
@@ -1044,12 +1238,30 @@ retained decoded node. It is a `Uint32Array`, so decoded-view accounting adds
 exactly 4 bytes per decoded point; later density changes reuse the cached order
 instead of paying another sort.
 
-Point-geometry timing now separates aggregate work from the slowest single
-request. The example still shows summed decode/worker time to estimate total
-CPU work, but camera-stream adaptive throttling uses the max decode/worker/round
-trip fields plus the measured stream total time. This avoids over-throttling a
-healthy parallel worker run just because several worker durations were added
-together.
+Point-geometry timing separates aggregate work from the slowest single request.
+The example shows summed point-data-view and worker time for work accounting,
+while camera-stream adaptive throttling uses the max view/worker/round-trip
+fields plus the measured stream total time. Structured timing additionally
+separates range wait/count/bytes, laz-perf initialization, non-range view work,
+and decoded-view cache wait. This both avoids over-throttling a healthy parallel
+worker run and prevents the full range-plus-decompression wait from being
+misreported as pure decoder CPU time.
+
+The 2026-07-17 Millsite cold-detail run on the documented RTX 3060 test host
+confirmed why this split matters. Its 1,800.4 ms maximum point-data-view wait
+contained 1,787.7 ms of range-getter wait and at most 18.2 ms of non-range view
+work; laz-perf initialization was 0.1 ms. Across the terminal result, range wait
+was 29,447.6 ms of 29,752.7 ms summed per-node view wait, with 23 successful
+exact-range getter returns totaling 3,941.4 KiB and 57 cache hits among 80 node
+timings. Multiple nodes can await the same broker outer-range promise, so this
+sum is work/wait accounting rather than unique wall-clock latency. The run still
+held 59.2 FPS average, 16.8 ms p95, a 33.2 ms maximum frame, and 100% terminal
+node/weight coverage. This single live run identifies the Range getter path as
+the next investigation target; it does not by itself distinguish remote
+transfer latency from shared-span scheduling, nor identify LAZ CPU or Cesium
+submission as the dominant bottleneck. Getter-return bytes are not equivalent
+to broker outer-range wire bytes, so network-ledger evidence remains required
+for request amplification comparisons.
 
 The point-sample worker pool and integrated COPC geometry worker pool also track
 which worker last decoded each node. Later requests for the same node prefer
@@ -1110,16 +1322,19 @@ benchmarks can verify the envelope instead of inferring it from configuration.
 
 The worker pool sizing policy keeps point-sample workers conservative and caps
 integrated COPC geometry workers for visible latency instead of maximum
-background throughput. The default policy falls back to four point-sample
-workers and five integrated geometry workers, caps point-sample concurrency at
-six, caps integrated geometry concurrency at eight, keeps strict decoded-node
-worker affinity for the basic viewer, reserves browser capacity for rendering,
-and warms the selected geometry pool up front while still bounding total worker
-creation. This reflects the current bottleneck: typed-array Cesium submission is
-usually near-zero milliseconds in the current benchmark, while COPC point-data
-decompression and worker queue time dominate high-density detail completion. If
-a target deployment has tighter CPU or memory limits, applications can still
-pass explicit worker counts to `CopcPointCloudLayer`.
+background throughput. The default policy falls back to four point-sample and
+four integrated geometry workers, caps point-sample concurrency at six and
+integrated geometry concurrency at four, keeps strict decoded-node worker
+affinity for the basic viewer, reserves browser capacity for rendering and
+remote Range traffic, and warms the selected geometry pool up front while still
+bounding total worker creation. This reflects the measured bottleneck:
+typed-array Cesium submission is usually near-zero milliseconds, while too many
+simultaneous remote Range reads accumulate browser-side wait. Applications can
+still pass explicit worker counts to `CopcPointCloudLayer` when a different
+transport or local Blob workload favors more parallel decoding. Benchmark runs
+can also override the basic viewer's integrated geometry worker count with
+`COPC_SMOOTHNESS_POINT_GEOMETRY_WORKER_CONCURRENCY` when repeating controlled
+concurrency sweeps.
 
 Background camera prefetch is deliberately capped below the integrated geometry
 worker pool size. While the current screen is still trying to load denser
@@ -1128,10 +1343,13 @@ current detail pass settles, it can prepare decoded, sampled, Cesium-ready
 geometry batches without publishing them to the renderer. This should improve
 the next nearby view, but it must not occupy every worker while the current
 screen is still loading. The default `backgroundPrefetchMaxConcurrentRequests`
-is therefore four, leaving room for foreground camera-stream detail requests on
-the basic viewer's warmed worker pool. The runtime prefetch policy also warms
-up to 24 base nodes, 120,000 rendered prefetch points, and 2,500 points per
-prefetched node before the screen asks for full detail. Close and near zooms
+remains four as a reusable upper bound, while the basic viewer clamps the
+applied value to one less than its integrated geometry worker count. The
+current four-worker viewer therefore dispatches at most three background
+requests, preserving one slot for a newer foreground camera request. The
+runtime prefetch policy also warms up to 24 base nodes, 120,000 rendered
+prefetch points, and 2,500 points per prefetched node before the screen asks for
+full detail. Close and near zooms
 still scale that node count upward through the LOD-aware prefetch multiplier,
 so the cache warms a larger part of the current view instead of only a small
 cluster of dense tiles. Background prefetch intentionally uses the LOD prefetch
@@ -1177,3 +1395,147 @@ cost for required nodes, not Cesium point submission. New performance baselines
 must be captured after the terminal visual-quality gate and must include the
 structured composition state; pre-gate partial-coverage runs are not comparable
 final-detail evidence.
+
+### Settled-LOD and Transport-Control Checkpoint (2026-07-18)
+
+The 550 m close-detail pose exposed a timing-dependent mixed-depth result. A
+fresh fast selection entered at the configured 2.25 px spacing threshold and
+could stop at depth 4 with 64 additive nodes, while a slower sequence retained a
+deeper frontier down to the planner's 75% threshold, 1.6875 px, and finished at
+depth 5 with 80 nodes. Comparing those terminal times would have compared
+different visual workloads.
+
+The reference viewer now keeps the default hysteresis while the camera moves and
+uses equal refine/retain thresholds at the retention edge after movement stops.
+The fixed-pose core regression test confirms that an empty and a prior frontier
+select the same nodes when those settled thresholds are equal. The cold and
+cache-controlled browser paths then both rendered 360,000 points from the same
+80/80 additive nodes at depth 5, with zero budget skips and terminal QC passing.
+
+An exact-range localhost proxy retained only byte responses between four
+otherwise identical cold-detail runs. The first phase fetched every requested
+range from the public S3 source; the final phase served every request from the
+proxy's exact-range memory cache. This is a transport control, not a production
+cache feature and not an Eptium comparison.
+
+| Phase | Proxy misses | Terminal refinement | Points | Nodes | Terminal p95 / max | QC |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Remote-backed seed | 138 | 20,283.5 ms | 360,000 | 80/80 | 16.8 / 116.6 ms | 0 failures |
+| Fully seeded replay | 0 | 542.1 ms | 360,000 | 80/80 | 16.8 / 66.7 ms | 0 failures |
+
+At equal visual work, removing remote range latency reduced terminal refinement
+by 97.33% on this run. The replay still performed the same COPC selection,
+worker decode, sampling, and Cesium render path; only its exact byte ranges were
+served locally. This establishes the next high-leverage direction as an
+origin/CDN/edge range cache close to users, with a persistent browser cache as a
+separate revisit optimization. More client-side worker or request-scheduling
+micro-tuning cannot plausibly recover the same order of magnitude from this
+network-bound cold path.
+
+### Product Persistent-Range Cache Checkpoint (2026-07-18)
+
+`npm run benchmark:persistent-range-cache` turns that transport direction into
+an opt-in product path rather than a localhost-proxy upper bound. The benchmark
+builds the real example, clears its browser HTTP and IndexedDB range caches,
+loads the Millsite
+COPC through the normal `CopcPointCloudLayer`/shared worker broker path, reloads
+the page, and requires the repeat to reproduce the same validator-scoped
+source, 550 m camera fingerprint, render signature, depth-5 frontier, 80/80
+required/rendered additive nodes, 360,000 rendered points, and terminal
+renderer-input fingerprint. Every finished
+HTTP response must also be a matching `206` with consistent `Content-Range` and
+`Content-Length` metadata.
+
+The default persistent block size is 64 KiB. Replaying the prior 132-request
+high-detail ledger showed why the original 1 MiB prototype was unsuitable for
+the cold path: 16.95 MiB of requested spans would occupy 81.00 MiB of unique
+1 MiB blocks, versus 23.06 MiB of unique 64 KiB blocks. The smaller default
+keeps cross-request reuse while limiting this observed alignment overhead to
+1.36x instead of 4.78x.
+
+| Real page lifecycle | Elapsed | Upstream ranges | Response-confirmed bytes | Cache hits / misses | Visual work |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Cleared browser and persistent cache | 70,362 ms | 120 | 25,953,475 | 32 / 397 | depth 5, 80/80 nodes, 360,000 points |
+| Reloaded page | 3,916 ms | 2 | 2 | 429 / 0 | identical |
+
+The reload reduced end-to-end elapsed time by 94.434%, request count by
+98.333%, and upstream bytes by 99.999992% on this run. The cold phase retained
+397 blocks / 25,953,473 bytes; the repeat had zero persistent misses. Cache
+clear state was verified at zero bytes and entries, the browser HTTP cache was
+explicitly cleared, Range metadata had zero invalid responses, and browser
+console/page errors were zero. Both phases produced the same ordered terminal
+renderer-geometry fingerprint, `4136b54194783a14`, over transformed positions,
+colors, batch keys, point counts, and density metadata. The machine-readable
+evidence is
+`output/persistent-range-cache/persistent-range-cache-result.json`.
+
+This is production-path evidence for repeat visits, not a claim that browser
+storage fixes a first user's network path and not a direct Eptium comparison.
+Cold delivery still needs an origin/CDN/edge Range cache near users. Strong-ETag
+mode also requires CORS-visible `ETag` and complete `Content-Range`; otherwise
+it bypasses persistence. Application-version mode is available only when the
+host application can authoritatively version immutable bytes and provide their
+length.
+
+### Browser-Cold Edge Range Cache Reference Checkpoint (2026-07-18)
+
+`npm run benchmark:edge-range-cache` targets the cold first-user bottleneck
+without allowing browser persistence to hide the result. A local reference
+server exposes only the exact Millsite pathname and maps it to the fixed public
+S3 object. It canonicalizes requests into 64 KiB blocks, validates strong ETag
+and source length, bounds each downstream range and coalesced origin span to
+2 MiB, and keeps a bounded LRU block cache. This script-side server is not part
+of the library runtime and is not a deployed CDN result.
+
+The first phase clears the edge cache, IndexedDB, and Chromium HTTP cache. The
+second clears IndexedDB and Chromium HTTP cache again while retaining only the
+edge blocks. Both phases must reach the same depth-5 terminal frontier,
+80/80 required/rendered additive nodes, 360,000 points, camera fingerprint,
+render signature, and ordered raw renderer-geometry fingerprint. Browser Range
+request count and confirmed bytes must remain at least 90% of cold, while edge
+origin operations and bytes must fall by at least 90% and elapsed time by at
+least 80%.
+
+| Real page lifecycle | Elapsed | Browser ranges | Browser-confirmed bytes | Origin operations | Origin bytes | Edge block hits / misses |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Origin-cold / browser-cold | 31,648 ms | 120 | 25,953,475 | 118 | 25,953,473 | 3 / 397 |
+| Edge-warm / browser-cold | 5,366 ms | 121 | 26,674,371 | 3 | 720,896 | 400 / 11 |
+
+Elapsed time fell by 83.045%, a 5.898x speedup. Origin operations fell by
+97.458% and origin bytes by 97.222%. The warm browser deliberately performed
+0.833% more Range requests and confirmed 2.778% more bytes than cold, so a
+smaller browser workload cannot explain the improvement. Both phases produced
+the same `4136b54194783a14` terminal renderer-input fingerprint, and console and
+page errors were zero. The machine-readable evidence is
+`output/edge-range-cache/edge-range-cache-result.json`.
+
+The remaining 5.366 seconds includes the browser-to-local-edge request path,
+the 11 canonical block misses caused by a slightly different but larger Range
+ledger, LAZ decode and sampling, coordinate/color geometry preparation, Cesium
+submission, and the terminal/prefetch convergence gate. A real deployment must
+repeat this test against an actual edge provider and multiple regions before
+the local-reference reduction is treated as production first-visit evidence.
+
+The current live Eptium comparison was then rerun with two AB/BA repeats in one
+Chromium session on the documented RTX 3060 host. Both viewers used the same
+Autzen COPC source, exact camera and 1600x900 canvas, and the strict equal-count
+case rendered 1,047,575 points in every repeat.
+
+| Strict equal-count mean | Eptium | Local | Local delta |
+| --- | ---: | ---: | ---: |
+| Product first-ready | 17,665 ms | 9,699 ms | 45.11% lower |
+| Stable product-ready | 18,546 ms | 9,699 ms | 47.70% lower |
+| Product range requests | 55 | 34 | 38.18% fewer |
+| Canvas coverage | 86.1513% | 86.6780% | +0.5267 percentage points |
+| Bounded gaps | 0.2992% | 0.2238% | 25.18% lower |
+| Fair movement p95 | 17.0 ms | 17.0 ms | equal |
+| Fair movement maximum | 19.7 ms | 20.3 ms | 0.6 ms higher locally |
+
+Local first-ready ranged from 8,941 to 10,457 ms; Eptium ranged from 16,926 to
+18,404 ms, so the alternating order did not reverse the result. The local path
+requested 17,394,176 bytes and received 17,069,105 bytes versus Eptium's
+16,160,948 bytes for both, retaining the known 7.63% requested-byte and 5.62%
+received-byte tradeoff. These results prove a repeatable win for this one live
+dataset, pose, browser, GPU, and date. They do not prove universal superiority
+across devices, networks, COPC distributions, camera paths, or future Eptium
+releases.

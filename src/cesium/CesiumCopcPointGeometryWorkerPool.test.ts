@@ -75,6 +75,98 @@ describe("CesiumCopcPointGeometryWorkerPool", () => {
     worker.dispatchMessage({
       id: 1,
       type: "loadNodePointGeometry:success",
+      result: {
+        ...createWorkerResult("0-0-0-0"),
+        timing: {
+          pointDataViewMilliseconds: 12,
+          pointDataViewCacheHit: false,
+          pointDataViewRangeWaitMilliseconds: 7,
+          pointDataViewRangeRequestCount: 2,
+          pointDataViewRangeBytes: 6,
+          pointDataViewLazPerfMilliseconds: 1,
+          pointDataViewNonRangeMilliseconds: 4,
+          pointDataViewCacheWaitMilliseconds: 0,
+          sampleMilliseconds: 2,
+          geometryMilliseconds: 3,
+          workerTotalMilliseconds: 17,
+        },
+      },
+    });
+    await expect(result).resolves.toMatchObject({
+      pointSamples: { nodeKey: "0-0-0-0" },
+      timing: {
+        pointDataViewRangeWaitMilliseconds: 7,
+        pointDataViewRangeRequestCount: 2,
+        pointDataViewRangeBytes: 6,
+        pointDataViewLazPerfMilliseconds: 1,
+        pointDataViewNonRangeMilliseconds: 4,
+        pointDataViewCacheWaitMilliseconds: 0,
+        requestQueueMilliseconds: expect.any(Number),
+        requestRoundTripMilliseconds: expect.any(Number),
+      },
+    });
+  });
+
+  it("passes range getter options to the shared brokered range getter", async () => {
+    let worker: RecordingWorker | undefined;
+    const bytes = new Uint8Array([10, 11, 12, 13, 14, 15]);
+    const source = {
+      key: "blob:broker-options-test",
+      input: new Blob([bytes]),
+    };
+    const pool = new CesiumCopcPointGeometryWorkerPool({
+      pointGeometryLoading: "integrated-worker",
+      maxConcurrentPointGeometryWorkerRequests: 1,
+      rangeGetterOptions: { maxRangeByteLength: 3 },
+      createCopcPointGeometryWorker: () => {
+        worker = new RecordingWorker();
+        return worker as unknown as Worker;
+      },
+    });
+    const result = pool.loadNodePointGeometryBatch({
+      source,
+      nodeKey: "0-0-0-0",
+      node: {
+        pointCount: 10,
+        pointDataOffset: 0,
+        pointDataLength: 4,
+      },
+      pointDataRange: { begin: 0, end: 4 },
+      maxPointCount: 5,
+      transform: {
+        kind: "geographic",
+        heightScaleToMeters: 1,
+      },
+    });
+
+    if (!worker || !result) {
+      throw new Error("Expected worker-backed geometry loading.");
+    }
+
+    await waitForScheduledQueueDrain();
+    worker.dispatchMessage({
+      type: "range:request",
+      rangeRequestId: 42,
+      sourceKey: source.key,
+      begin: 0,
+      end: 4,
+    });
+    await expect.poll(() => worker?.messages.length).toBe(2);
+
+    const rangeResponse = worker.messages[1];
+    expect(rangeResponse).toMatchObject({
+      type: "range:error",
+      rangeRequestId: 42,
+      error: {
+        message: expect.stringContaining(
+          "exceeds the configured maximum of 3 bytes",
+        ),
+      },
+    });
+
+    worker.dispatchMessage({
+      id: 1,
+      type: "loadNodePointGeometry:success",
       result: createWorkerResult("0-0-0-0"),
     });
     await expect(result).resolves.toMatchObject({
@@ -93,6 +185,25 @@ describe("CesiumCopcPointGeometryWorkerPool", () => {
 
     expect(plan.get("a")).toEqual({ begin: 0, end: 10 });
     expect(plan.get("b")).toEqual({ begin: 10, end: 20 });
+  });
+
+  it("coalesces small point-data gaps by default without crossing 64 KiB", () => {
+    const pool = new CesiumCopcPointGeometryWorkerPool();
+    const plan = pool.planPointDataRanges([
+      { key: "a", pointDataOffset: 0, pointDataLength: 10 },
+      { key: "b", pointDataOffset: 10 + 64 * 1024, pointDataLength: 10 },
+      { key: "c", pointDataOffset: 21 + 128 * 1024, pointDataLength: 10 },
+    ]);
+
+    expect(plan.get("a")).toEqual({
+      begin: 0,
+      end: 20 + 64 * 1024,
+    });
+    expect(plan.get("b")).toEqual(plan.get("a"));
+    expect(plan.get("c")).toEqual({
+      begin: 21 + 128 * 1024,
+      end: 31 + 128 * 1024,
+    });
   });
 
   it("soft-cancels active requests without terminating the worker cache", async () => {
@@ -2771,6 +2882,12 @@ describe("CesiumCopcPointGeometryWorkerPool", () => {
         timing: {
           pointDataViewMilliseconds: 10,
           pointDataViewCacheHit: false,
+          pointDataViewRangeWaitMilliseconds: 6,
+          pointDataViewRangeRequestCount: 1,
+          pointDataViewRangeBytes: 1024,
+          pointDataViewLazPerfMilliseconds: 1,
+          pointDataViewNonRangeMilliseconds: 3,
+          pointDataViewCacheWaitMilliseconds: 0,
           workerTotalMilliseconds: 12,
         },
       },
@@ -2779,6 +2896,12 @@ describe("CesiumCopcPointGeometryWorkerPool", () => {
     await expect(result).resolves.toMatchObject({
       nodeKey: "0-0-0-0",
       timing: {
+        pointDataViewRangeWaitMilliseconds: 6,
+        pointDataViewRangeRequestCount: 1,
+        pointDataViewRangeBytes: 1024,
+        pointDataViewLazPerfMilliseconds: 1,
+        pointDataViewNonRangeMilliseconds: 3,
+        pointDataViewCacheWaitMilliseconds: 0,
         requestQueueMilliseconds: expect.any(Number),
         requestRoundTripMilliseconds: expect.any(Number),
       },

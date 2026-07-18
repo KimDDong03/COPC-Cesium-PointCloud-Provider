@@ -5,6 +5,14 @@ export interface CopcRangeGetterCacheOptions {
   readonly maxCachedRangeCount?: number;
 }
 
+export interface ControllableCachedRangeGetter {
+  readonly getter: Getter;
+  /** Drops all resolved and in-flight entries without changing cache policy. */
+  readonly clear: () => void;
+  /** Permanently bypasses this in-memory cache and drops every entry. */
+  readonly disable: () => void;
+}
+
 interface RangeCacheEntry {
   readonly begin: number;
   readonly end: number;
@@ -19,6 +27,18 @@ export function createCachedRangeGetter(
   getter: Getter,
   options: CopcRangeGetterCacheOptions = {},
 ): Getter {
+  return createControllableCachedRangeGetter(getter, options).getter;
+}
+
+/**
+ * Internal control surface used when HTTP response policy can revoke caching
+ * after a request has already started (for example, Cache-Control: no-store).
+ */
+export function createControllableCachedRangeGetter(
+  getter: Getter,
+  options: CopcRangeGetterCacheOptions = {},
+  canUseCache: () => boolean | Promise<boolean> = () => true,
+): ControllableCachedRangeGetter {
   const maxCachedRangeBytes = normalizePositiveIntegerOption(
     options.maxCachedRangeBytes,
     DEFAULT_MAX_CACHED_RANGE_BYTES,
@@ -27,19 +47,34 @@ export function createCachedRangeGetter(
     options.maxCachedRangeCount,
     DEFAULT_MAX_CACHED_RANGE_COUNT,
   );
-
-  if (maxCachedRangeBytes <= 0 || maxCachedRangeCount <= 0) {
-    return getter;
-  }
-
   const cache = new Map<string, RangeCacheEntry>();
   let cachedByteLength = 0;
+  let disabled = maxCachedRangeBytes <= 0 || maxCachedRangeCount <= 0;
 
-  return async (begin: number, end: number): Promise<Uint8Array> => {
+  const clear = (): void => {
+    cache.clear();
+    cachedByteLength = 0;
+  };
+
+  const disable = (): void => {
+    disabled = true;
+    clear();
+  };
+
+  const cachedGetter = async (begin: number, end: number): Promise<Uint8Array> => {
+    if (disabled) {
+      return copyBytes(await getter(begin, end));
+    }
+
     const key = createRangeCacheKey(begin, end);
     const cached = findContainingRangeCacheEntry(cache, begin, end, key);
 
     if (cached) {
+      if (!(await readCachePermission(canUseCache))) {
+        disable();
+        return copyBytes(await getter(begin, end));
+      }
+
       cache.delete(cached.key);
       cache.set(cached.key, cached.entry);
       return copyBytesFromRange(
@@ -56,25 +91,32 @@ export function createCachedRangeGetter(
       promise: getter(begin, end).then((bytes) => {
         const cachedBytes = copyBytes(bytes);
 
-        if (cache.get(key) !== entry) {
+        return readCachePermission(canUseCache).then((cacheAllowed) => {
+          if (!cacheAllowed) {
+            disable();
+            return cachedBytes;
+          }
+
+          if (cache.get(key) !== entry) {
+            return cachedBytes;
+          }
+
+          if (cachedBytes.byteLength > maxCachedRangeBytes) {
+            cache.delete(key);
+            return cachedBytes;
+          }
+
+          entry.byteLength = cachedBytes.byteLength;
+          cachedByteLength += entry.byteLength;
+          cachedByteLength = trimRangeCache(
+            cache,
+            cachedByteLength,
+            maxCachedRangeCount,
+            maxCachedRangeBytes,
+          );
+
           return cachedBytes;
-        }
-
-        if (cachedBytes.byteLength > maxCachedRangeBytes) {
-          cache.delete(key);
-          return cachedBytes;
-        }
-
-        entry.byteLength = cachedBytes.byteLength;
-        cachedByteLength += entry.byteLength;
-        cachedByteLength = trimRangeCache(
-          cache,
-          cachedByteLength,
-          maxCachedRangeCount,
-          maxCachedRangeBytes,
-        );
-
-        return cachedBytes;
+        });
       }).catch((error: unknown) => {
         if (cache.get(key) === entry) {
           cache.delete(key);
@@ -87,6 +129,22 @@ export function createCachedRangeGetter(
     cache.set(key, entry);
     return copyBytes(await entry.promise);
   };
+
+  return {
+    getter: cachedGetter,
+    clear,
+    disable,
+  };
+}
+
+async function readCachePermission(
+  canUseCache: () => boolean | Promise<boolean>,
+): Promise<boolean> {
+  try {
+    return await canUseCache();
+  } catch {
+    return false;
+  }
 }
 
 function findContainingRangeCacheEntry(

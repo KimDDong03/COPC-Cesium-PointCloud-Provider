@@ -31,6 +31,16 @@ export function createCopcRangeGetter(
   input: CopcSourceInput,
   options: CopcRangeGetterOptions = {},
 ): Getter {
+  if (
+    typeof input !== "string" &&
+    typeof options.persistentRangeCache === "object" &&
+    options.persistentRangeCache.enabled !== false
+  ) {
+    throw new Error(
+      "Persistent COPC range caching is currently supported only for HTTP and HTTPS sources.",
+    );
+  }
+
   return typeof input === "string"
     ? createHttpRangeGetter(input, options)
     : createCachedRangeGetter(

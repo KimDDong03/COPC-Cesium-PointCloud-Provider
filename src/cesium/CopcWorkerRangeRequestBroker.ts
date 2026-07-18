@@ -1,6 +1,7 @@
 import type { Getter } from "copc";
 import {
   createCopcRangeGetter,
+  type CopcRangeGetterOptions,
   type CopcSourceDescriptor,
 } from "../core/copc/createCopcRangeGetter";
 
@@ -25,8 +26,13 @@ export class CopcWorkerRangeRequestBroker {
   private readonly createGetter: CopcRangeGetterFactory;
   private readonly sources = new Map<string, RegisteredSource>();
 
-  constructor(createGetter: CopcRangeGetterFactory = defaultCreateGetter) {
-    this.createGetter = createGetter;
+  constructor(
+    createGetter: CopcRangeGetterFactory | undefined = undefined,
+    rangeGetterOptions: CopcRangeGetterOptions = {},
+  ) {
+    this.createGetter =
+      createGetter ??
+      ((source) => defaultCreateGetter(source, rangeGetterOptions));
   }
 
   registerSource(descriptor: CopcSourceDescriptor): void {
@@ -95,8 +101,11 @@ export class CopcWorkerRangeRequestBroker {
   }
 }
 
-function defaultCreateGetter(source: CopcSourceDescriptor): Getter {
-  return createCopcRangeGetter(source.input);
+function defaultCreateGetter(
+  source: CopcSourceDescriptor,
+  options: CopcRangeGetterOptions = {},
+): Getter {
+  return createCopcRangeGetter(source.input, options);
 }
 
 function readRangeOffset(name: string, value: number): number {

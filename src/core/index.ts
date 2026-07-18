@@ -43,6 +43,13 @@ export {
   type CopcRangeGetterCacheOptions,
 } from "./copc/createCachedRangeGetter";
 export {
+  CopcIndexedDbRangeCache,
+  type CopcIndexedDbRangeCacheOptions,
+  type CopcPersistentRangeCache,
+  type CopcPersistentRangeCacheKey,
+  type CopcPersistentRangeCacheStats,
+} from "./copc/CopcPersistentRangeCache";
+export {
   createCopcRangeGetter,
   type CopcRangeGetterOptions,
 } from "./copc/createCopcRangeGetter";
@@ -50,6 +57,9 @@ export {
   CopcRangeRequestError,
   createHttpRangeGetter,
   type CopcHttpRangeGetterOptions,
+  type CopcPersistentApplicationVersionValidationOptions,
+  type CopcPersistentHttpRangeCacheOptions,
+  type CopcPersistentStrongEtagValidationOptions,
   type CopcRangeRequestErrorCode,
   type CopcRangeRequestErrorOptions,
 } from "./copc/createHttpRangeGetter";

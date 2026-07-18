@@ -743,7 +743,7 @@ function checkResult(
     result.pointGeometryTiming,
     "maxDecodeMilliseconds",
     thresholds.maxGeometryDecodeMilliseconds,
-    "geometry max decode",
+    "geometry max view",
   );
   checkOptionalPointGeometryTimingThreshold(
     resultFailures,
@@ -892,15 +892,38 @@ function checkPostPrefetchRefinement(result, label) {
     );
   }
 
+  const provedNewerSameCameraFollowup =
+    evidence.requestAdvanced === true &&
+    evidence.sameCameraFollowup === true &&
+    Number.isSafeInteger(evidence.initialRequestId) &&
+    Number.isSafeInteger(evidence.observedRequestId) &&
+    evidence.observedRequestId > evidence.initialRequestId;
+  const initialSelectedDepth =
+    result.cameraStreamSelectionEvidence?.selectedDepth ??
+    result.cameraStreamDiagnostics?.selectedDepth;
+  const initialRequestAlreadySatisfiedTerminalThresholds =
+    result.cameraStreamVisualQuality?.isTerminalReady === true &&
+    (thresholds.minPostPrefetchSelectedDepth === undefined ||
+      (Number.isFinite(initialSelectedDepth) &&
+        initialSelectedDepth >= thresholds.minPostPrefetchSelectedDepth)) &&
+    (thresholds.minPostPrefetchRenderedPointCount === undefined ||
+      (Number.isFinite(result.renderedPointCount) &&
+        result.renderedPointCount >=
+          thresholds.minPostPrefetchRenderedPointCount));
+  const provedStableInitiallyTerminalRequest =
+    initialRequestAlreadySatisfiedTerminalThresholds &&
+    evidence.requestAdvanced === false &&
+    evidence.sameCameraFollowup === false &&
+    Number.isSafeInteger(evidence.initialRequestId) &&
+    Number.isSafeInteger(evidence.observedRequestId) &&
+    evidence.observedRequestId === evidence.initialRequestId;
+
   if (
-    evidence.requestAdvanced !== true ||
-    evidence.sameCameraFollowup !== true ||
-    !Number.isSafeInteger(evidence.initialRequestId) ||
-    !Number.isSafeInteger(evidence.observedRequestId) ||
-    evidence.observedRequestId <= evidence.initialRequestId
+    !provedNewerSameCameraFollowup &&
+    !provedStableInitiallyTerminalRequest
   ) {
     failures.push(
-      `${label}: post-prefetch evidence did not prove a newer same-camera follow-up request.`,
+      `${label}: post-prefetch evidence did not prove a newer same-camera follow-up request or a stable request that was already terminal at the required depth and density.`,
     );
   }
 

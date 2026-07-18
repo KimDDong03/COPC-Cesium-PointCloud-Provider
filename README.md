@@ -40,12 +40,16 @@ The pre-1.0 library currently supports:
    and revision-proven temporal safe swaps. The reusable high-level controller
    defaults to complete-depth coverage; the reference viewer explicitly opts
    into a coverage-preserving mixed-depth antichain.
-8. Verify URL, local file, WKT CRS, package-consumer, cold/warm performance, and
+8. Optionally retain validator-scoped fixed byte blocks in a bounded IndexedDB
+   cache so new layers and repeat page visits can reuse metadata, hierarchy,
+   and brokered point-data ranges without weakening source validation.
+9. Verify URL, local file, WKT CRS, package-consumer, cold/warm performance, and
    renderer paths through repeatable browser, paired-image quality A/B, and
    release gates.
 
-Persistent/offline cache storage, non-COPC formats, point-cloud editing, and
-application-specific classification styling remain outside the current scope.
+General offline packages/service workers, non-COPC formats, point-cloud editing,
+and application-specific classification styling remain outside the current
+scope.
 
 The published runtime target is a modern browser application built with an ESM
 bundler. CesiumJS 1.140.0 is the minimum supported peer because it is the first
@@ -205,6 +209,16 @@ For cross-origin URLs, allow the viewer origin with CORS and allow the `Range`
 request header; exposing `Content-Range` enables exact range validation. The
 loader always rejects response bodies whose byte length differs from the
 requested range.
+Validated persistent reuse additionally requires the server to expose a strong
+`ETag` and complete `Content-Range`, or an application-owned immutable version
+and authoritative source byte length. It is opt-in through
+`rangeGetterOptions.persistentRangeCache`, uses 64 KiB aligned blocks by
+default, hashes the URL namespace before storage, and does not store network
+misses marked `Cache-Control: no-store`; strong-ETag probes force browser-cache
+revalidation, and the built-in store purges all validator/version blocks for
+that stable source identity and retains one source tombstone across page
+recreation. A source-policy epoch permanently retires older live getters after
+revocation, even when a later fresh ETag safely re-enables new getters.
 
 See [API](docs/API.md) for the current public surface and
 [examples/minimal-layer.ts](examples/minimal-layer.ts) for a type-checked
@@ -222,6 +236,8 @@ npm run build:example
 npm run build
 npm run benchmark:renderers
 npm run benchmark:eptium-comparison
+npm run benchmark:edge-range-cache
+npm run benchmark:persistent-range-cache
 npm run benchmark:quality-ab
 npm run benchmark:smoothness
 npm run benchmark:smoothness:qc
@@ -293,6 +309,13 @@ and a product-only COPC range ledger with exact duplicates, overlap,
 amplification, abandoned work, and coalescing estimates. The JSON report, raw
 request trace, images, backgrounds, and masks are written to
 `output/eptium-comparison`.
+Use the direct Node entry point when changing comparison arguments, for example
+`node scripts/benchmark-eptium-comparison.mjs --repeats=1 --max-coalesced-range-gap-bytes=65536 --point-geometry-worker-concurrency=4`.
+The range-gap and 1-8 worker-count arguments are forwarded to every local
+product and mask capture and recorded in the result configuration; gap `0`
+restores exact-contiguous-only range planning. The integrated worker pool
+otherwise defaults to a 2 MiB maximum coalesced span, a 64 KiB maximum gap,
+and the basic viewer's measured four-worker policy.
 The latest two-repeat RTX 3060 checkpoint passed the strict equal-count gate. At
 1,047,575 points the local renderer recorded 86.678% coverage, 0.2238% bounded
 gaps, 0.009536 edge/foreground, 17.10 ms p95, and 11.065 s product first-ready,
@@ -313,7 +336,33 @@ lower, and median request count was 39.09% lower. The local median p95 was
 bytes were also 5.62% higher, consistent with the additional measured
 coverage. This remains controlled Autzen evidence, not a universal
 cross-device, cross-dataset, or total-network-efficiency superiority claim.
+
+`npm run benchmark:persistent-range-cache` measures the opt-in product
+IndexedDB path from a cold browser/store through a fresh page lifecycle. Both
+phases must reproduce the same terminal camera, frontier, point count, and raw
+renderer-geometry hash. The result is written to
+`output/persistent-range-cache/persistent-range-cache-result.json`.
+
+`npm run benchmark:edge-range-cache` runs the same Millsite terminal workload
+through a local 64 KiB block cache. It clears browser HTTP and IndexedDB state
+before both phases and retains only edge blocks. The gate requires the same raw
+renderer input, at least 90% of cold browser traffic, at least 90% fewer origin
+operations/bytes, and at least 80% lower elapsed time. This is a local reference,
+not deployed-CDN evidence. Output is
+`output/edge-range-cache/edge-range-cache-result.json`.
+
 `npm run benchmark:smoothness` builds the example, starts a temporary preview server, enables camera streaming, moves the Cesium camera, records browser frame intervals through both camera movement and the exact terminal-refinement boundary, first visible application response timing, stream-stage timing, selected LOD depth, and structured decoded-worker cache telemetry, then writes the result to `output/smoothness-benchmark/smoothness.json`. A first response is accepted only after an actual scene commit (`app-render-commit`) or after the application proves that the unchanged exact frame is still resident (`app-render-retained`); beginning a load or resolving a cache lookup is not response evidence. Versioned current artifacts must contain terminal-frame and aggregate cache-envelope evidence; only explicitly unversioned legacy artifacts retain compatibility. The defaults are Autzen, Millsite Reservoir, and Custom Millsite URL samples; 2,500 / 5,000 / 10,000 / 20,000 camera-stream point budgets; 2 repeats per budget; 24 camera steps; 3 seconds per run; and sample-specific minimum selected-depth checks. On PowerShell, override them with `$env:COPC_SMOOTHNESS_SAMPLES="autzen-classified,millsite-reservoir"; $env:COPC_SMOOTHNESS_POINT_BUDGETS="5000,10000"; $env:COPC_SMOOTHNESS_REPEATS="5"; $env:COPC_SMOOTHNESS_MIN_SELECTED_DEPTH="2"; npm run benchmark:smoothness`.
+For range-coalescing sweeps, set
+`COPC_SMOOTHNESS_MAX_COALESCED_RANGE_GAP_BYTES` to a non-negative byte count
+and optionally set `COPC_SMOOTHNESS_MAX_COALESCED_RANGE_BYTES` to a positive
+span cap. Set `COPC_SMOOTHNESS_POINT_GEOMETRY_WORKER_CONCURRENCY` from 1 to 8
+for a controlled worker-count sweep. Each measured result contains the exact
+browser-observed HTTP Range requests plus combined and
+movement/refinement/post-terminal phase summaries.
+Structured point-geometry timing reports the full point-data-view wait and then
+splits range, laz-perf initialization, non-range view work, and cache wait; the
+legacy environment variable containing `GEOMETRY_DECODE` retains its name for
+compatibility but does not represent pure decompression CPU time.
 Browser smoke and benchmark commands request Chromium's high-performance GPU and
 record the actual WebGL vendor/renderer/version in their result. Systems without
 a discrete GPU can still fall back to their available adapter, so use the
@@ -334,22 +383,29 @@ commit, clean/dirty state, and source fingerprint.
 `npm run benchmark:smoothness:contest` runs the same assertion gate against both Autzen and the 374-million-point Millsite Reservoir source so heavier projected-coordinate data is covered before contest/release checks.
 `npm run benchmark:smoothness:cache-reset` clears retained camera-stream state before a Millsite camera movement run while keeping layer-level point samples, prepared point geometry, and worker-local decoded COPC node caches alive. The already-open COPC metadata, hierarchy, prepared Cesium geometry, and worker decoded views stay loaded, so this checks repeated zoom/pan recovery rather than a full first-page cold start or a forced worker/cache reset.
 `npm run benchmark:smoothness:cold-reset` clears the active layer caches before a Millsite movement run and measures the first interactive coverage render instead of waiting for every required node. The same camera request may continue refining asynchronously, so this catches cold first-display regressions without treating the captured preview as final.
-`npm run benchmark:smoothness:cold-detail` resets layer caches at 550 m above the transformed cloud bounds. Its measured request requires at least a complete depth-4 frontier, density, bounded decode/queue timing, and a verified terminal additive composition. It then waits up to 30 seconds for post-prefetch refinement and requires a newer request with the same camera epoch and pose fingerprint, completed prefetch, selected depth 5 or deeper, at least 300,000 rendered points, `isTerminalReady: true`, and zero pending hierarchy pages for the view. Frame collection continues through that final stage: terminal-refinement p95/max use the active 67/150 ms gates, and cold detail permits at most one recorded frame above 100 ms while still rejecting any frame above 150 ms. Default, contest, and warm checks retain the zero-frame-above-100-ms contract. `npm run benchmark:smoothness:warm-zoom-detail` uses the same view without resetting caches, records one excluded warmup plus a completed prefetch settle, then holds that layer's hierarchy only for the two measured runs. Both repeats must report the same selected node keys, additive render signature, and hierarchy-cache snapshot; production camera streaming remains free to refine hierarchy normally. Zero worker timing is accepted only when every final node has a fresh retained camera-stream sample. Prepared-geometry cache deltas remain cache-hit evidence but never synthesize zero latency, and mixed runs retain their real worker timing.
+`npm run benchmark:smoothness:cold-detail` resets layer caches at 550 m above the transformed cloud bounds. Its measured request requires at least a complete depth-4 frontier, density, bounded point-data-view/queue timing, and a verified terminal additive composition. It then waits up to 30 seconds for post-prefetch refinement and requires a newer request with the same camera epoch and pose fingerprint, completed prefetch, selected depth 5 or deeper, at least 300,000 rendered points, `isTerminalReady: true`, and zero pending hierarchy pages for the view. Frame collection continues through that final stage: terminal-refinement p95/max use the active 67/150 ms gates, and cold detail permits at most one recorded frame above 100 ms while still rejecting any frame above 150 ms. Default, contest, and warm checks retain the zero-frame-above-100-ms contract. `npm run benchmark:smoothness:warm-zoom-detail` uses the same view without resetting caches, records one excluded warmup plus a completed prefetch settle, then holds that layer's hierarchy only for the two measured runs. Both repeats must report the same selected node keys, additive render signature, and hierarchy-cache snapshot; production camera streaming remains free to refine hierarchy normally. Zero worker timing is accepted only when every final node has a fresh retained camera-stream sample. Prepared-geometry cache deltas remain cache-hit evidence but never synthesize zero latency, and mixed runs retain their real worker timing.
 
 The latest passing 2026-07-17 RTX 3060 cold-detail snapshot rendered 360,000
 points from all 80 required additive nodes at selected depth 5, with a depth
 3-5 mixed frontier, 100% node and weighted coverage, zero pending current-view
 hierarchy pages, and terminal-ready composition. Camera movement recorded 59.2
-average FPS, 16.8 ms p95, 33.3 ms max, and a 7.6 ms retained-frame first
-response. Frame collection continued through 22.947 seconds of terminal
-refinement and recorded 59.4 average FPS, 16.8 ms p95, 100.1 ms max, and the
-single permitted frame above 100 ms. Typed terminal loading now retains the
-preview/previous frame and submits the weighted full-budget geometry once when
-all required nodes are ready, avoiding repeated full-budget primitive uploads.
-Hierarchy follow-up signatures also include refined depth so the final deeper
-same-camera pass cannot be deduplicated against an earlier complete pass.
-These are machine-specific regression observations from a dirty source
-snapshot, not universal performance guarantees.
+average FPS, 16.8 ms p95, 33.4 ms max, zero frames above 50 ms, and a 5.5 ms
+retained-frame first response. Frame collection continued through 19.948
+seconds of cold terminal refinement at 59.3 average FPS, 16.8 ms p95, and 83.4
+ms max. The matching warm-detail gate then repeated the exact 80-node frontier
+and additive signature twice at 360,000 points; both runs recorded 60.0 FPS,
+16.8 ms p95, 16.8 ms max, and zero frames above 50 ms.
+
+The reference viewer keeps a revision-proven committed world-space point frame
+stable while the camera is moving, warms the newly selected detail without a
+Cesium primitive replacement, cancels the last in-motion render at `moveEnd`,
+and performs at most one settled replacement when the exact plan changed. This
+removed the warm 88-to-80-node terminal reconciliation stall without lowering
+the point budget, selected depth, or additive coverage. Hierarchy follow-up
+signatures also include refined depth so the final deeper same-camera pass
+cannot be deduplicated against an earlier complete pass. These are
+machine-specific regression observations from a dirty source snapshot, not
+universal performance guarantees.
 `npm run license:evidence` regenerates [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and the [SPDX 2.3 SBOM](docs/sbom.spdx.json) from the lockfile and installed dependency manifests. `npm run license:evidence:check` is the read-only artifact gate. `npm run license:evidence:self-test` additionally proves that package/notice deletion, unreviewed licenses, unknown or duplicate packages, and broken relationship endpoints are rejected while platform-specific optional packages remain portable; CI and release QC use this stronger form.
 `npm run qc:product` runs the deterministic product gate: tests, license/SBOM evidence, build, and `git diff --check`. `npm run qc:live-copc` separately runs the strict live-range evidence, the latency-sensitive cold-detail camera-stream gate before other GPU workloads, the live Autzen renderer benchmark, contest/warm camera-stream QC, package smoke, remote browser smoke, and local-file browser smoke. `npm run qc` runs both groups sequentially and remains the blocking release command. Its machine-readable result is `output/qc/qc-status.json`; external host/network failure is reported as `external-source-unavailable` with exit code 2 instead of as a product regression. Keep the live checks sequential because the renderer and browser smoke commands rebuild the same `dist/example` output directory.
 `npm run qc:contest-device` runs the full release chain without duplicating the one-session warm check, then performs the stricter three-fresh-session median regression gate. It finishes by running `npm run evidence:contest` and `npm run evidence:contest:check`, so the successful JSON reports, exact package tarball and checksum, browser-result contracts, screenshots, and fresh regression sessions are byte-for-byte bound into `output/contest-evidence/contest-evidence-manifest.json`. Run this final gate from a clean Git worktree: manifest generation intentionally rejects dirty source state. `npm run evidence:contest` can rebuild the manifest from an already complete clean-worktree evidence set, while the read-only `npm run evidence:contest:check` rejects missing, stale, changed, or source-mismatched artifacts. The current approved baseline targets the recorded RTX 3060 WebGL renderer and deliberately rejects incomparable adapters. The live range and unchanged absolute/relative performance assertions remain blocking; the new classification only states whether a verdict was actually possible.
@@ -484,7 +540,7 @@ Render results include `renderStats` with browser CPU-side coordinate transform 
 When integrated point-geometry workers are active, `renderStats.pointGeometryTimings` also separates summed worker work from the slowest single request and exposes `slowestNodes` so expensive COPC nodes can be identified without parsing logs.
 The smoothness benchmark adds browser `requestAnimationFrame` interval measurements while the example camera-stream path is active. It splits the trace at the exact end of synthetic camera movement and keeps collecting through the expected request's terminal refinement, so worker-driven detail cannot hide outside the frame gate. It also records first-response source and renderer revision, selected depth, exact frontier/additive signatures, structured hierarchy-cache state, hierarchy expansion, hierarchy UI application, node selection, retained node reuse, point rendering, total stream-update timing, and the decoded-worker memory envelope so point-budget tuning can be compared with repeatable frame-time and cache data.
 The basic viewer enables `pointSampleLoading: "worker"` so COPC point-data reads and LAZ decoding run in a Web Worker when the browser supports it. If worker creation is unavailable, `CopcSource` falls back to the existing main-thread point sampling path. Worker point sampling uses a small concurrency limit so camera-driven requests do not all dispatch at once. Point sample APIs accept an `AbortSignal`; the basic viewer aborts stale camera-stream point reads when a newer camera request starts.
-The basic viewer also warms the point-sample worker pool and integrated geometry worker pool when a COPC source is opened, so the first zoom or pan does not pay worker startup cost on top of range reads and decoding. It parses COPC metadata once on the main source, passes that metadata with point-sample work and every integrated-geometry load/prefetch request, and seeds every integrated geometry worker during source-aware warmup instead of making each worker repeat the LAS/COPC header and VLR ranges. A later parsed value replaces a failed worker-local bootstrap promise, covering pre-load warmup and lazily created workers. Worker pool sizing is capped for interactive camera streaming: the helper falls back to four point-sample workers and five geometry workers, caps point-sample concurrency at six, caps integrated geometry concurrency at eight, reserves browser capacity for rendering, and avoids unbounded worker creation on high-core machines. Integrated geometry workers prefer decoded-node affinity so repeated zoom/pan density upgrades reuse worker-local decoded COPC views when that worker is available. Each retained decoded node also caches one `Uint32Array` spatial order, adding exactly 4 bytes per decoded point to the cache estimate; density changes reuse that order instead of sorting the node again. The worker-pool helper keeps strict decoded-worker affinity by default, preventing a busy cache owner from triggering the same HTTP range read and LAZ decode on an idle worker; applications can supply a finite `decodedNodeWorkerFallbackDelayMilliseconds` only when their own measurements favor bounded wait latency over cache reuse. The demo uses soft cancellation for superseded integrated-geometry work so a nearly complete cold range/decode can enter the worker cache rather than terminating the worker and repeating that range on the next view. A 768 MiB layer-wide decoded-view ceiling, divided across both worker pools with a 128 MiB per-worker ceiling, prevents that cache from multiplying into several GiB on high-core machines; `getDecodedPointDataCacheStats()` exposes the measured envelope.
+The basic viewer also warms the point-sample worker pool and integrated geometry worker pool when a COPC source is opened, so the first zoom or pan does not pay worker startup cost on top of range reads and decoding. It parses COPC metadata once on the main source, passes that metadata with point-sample work and every integrated-geometry load/prefetch request, and seeds every integrated geometry worker during source-aware warmup instead of making each worker repeat the LAS/COPC header and VLR ranges. A later parsed value replaces a failed worker-local bootstrap promise, covering pre-load warmup and lazily created workers. Worker pool sizing is capped for interactive camera streaming: the helper falls back to four point-sample and four geometry workers, caps point-sample concurrency at six and integrated geometry concurrency at four, reserves browser capacity for rendering and remote Range traffic, and avoids unbounded worker creation on high-core machines. Integrated geometry workers prefer decoded-node affinity so repeated zoom/pan density upgrades reuse worker-local decoded COPC views when that worker is available. Each retained decoded node also caches one `Uint32Array` spatial order, adding exactly 4 bytes per decoded point to the cache estimate; density changes reuse that order instead of sorting the node again. The worker-pool helper keeps strict decoded-worker affinity by default, preventing a busy cache owner from triggering the same HTTP range read and LAZ decode on an idle worker; applications can supply a finite `decodedNodeWorkerFallbackDelayMilliseconds` only when their own measurements favor bounded wait latency over cache reuse. The demo uses soft cancellation for superseded integrated-geometry work so a nearly complete cold range/decode can enter the worker cache rather than terminating the worker and repeating that range on the next view. A 768 MiB layer-wide decoded-view ceiling, divided across both worker pools with a 128 MiB per-worker ceiling, prevents that cache from multiplying into several GiB on high-core machines; `getDecodedPointDataCacheStats()` exposes the measured envelope.
 
 Spatial ordering quantizes each decoded node to 10 bits per XYZ axis, performs a
 stable four-pass radix sort over Morton codes, then applies a centered
@@ -533,10 +589,13 @@ const layer = new CopcPointCloudLayer(viewer.scene, {
   maxDecodedPointDataViewsPerWorker: 48,
   maxDecodedPointDataViewBytesPerWorker: 192 * 1024 * 1024,
   maxDecodedPointDataViewBytesAcrossWorkers: 768 * 1024 * 1024,
+  maxCoalescedPointDataRangeBytes: 2 * 1024 * 1024,
+  maxCoalescedPointDataRangeGapBytes: 64 * 1024,
   pointSampleLoading: "worker",
   pointGeometryLoading: "integrated-worker",
   pointColorMode: "elevation",
-  maxConcurrentPointGeometryWorkerRequests: 6,
+  // Measured remote-viewer policy; the reusable layer default is 2.
+  maxConcurrentPointGeometryWorkerRequests: 4,
   createPointRenderer: (scene) => new CesiumPrimitivePointRenderer(scene),
   // Stable fallback:
   // createPointRenderer: (scene) => new CesiumPointPrimitiveRenderer(scene),

@@ -57,6 +57,21 @@ const oursBalancedPointBudgetOverride = readOptionalPositiveIntegerArgument(
 const oursDetailPointBudgetOverride = readOptionalPositiveIntegerArgument(
   "--detail-point-budget",
 );
+const maxCoalescedRangeGapBytes = readOptionalNonNegativeSafeIntegerArgument(
+  "--max-coalesced-range-gap-bytes",
+);
+const pointGeometryWorkerConcurrency = readOptionalPositiveIntegerArgument(
+  "--point-geometry-worker-concurrency",
+);
+
+if (
+  pointGeometryWorkerConcurrency !== undefined &&
+  pointGeometryWorkerConcurrency > 8
+) {
+  throw new Error(
+    "--point-geometry-worker-concurrency must be at most 8.",
+  );
+}
 const fairTargetFrameRate = readPositiveNumberArgument(
   "--fair-target-frame-rate",
   60,
@@ -123,6 +138,8 @@ try {
     calibrationScreenSpaceErrors,
     oursBalancedPointBudgetOverride,
     oursDetailPointBudgetOverride,
+    maxCoalescedRangeGapBytes,
+    pointGeometryWorkerConcurrency,
     fairTargetFrameRate,
     performanceMovement,
     repeats,
@@ -216,6 +233,8 @@ try {
         balanced: oursBalancedPointBudgetOverride,
         detail: oursDetailPointBudgetOverride,
       },
+      maxCoalescedPointDataRangeGapBytes: maxCoalescedRangeGapBytes,
+      pointGeometryWorkerConcurrency,
       fairTargetFrameRate,
       performanceMovement: {
         ...performanceMovement,
@@ -1177,6 +1196,25 @@ function readOptionalPositiveIntegerArgument(name) {
   const value = Number(rawValue);
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw new Error(`${name} must be a positive integer when provided.`);
+  }
+  return value;
+}
+
+function readOptionalNonNegativeSafeIntegerArgument(name) {
+  const index = process.argv.indexOf(name);
+  const inlinePrefix = `${name}=`;
+  const inline = process.argv.find((argument) =>
+    argument.startsWith(inlinePrefix),
+  );
+  if (index === -1 && inline === undefined) return undefined;
+  const rawValue =
+    index !== -1 && process.argv[index + 1] &&
+      !process.argv[index + 1].startsWith("--")
+      ? process.argv[index + 1]
+      : inline?.slice(inlinePrefix.length);
+  const value = Number(rawValue);
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative safe integer when provided.`);
   }
   return value;
 }

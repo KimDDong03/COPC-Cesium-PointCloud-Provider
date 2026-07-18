@@ -27,12 +27,15 @@ const POINT_SAMPLE_WORKER_POLICY: WorkerConcurrencyPolicy = {
   maxWarmupCount: 4,
 };
 
+// Direct remote COPC reads contend for a small browser per-origin request
+// window. Four integrated workers reduced terminal tail wait on both measured
+// S3 datasets; callers with a different transport can still override the pool.
 const POINT_GEOMETRY_WORKER_POLICY: WorkerConcurrencyPolicy = {
-  fallbackConcurrency: 5,
+  fallbackConcurrency: 4,
   minConcurrency: 2,
-  maxConcurrency: 8,
+  maxConcurrency: 4,
   reservedThreads: 2,
-  maxWarmupCount: 8,
+  maxWarmupCount: 4,
 };
 // Decoded COPC views live inside one worker. Keep density upgrades on that
 // cache-owning worker by default so an idle fallback worker does not repeat the

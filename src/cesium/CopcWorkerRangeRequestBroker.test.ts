@@ -1,10 +1,23 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Getter } from "copc";
 import {
   CopcWorkerRangeRequestBroker,
   type CopcRangeGetterFactory,
 } from "./CopcWorkerRangeRequestBroker";
-import type { CopcSourceDescriptor } from "../core/copc/createCopcRangeGetter";
+import {
+  createCopcRangeGetter,
+  type CopcSourceDescriptor,
+} from "../core/copc/createCopcRangeGetter";
+
+vi.mock("../core/copc/createCopcRangeGetter", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../core/copc/createCopcRangeGetter")>();
+
+  return {
+    ...actual,
+    createCopcRangeGetter: vi.fn(actual.createCopcRangeGetter),
+  };
+});
 
 describe("CopcWorkerRangeRequestBroker", () => {
   it("rejects range requests for unregistered sources", async () => {
@@ -113,6 +126,28 @@ describe("CopcWorkerRangeRequestBroker", () => {
     expect(factoryCallCount).toBe(1);
   });
 
+  it("passes range getter options to the default getter factory", async () => {
+    const source = createDescriptor("source");
+    const rangeGetterOptions = { maxRangeByteLength: 17 };
+    const createGetter = vi.mocked(createCopcRangeGetter);
+
+    createGetter.mockImplementationOnce(() => async () =>
+      new Uint8Array([8, 9]));
+    const broker = new CopcWorkerRangeRequestBroker(
+      undefined,
+      rangeGetterOptions,
+    );
+    broker.registerSource(source);
+
+    await expect(
+      broker.getRange({ sourceKey: source.key, begin: 3, end: 5 }),
+    ).resolves.toEqual(new Uint8Array([8, 9]));
+    expect(createGetter).toHaveBeenCalledWith(
+      source.input,
+      rangeGetterOptions,
+    );
+  });
+
   it("rejects reusing a source key for a different input", () => {
     const broker = createBroker(new Uint8Array());
     broker.registerSource(createDescriptor("source"));
@@ -124,6 +159,7 @@ describe("CopcWorkerRangeRequestBroker", () => {
       }),
     ).toThrow("already registered with a different input");
   });
+
 });
 
 function createBroker(

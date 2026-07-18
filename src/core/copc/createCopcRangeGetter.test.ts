@@ -64,6 +64,23 @@ describe("createCopcRangeGetter", () => {
     );
   });
 
+  it("rejects persistent range caching for Blob sources", () => {
+    expect(() => createCopcRangeGetter(
+      new Blob([new Uint8Array([0])]),
+      {
+        persistentRangeCache: {
+          validation: {
+            mode: "application-version",
+            sourceByteLength: 1,
+            version: "v1",
+          },
+        },
+      },
+    )).toThrow(
+      "Persistent COPC range caching is currently supported only for HTTP and HTTPS sources.",
+    );
+  });
+
   it("rejects Blob slices that return a truncated body", async () => {
     class TruncatingBlob extends Blob {
       override slice(): Blob {

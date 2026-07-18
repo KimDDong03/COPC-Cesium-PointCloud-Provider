@@ -2,6 +2,7 @@ import { Copc } from "copc";
 import type { Copc as CopcData, Hierarchy } from "copc";
 import { describe, expect, it, vi } from "vitest";
 import { CopcSource } from "./CopcSource";
+import { createCopcRangeGetter } from "./createCopcRangeGetter";
 import type { CopcDecodedPointDataCacheSnapshot } from "./CopcDecodedPointDataCache";
 import type { CopcNodePointSampleResult } from "./CopcPointDataSample";
 import type {
@@ -9,6 +10,16 @@ import type {
   CopcPointSampleWorkerRequest,
   CopcPointSampleWorkerResponse,
 } from "./CopcPointSampleWorkerProtocol";
+
+vi.mock("./createCopcRangeGetter", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("./createCopcRangeGetter")>();
+
+  return {
+    ...actual,
+    createCopcRangeGetter: vi.fn(actual.createCopcRangeGetter),
+  };
+});
 
 describe("CopcSource point sample cache", () => {
   it("stores Blob-backed source descriptors for local file inputs", () => {
@@ -24,6 +35,17 @@ describe("CopcSource point sample cache", () => {
     expect(source.url).toBe("local-sample.copc.laz");
     expect(source.getDescriptor().input).toBe(blob);
     expect(source.getDescriptor().key).toMatch(/^blob:\d+$/);
+  });
+
+  it("passes range getter options when constructing the source getter", () => {
+    const input = "https://example.com/sample.copc.laz";
+    const rangeGetterOptions = { maxRangeByteLength: 17 };
+    const createGetter = vi.mocked(createCopcRangeGetter);
+
+    createGetter.mockClear();
+    new CopcSource(input, { rangeGetterOptions });
+
+    expect(createGetter).toHaveBeenCalledWith(input, rangeGetterOptions);
   });
 
   it("reports cache hits and misses for sampled hierarchy nodes", async () => {

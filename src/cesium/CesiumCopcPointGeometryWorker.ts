@@ -56,6 +56,23 @@ interface WorkerPointDataViewResult {
   readonly entry: WorkerDecodedNodeViewEntry;
   readonly cacheHit: boolean;
   readonly cache: CopcDecodedPointDataCacheSnapshot;
+  readonly timing: WorkerPointDataViewTiming;
+}
+
+interface WorkerPointDataViewTiming {
+  readonly pointDataViewRangeWaitMilliseconds: number;
+  readonly pointDataViewRangeRequestCount: number;
+  readonly pointDataViewRangeBytes: number;
+  readonly pointDataViewLazPerfMilliseconds: number;
+  readonly pointDataViewNonRangeMilliseconds: number;
+  readonly pointDataViewCacheWaitMilliseconds: number;
+}
+
+interface WorkerPointDataTimingRecorder {
+  pointDataViewRangeWaitMilliseconds: number;
+  pointDataViewRangeRequestCount: number;
+  pointDataViewRangeBytes: number;
+  pointDataViewLazPerfMilliseconds: number;
 }
 
 interface WorkerDecodedNodeViewCacheLimits {
@@ -215,6 +232,7 @@ async function handleRequest(
               pointDataViewEndedAt - pointDataViewStartedAt,
             ),
             pointDataViewCacheHit: pointDataView.cacheHit,
+            ...pointDataView.timing,
             sampleMilliseconds: Math.max(0, sampleEndedAt - sampleStartedAt),
             geometryMilliseconds: Math.max(
               0,
@@ -295,6 +313,7 @@ async function handlePrefetchNodePointDataRequest(
           pointDataViewEndedAt - pointDataViewStartedAt,
         ),
         pointDataViewCacheHit: pointDataView.cacheHit,
+        ...pointDataView.timing,
         workerTotalMilliseconds: Math.max(
           0,
           pointDataViewEndedAt - workerStartedAt,
@@ -507,6 +526,7 @@ async function loadWorkerPointDataView(
     | CesiumCopcPointGeometryWorkerPrefetchRequest,
   onCacheSnapshot: (snapshot: CopcDecodedPointDataCacheSnapshot) => void,
 ): Promise<WorkerPointDataViewResult> {
+  const pointDataViewStartedAt = nowMilliseconds();
   const cacheKey = createDecodedNodeViewKey(source.cacheKey, request.nodeKey);
   const limits = readDecodedNodeViewCacheLimits(request);
   const evictedNodeKeys: CopcDecodedPointDataCacheNodeKey[] = [];
@@ -530,11 +550,23 @@ async function loadWorkerPointDataView(
           evictedNodeKeys,
         );
         onCacheSnapshot(cache);
+        const cacheWaitEndedAt = nowMilliseconds();
         return {
           view,
           entry: cached,
           cacheHit: true,
           cache,
+          timing: {
+            pointDataViewRangeWaitMilliseconds: 0,
+            pointDataViewRangeRequestCount: 0,
+            pointDataViewRangeBytes: 0,
+            pointDataViewLazPerfMilliseconds: 0,
+            pointDataViewNonRangeMilliseconds: 0,
+            pointDataViewCacheWaitMilliseconds: Math.max(
+              0,
+              cacheWaitEndedAt - pointDataViewStartedAt,
+            ),
+          },
         };
       }
     }
@@ -545,10 +577,16 @@ async function loadWorkerPointDataView(
       request.node.pointCount *
       (copc.header.pointDataRecordLength +
         SPATIAL_POINT_ORDER_BYTES_PER_POINT);
+    const timingRecorder = createWorkerPointDataTimingRecorder();
     const view = loadCopcNodePointDataView({
-      getter: createPointDataGetter(source, request),
+      getter: createPointDataGetter(source, request, timingRecorder),
       copc,
       node: request.node,
+      timing: {
+        onLazPerfInitialized: (milliseconds) => {
+          timingRecorder.pointDataViewLazPerfMilliseconds += milliseconds;
+        },
+      },
     }).catch((error: unknown) => {
       const existing = decodedNodeViews.get(cacheKey);
 
@@ -585,11 +623,17 @@ async function loadWorkerPointDataView(
       evictedNodeKeys,
     );
     onCacheSnapshot(cache);
+    const pointDataViewEndedAt = nowMilliseconds();
+    const timing = finishWorkerPointDataTiming(
+      timingRecorder,
+      Math.max(0, pointDataViewEndedAt - pointDataViewStartedAt),
+    );
     return {
       view: loadedView,
       entry,
       cacheHit: false,
       cache,
+      timing,
     };
   } catch (error) {
     onCacheSnapshot(
@@ -770,12 +814,58 @@ function createPointDataGetter(
   request:
     | CesiumCopcPointGeometryWorkerLoadRequest
     | CesiumCopcPointGeometryWorkerPrefetchRequest,
+  timing: WorkerPointDataTimingRecorder,
 ): Getter {
-  if (!source.brokered) {
-    return source.getter;
-  }
+  const getter = source.brokered
+    ? createBrokeredRangeGetter(source.sourceKey, () => request.pointDataRange)
+    : source.getter;
 
-  return createBrokeredRangeGetter(source.sourceKey, () => request.pointDataRange);
+  return async (begin: number, end: number): Promise<Uint8Array> => {
+    const rangeStartedAt = nowMilliseconds();
+    const bytes = await getter(begin, end);
+    const rangeEndedAt = nowMilliseconds();
+
+    timing.pointDataViewRangeRequestCount += 1;
+    timing.pointDataViewRangeBytes += bytes.byteLength;
+    timing.pointDataViewRangeWaitMilliseconds += Math.max(
+      0,
+      rangeEndedAt - rangeStartedAt,
+    );
+
+    return bytes;
+  };
+}
+
+function createWorkerPointDataTimingRecorder(): WorkerPointDataTimingRecorder {
+  return {
+    pointDataViewRangeWaitMilliseconds: 0,
+    pointDataViewRangeRequestCount: 0,
+    pointDataViewRangeBytes: 0,
+    pointDataViewLazPerfMilliseconds: 0,
+  };
+}
+
+function finishWorkerPointDataTiming(
+  recorder: WorkerPointDataTimingRecorder,
+  pointDataViewMilliseconds: number,
+): WorkerPointDataViewTiming {
+  const attributedMilliseconds =
+    recorder.pointDataViewRangeWaitMilliseconds +
+    recorder.pointDataViewLazPerfMilliseconds;
+
+  return {
+    pointDataViewRangeWaitMilliseconds:
+      recorder.pointDataViewRangeWaitMilliseconds,
+    pointDataViewRangeRequestCount: recorder.pointDataViewRangeRequestCount,
+    pointDataViewRangeBytes: recorder.pointDataViewRangeBytes,
+    pointDataViewLazPerfMilliseconds:
+      recorder.pointDataViewLazPerfMilliseconds,
+    pointDataViewNonRangeMilliseconds: Math.max(
+      0,
+      pointDataViewMilliseconds - attributedMilliseconds,
+    ),
+    pointDataViewCacheWaitMilliseconds: 0,
+  };
 }
 
 function serializeError(

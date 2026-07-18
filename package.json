@@ -74,6 +74,8 @@
     "preview": "vite preview examples/basic-viewer --config vite.config.ts --host localhost --port 3000 --outDir ../../dist/example",
     "benchmark:renderers": "node scripts/benchmark-renderers.mjs",
     "benchmark:eptium-comparison": "node scripts/benchmark-eptium-comparison.mjs",
+    "benchmark:edge-range-cache": "node scripts/benchmark-persistent-range-cache.mjs --edge-range-cache",
+    "benchmark:persistent-range-cache": "node scripts/benchmark-persistent-range-cache.mjs",
     "benchmark:quality-ab": "node scripts/benchmark-quality-ab.mjs",
     "benchmark:smoothness": "node scripts/benchmark-smoothness.mjs",
     "benchmark:smoothness:assert": "node scripts/assert-smoothness-benchmark.mjs",

@@ -19,6 +19,7 @@ import type {
 } from "./CesiumCopcPointGeometryWorkerProtocol";
 import {
   createCopcSourceDescriptor,
+  type CopcRangeGetterOptions,
   type CopcSourceDescriptor,
 } from "../core/copc/createCopcRangeGetter";
 import {
@@ -36,6 +37,7 @@ import {
 import { CopcWorkerRangeRequestBroker } from "./CopcWorkerRangeRequestBroker";
 
 export interface CesiumCopcPointGeometryWorkerPoolOptions {
+  readonly rangeGetterOptions?: CopcRangeGetterOptions;
   readonly pointGeometryLoading?: CesiumPointGeometryLoadingMode;
   readonly maxConcurrentPointGeometryWorkerRequests?: number;
   readonly activeRequestCancellation?: CesiumCopcPointGeometryWorkerCancellationMode;
@@ -51,7 +53,7 @@ export interface CesiumCopcPointGeometryWorkerPoolOptions {
   readonly brokeredRangeRequests?: boolean;
   /** Maximum lazy contiguous point-data span fetched for one worker request. */
   readonly maxCoalescedPointDataRangeBytes?: number;
-  /** Maximum byte gap allowed inside a planned point-data span. Defaults to zero. */
+  /** Maximum byte gap allowed inside a planned point-data span. Defaults to 64 KiB. */
   readonly maxCoalescedPointDataRangeGapBytes?: number;
   readonly createCopcPointGeometryWorker?: () => Worker;
 }
@@ -118,7 +120,7 @@ type PointGeometryWorkerRequestConsumer =
 const DEFAULT_DECODED_NODE_WORKER_FALLBACK_DELAY_MILLISECONDS =
   Number.POSITIVE_INFINITY;
 const DEFAULT_MAX_COALESCED_POINT_DATA_RANGE_BYTES = 2 * 1024 * 1024;
-const DEFAULT_MAX_COALESCED_POINT_DATA_RANGE_GAP_BYTES = 0;
+const DEFAULT_MAX_COALESCED_POINT_DATA_RANGE_GAP_BYTES = 64 * 1024;
 
 export class CesiumCopcPointGeometryWorkerPool {
   private readonly pointGeometryLoading: CesiumPointGeometryLoadingMode;
@@ -132,7 +134,7 @@ export class CesiumCopcPointGeometryWorkerPool {
   private readonly maxCoalescedPointDataRangeBytes: number;
   private readonly maxCoalescedPointDataRangeGapBytes: number;
   private readonly createCopcPointGeometryWorker: () => Worker;
-  private readonly rangeRequestBroker = new CopcWorkerRangeRequestBroker();
+  private readonly rangeRequestBroker: CopcWorkerRangeRequestBroker;
   private readonly workers: Worker[] = [];
   private readonly activeWorkers = new Set<Worker>();
   private readonly requests = new Map<number, PointGeometryWorkerRequestEntry>();
@@ -231,6 +233,10 @@ export class CesiumCopcPointGeometryWorkerPool {
     this.createCopcPointGeometryWorker =
       options.createCopcPointGeometryWorker ??
       createCesiumCopcPointGeometryWorker;
+    this.rangeRequestBroker = new CopcWorkerRangeRequestBroker(
+      undefined,
+      options.rangeGetterOptions,
+    );
   }
 
   planPointDataRanges(
@@ -1028,6 +1034,7 @@ export class CesiumCopcPointGeometryWorkerPool {
         }
 
         sawValidQueuedRequest = true;
+
         const worker = this.getIdleWorker(request);
 
         if (worker) {
@@ -1431,6 +1438,18 @@ export class CesiumCopcPointGeometryWorkerPool {
               pointDataViewMilliseconds:
                 result.timing.pointDataViewMilliseconds,
               pointDataViewCacheHit: result.timing.pointDataViewCacheHit,
+              pointDataViewRangeWaitMilliseconds:
+                result.timing.pointDataViewRangeWaitMilliseconds,
+              pointDataViewRangeRequestCount:
+                result.timing.pointDataViewRangeRequestCount,
+              pointDataViewRangeBytes:
+                result.timing.pointDataViewRangeBytes,
+              pointDataViewLazPerfMilliseconds:
+                result.timing.pointDataViewLazPerfMilliseconds,
+              pointDataViewNonRangeMilliseconds:
+                result.timing.pointDataViewNonRangeMilliseconds,
+              pointDataViewCacheWaitMilliseconds:
+                result.timing.pointDataViewCacheWaitMilliseconds,
               workerTotalMilliseconds: result.timing.workerTotalMilliseconds,
             }
           : undefined,
@@ -1753,6 +1772,17 @@ function addRequestTimingToResult(
     timing: {
       pointDataViewMilliseconds: result.timing?.pointDataViewMilliseconds ?? 0,
       pointDataViewCacheHit: result.timing?.pointDataViewCacheHit ?? false,
+      pointDataViewRangeWaitMilliseconds:
+        result.timing?.pointDataViewRangeWaitMilliseconds ?? 0,
+      pointDataViewRangeRequestCount:
+        result.timing?.pointDataViewRangeRequestCount ?? 0,
+      pointDataViewRangeBytes: result.timing?.pointDataViewRangeBytes ?? 0,
+      pointDataViewLazPerfMilliseconds:
+        result.timing?.pointDataViewLazPerfMilliseconds ?? 0,
+      pointDataViewNonRangeMilliseconds:
+        result.timing?.pointDataViewNonRangeMilliseconds ?? 0,
+      pointDataViewCacheWaitMilliseconds:
+        result.timing?.pointDataViewCacheWaitMilliseconds ?? 0,
       sampleMilliseconds: result.timing?.sampleMilliseconds ?? 0,
       geometryMilliseconds: result.timing?.geometryMilliseconds ?? 0,
       workerTotalMilliseconds: result.timing?.workerTotalMilliseconds ?? 0,
@@ -1782,6 +1812,17 @@ function addPrefetchRequestTimingToResult(
       pointDataViewMilliseconds:
         result.timing?.pointDataViewMilliseconds ?? 0,
       pointDataViewCacheHit: result.timing?.pointDataViewCacheHit ?? false,
+      pointDataViewRangeWaitMilliseconds:
+        result.timing?.pointDataViewRangeWaitMilliseconds ?? 0,
+      pointDataViewRangeRequestCount:
+        result.timing?.pointDataViewRangeRequestCount ?? 0,
+      pointDataViewRangeBytes: result.timing?.pointDataViewRangeBytes ?? 0,
+      pointDataViewLazPerfMilliseconds:
+        result.timing?.pointDataViewLazPerfMilliseconds ?? 0,
+      pointDataViewNonRangeMilliseconds:
+        result.timing?.pointDataViewNonRangeMilliseconds ?? 0,
+      pointDataViewCacheWaitMilliseconds:
+        result.timing?.pointDataViewCacheWaitMilliseconds ?? 0,
       workerTotalMilliseconds: result.timing?.workerTotalMilliseconds ?? 0,
       requestQueueMilliseconds: Math.max(
         0,

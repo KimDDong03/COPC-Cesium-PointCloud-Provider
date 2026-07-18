@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "vitest";
+import { LIVE_COPC_SAMPLE_URLS } from "../config/live-copc-sources.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const benchmarkScriptPath = path.join(scriptDir, "benchmark-smoothness.mjs");
@@ -346,6 +347,40 @@ test("basic viewer marks camera movement complete before final stream refinement
   );
 });
 
+test("basic viewer keeps a committed render stable during movement", async () => {
+  const source = await readFile(basicViewerMainPath, "utf8");
+  const retainDuringMove = source.indexOf(
+    "const canRetainCommittedRenderDuringMove =",
+  );
+  const cachedProgressFallback = source.indexOf(
+    "const committedPointCountByNodeKey =",
+    retainDuringMove,
+  );
+
+  assert.ok(retainDuringMove > -1);
+  assert.ok(cachedProgressFallback > retainDuringMove);
+  assert.match(
+    source,
+    /const canRetainCommittedRenderDuringMove =\s*automaticCameraMoveInProgress[\s\S]*?committedRender\.rendererRevision === layer\.getRendererRevision\(\)/,
+  );
+  assert.match(
+    source,
+    /canRetainCommittedRenderDuringMove[\s\S]*?preserveCommittedRenderState: true[\s\S]*?current-view detail is warming without replacing GPU buffers/,
+  );
+  assert.match(
+    source,
+    /canRetainCommittedRenderDuringMove[\s\S]*?queueCameraHierarchyPrefetch\(layer, \{[\s\S]*?prefetchGeometryBatches: true[\s\S]*?return foregroundRenderReady/,
+  );
+  assert.match(
+    source,
+    /viewer\.camera\.moveEnd\.addEventListener\([\s\S]*?cancelAutomaticCameraStreamRender\(\);[\s\S]*?queueAutomaticStreamRenderForCameraMove\(false\)/,
+  );
+  assert.match(
+    source,
+    /cameraMovementCompletedAtMilliseconds[\s\S]*?cancelAutomaticCameraStreamRender\(\);[\s\S]*?renderAutomaticNodeSetForCameraMove\(/,
+  );
+});
+
 test("warm measurements hold one settled hierarchy across exact repeat signatures", async () => {
   const flow = await createGeneratedFlow({ warmupRunCount: 1 });
   const warmupMeasure = flow.indexOf(
@@ -413,6 +448,18 @@ test("basic viewer hierarchy hold skips only hierarchy growth", async () => {
   assert.match(source, /lastCameraStreamRenderSignature = renderSignature/);
   assert.match(
     source,
+    /benchmarkHierarchyHoldFrontierKeys = \[\.\.\.lastCameraStreamSelectedNodeKeys\]/,
+  );
+  assert.match(
+    source,
+    /lastCameraStreamSelectedNodeKeys =\s*benchmarkHierarchyHoldLayer === currentLayer\s*\? \(benchmarkHierarchyHoldFrontierKeys \?\? \[\]\)\s*: \[\]/,
+  );
+  assert.match(
+    source,
+    /benchmarkHierarchyHoldFrontierKeys = undefined/,
+  );
+  assert.match(
+    source,
     /cameraStreamSelectedNodeKeys: \[\.\.\.lastCameraStreamSelectedNodeKeys\]/,
   );
   assert.match(source, /cachedFinalNodeCount: initialNodeResults\.length/);
@@ -421,6 +468,55 @@ test("basic viewer hierarchy hold skips only hierarchy growth", async () => {
     source,
     /if \(lastCameraStreamPrefetchStatus\?\.completed\) \{\s*return;/,
   );
+});
+
+test("basic viewer forwards the coalesced range gap query without changing post-terminal geometry prefetch", async () => {
+  const source = await readFile(basicViewerMainPath, "utf8");
+  const detailRenderPromise = source.indexOf(
+    "const detailRenderPromise = runCameraStreamTerminalRender({",
+  );
+  const postTerminalThen = source.indexOf(
+    "void detailRenderPromise\n      .then(() => {",
+    detailRenderPromise,
+  );
+  const postTerminalPrefetch = source.indexOf(
+    "queueCameraHierarchyPrefetch(layer, {",
+    postTerminalThen,
+  );
+  const postTerminalGeometry = source.indexOf(
+    "prefetchGeometryBatches: true,",
+    postTerminalPrefetch,
+  );
+  const postTerminalResolve = source.indexOf(
+    "resolveForegroundRenderOnce();",
+    postTerminalPrefetch,
+  );
+
+  assert.notEqual(detailRenderPromise, -1);
+  assert.ok(postTerminalThen > detailRenderPromise);
+  assert.ok(postTerminalPrefetch > postTerminalThen);
+  assert.ok(postTerminalGeometry > postTerminalPrefetch);
+  assert.ok(postTerminalGeometry < postTerminalResolve);
+  assert.match(source, /"maxCoalescedPointDataRangeGapBytes"/);
+  assert.match(source, /"pointGeometryWorkerConcurrency"/);
+  assert.match(
+    source,
+    /POINT_GEOMETRY_WORKER_CONCURRENCY_OVERRIDE\s*=\s*\n\s*readPointGeometryWorkerConcurrencyOverride\(\)/,
+  );
+  assert.match(
+    source,
+    /POINT_GEOMETRY_WORKER_WARMUP_COUNT\s*=\s*\n\s*POINT_GEOMETRY_WORKER_CONCURRENCY_OVERRIDE\s*\?\?/,
+  );
+  assert.match(
+    source,
+    /CAMERA_STREAM_BACKGROUND_PREFETCH_MAX_CONCURRENT_REQUESTS\s*=\s*Math\.max\([\s\S]*POINT_GEOMETRY_WORKER_CONCURRENCY - 1/,
+  );
+  assert.equal(
+    source.match(/CAMERA_STREAM_BACKGROUND_PREFETCH_MAX_CONCURRENT_REQUESTS/g)
+      ?.length,
+    3,
+  );
+  assert.match(source, /workerCount <= 8/);
 });
 
 test("benchmark report records the current artifact schema", async () => {
@@ -435,6 +531,172 @@ test("benchmark report records the current artifact schema", async () => {
     source,
     /const report = \{[\s\S]*schema: benchmarkArtifactSchema,[\s\S]*schemaVersion: benchmarkArtifactSchemaVersion,/,
   );
+});
+
+test("smoothness benchmark records prefetch and coalesced range config plus scoped HTTP range evidence", async () => {
+  const source = await readFile(benchmarkScriptPath, "utf8");
+  const flow = await createGeneratedFlow();
+
+  assert.match(source, /COPC_SMOOTHNESS_MAX_COALESCED_RANGE_BYTES/);
+  assert.match(source, /COPC_SMOOTHNESS_MAX_COALESCED_RANGE_GAP_BYTES/);
+  assert.match(
+    source,
+    /COPC_SMOOTHNESS_POINT_GEOMETRY_WORKER_CONCURRENCY/,
+  );
+  assert.match(
+    source,
+    /COPC_SMOOTHNESS_POINT_GEOMETRY_WORKER_CONCURRENCY must be at most 8/,
+  );
+  assert.match(
+    source,
+    /"maxCoalescedPointDataRangeBytes",\s*String\(benchmarkMaxCoalescedPointDataRangeBytes\)/,
+  );
+  assert.match(
+    source,
+    /"maxCoalescedPointDataRangeGapBytes",\s*String\(benchmarkMaxCoalescedPointDataRangeGapBytes\)/,
+  );
+  assert.match(
+    source,
+    /"pointGeometryWorkerConcurrency",\s*String\(benchmarkPointGeometryWorkerConcurrency\)/,
+  );
+  assert.match(flow, /page\.on\("request", \(request\) =>/);
+  assert.match(flow, /const range = readHeader\(headers, "range"\)/);
+  assert.match(flow, /page\.on\("requestfinished", \(request\) =>/);
+  assert.match(flow, /pendingHttpRangeFinalizers\.add\(finalizer\)/);
+  assert.match(
+    flow,
+    /while \(pendingHttpRangeFinalizers\.size > 0\) \{\s*await Promise\.all\(\[\.\.\.pendingHttpRangeFinalizers\]\);\s*\}/,
+  );
+  assert.match(flow, /page\.on\("requestfailed", \(request\) =>/);
+  assert.match(flow, /beginHttpRangeScope\(\{/);
+  assert.match(flow, /httpRangeEvidence = await endHttpRangeScope/);
+  assert.match(flow, /httpRangeRequests: httpRangeEvidence\.records/);
+  assert.match(flow, /httpRangeSummary: httpRangeEvidence\.summary/);
+  assert.match(flow, /function percentileRank\(values, percentileRankValue\)/);
+  assert.equal(flow.match(/function percentile\(values, ratio\)/g)?.length, 1);
+  assert.match(flow, /activeHttpRangeRequests\.delete\(request\)/);
+  assert.match(flow, /bytesCaveat:/);
+  assert.match(flow, /phaseCaveat:/);
+  assert.match(flow, /maxCoalescedPointDataRangeBytes,/);
+  assert.match(flow, /maxCoalescedPointDataRangeGapBytes,/);
+  assert.match(flow, /pointGeometryWorkerConcurrency,/);
+  assert.match(flow, /httpRangePhaseSummaries: httpRangeEvidence\.phaseSummaries/);
+  assert.match(flow, /phase: activeHttpRangeScope\?\.phase/);
+  assert.match(flow, /setHttpRangeScopePhase\(httpRangeScope, "terminal-refinement"\)/);
+  assert.match(flow, /setHttpRangeScopePhase\(httpRangeScope, "post-terminal-prefetch"\)/);
+});
+
+test("generated HTTP range summary counts wire metadata without worker-byte inference and groups phases", async () => {
+  const flow = await createGeneratedFlow();
+  const helpers = extractGeneratedHelpers(
+    flow,
+    "function parseRangeHeader(",
+    "function beginHttpRangeScope(",
+  );
+  const summarizeHttpRangeRequests = eval(
+    `${helpers}\nsummarizeHttpRangeRequests;`,
+  );
+  const summarizeHttpRangeRequestsByPhase = eval(
+    `const httpRangePhases = ["camera-movement", "terminal-refinement", "post-terminal-prefetch"];\n${helpers}\nsummarizeHttpRangeRequestsByPhase;`,
+  );
+  const parseRangeHeader = eval(`${helpers}\nparseRangeHeader;`);
+  const parseContentRangeHeader = eval(`${helpers}\nparseContentRangeHeader;`);
+
+  assert.deepEqual(
+    summarizeHttpRangeRequests([
+      {
+        outcome: "finished",
+        status: 206,
+        parsedRange: parseRangeHeader("bytes=0-99"),
+        parsedContentRange: parseContentRangeHeader("bytes 0-99/1000"),
+        durationMilliseconds: 10,
+        sizes: {
+          requestBodySize: 0,
+          requestHeadersSize: 40,
+          responseBodySize: 100,
+          responseHeadersSize: 60,
+        },
+      },
+      {
+        outcome: "finished",
+        status: 206,
+        parsedRange: parseRangeHeader("bytes=50-149"),
+        contentLengthBytes: 100,
+        durationMilliseconds: 30,
+        sizes: {
+          requestBodySize: 0,
+          requestHeadersSize: 41,
+          responseBodySize: 100,
+          responseHeadersSize: 61,
+        },
+      },
+      {
+        outcome: "abandoned",
+        parsedRange: parseRangeHeader("bytes=0-99"),
+        durationMilliseconds: 20,
+      },
+    ]),
+    {
+      requestCount: 3,
+      finishedCount: 2,
+      failedCount: 0,
+      abandonedCount: 1,
+      statusCounts: { 206: 2 },
+      requestedRangeBytes: 300,
+      finishedRangeBytes: 200,
+      contentLengthBytes: 100,
+      sizeRecordCount: 2,
+      requestBodySizeBytes: 0,
+      requestHeadersSizeBytes: 81,
+      responseBodySizeBytes: 200,
+      responseHeadersSizeBytes: 121,
+      transferSizeBytes: 321,
+      maxDurationMilliseconds: 30,
+      p95DurationMilliseconds: 30,
+      duplicateRangeCount: 1,
+      duplicateRangeBytes: 100,
+      overlapRangeBytes: 150,
+      unionRangeBytes: 150,
+      evidenceScope: "browser-http-range-headers",
+      bytesCaveat:
+        "HTTP byte counts are browser-observed request/response metadata and do not include inner worker payload inference.",
+      phaseCaveat:
+        "HTTP range phases are classified by request start against benchmark controller boundaries; requests that race a boundary can be attributed to the previous or next phase.",
+    },
+  );
+
+  const phaseSummaries = summarizeHttpRangeRequestsByPhase([
+    {
+      phase: "camera-movement",
+      outcome: "finished",
+      parsedRange: parseRangeHeader("bytes=0-9"),
+    },
+    {
+      phase: "terminal-refinement",
+      outcome: "finished",
+      parsedRange: parseRangeHeader("bytes=10-29"),
+    },
+    {
+      phase: "post-terminal-prefetch",
+      outcome: "finished",
+      parsedRange: parseRangeHeader("bytes=30-59"),
+    },
+  ]);
+  assert.equal(phaseSummaries["camera-movement"].requestCount, 1);
+  assert.equal(phaseSummaries["camera-movement"].requestedRangeBytes, 10);
+  assert.equal(phaseSummaries["terminal-refinement"].requestCount, 1);
+  assert.equal(phaseSummaries["terminal-refinement"].requestedRangeBytes, 20);
+  assert.equal(phaseSummaries["post-terminal-prefetch"].requestCount, 1);
+  assert.equal(phaseSummaries["post-terminal-prefetch"].requestedRangeBytes, 30);
+
+  const nestedOverlap = summarizeHttpRangeRequests([
+    { parsedRange: parseRangeHeader("bytes=0-99") },
+    { parsedRange: parseRangeHeader("bytes=0-49") },
+    { parsedRange: parseRangeHeader("bytes=50-99") },
+  ]);
+  assert.equal(nestedOverlap.requestedRangeBytes, 200);
+  assert.equal(nestedOverlap.unionRangeBytes, 100);
+  assert.equal(nestedOverlap.overlapRangeBytes, 100);
 });
 
 test("generated frame summary safely represents an empty refinement interval", async () => {
@@ -455,6 +717,58 @@ test("generated frame summary safely represents an empty refinement interval", a
     frameDeltasOver50Milliseconds: 0,
     frameDeltasOver100Milliseconds: 0,
   });
+});
+
+test("custom-millsite URL override falls back on blank input and rejects invalid protocols", async () => {
+  const source = await readFile(benchmarkScriptPath, "utf8");
+  const start = source.indexOf("function readOptionalHttpUrlEnv(");
+  const end = source.indexOf("\nfunction readNonNegativeIntegerEnv(", start);
+
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+
+  const readOptionalHttpUrlEnv = eval(
+    `${source.slice(start, end)}\nreadOptionalHttpUrlEnv;`,
+  );
+
+  const originalValue = process.env.COPC_SMOOTHNESS_CUSTOM_MILLSITE_URL;
+
+  try {
+    process.env.COPC_SMOOTHNESS_CUSTOM_MILLSITE_URL = "   ";
+    assert.equal(
+      readOptionalHttpUrlEnv(
+        "COPC_SMOOTHNESS_CUSTOM_MILLSITE_URL",
+        LIVE_COPC_SAMPLE_URLS.millsiteReservoir,
+      ),
+      LIVE_COPC_SAMPLE_URLS.millsiteReservoir,
+    );
+
+    process.env.COPC_SMOOTHNESS_CUSTOM_MILLSITE_URL = "file:///tmp/millsite.copc.laz";
+    assert.throws(
+      () =>
+        readOptionalHttpUrlEnv(
+          "COPC_SMOOTHNESS_CUSTOM_MILLSITE_URL",
+          LIVE_COPC_SAMPLE_URLS.millsiteReservoir,
+        ),
+      /COPC_SMOOTHNESS_CUSTOM_MILLSITE_URL must be a valid http or https URL\./,
+    );
+
+    process.env.COPC_SMOOTHNESS_CUSTOM_MILLSITE_URL =
+      "https://example.com/millsite.copc.laz?token=abc";
+    assert.equal(
+      readOptionalHttpUrlEnv(
+        "COPC_SMOOTHNESS_CUSTOM_MILLSITE_URL",
+        LIVE_COPC_SAMPLE_URLS.millsiteReservoir,
+      ),
+      "https://example.com/millsite.copc.laz?token=abc",
+    );
+  } finally {
+    if (originalValue === undefined) {
+      delete process.env.COPC_SMOOTHNESS_CUSTOM_MILLSITE_URL;
+    } else {
+      process.env.COPC_SMOOTHNESS_CUSTOM_MILLSITE_URL = originalValue;
+    }
+  }
 });
 
 async function createGeneratedFlow(options = {}) {
@@ -489,6 +803,8 @@ async function createGeneratedFlow(options = {}) {
     120_000,
     120_000,
     5_000,
+    undefined,
+    undefined,
   );
 }
 
@@ -500,4 +816,14 @@ function extractGeneratedFunction(flow, functionName, nextFunctionName) {
   assert.notEqual(end, -1);
 
   return eval(`(${flow.slice(start, end)})`);
+}
+
+function extractGeneratedHelpers(flow, startNeedle, endNeedle) {
+  const start = flow.indexOf(startNeedle);
+  const end = flow.indexOf(endNeedle, start);
+
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+
+  return flow.slice(start, end);
 }

@@ -30,6 +30,7 @@ import {
   type CopcSourceInput,
   type CopcPointSampleLoadingMode,
 } from "../core/copc/CopcSource";
+import type { CopcRangeGetterOptions } from "../core/copc/createCopcRangeGetter";
 import {
   selectHierarchyPagesForTarget,
   type CopcHierarchyPageTargetSelection,
@@ -111,6 +112,7 @@ import { createCopcNodeAncestorKeys } from "./CopcCameraStreamNodePlan";
 export interface CopcPointCloudLayerOptions {
   readonly url?: string;
   readonly source?: CopcSourceInput;
+  readonly rangeGetterOptions?: CopcRangeGetterOptions;
   readonly maxPointCountPerNode?: number;
   readonly maxCachedHierarchyPages?: number;
   readonly maxCachedHierarchyPageBytes?: number;
@@ -166,12 +168,24 @@ export interface CopcPointCloudLayerPointGeometryTimingStats {
   readonly workerTotalMilliseconds: number;
   readonly requestQueueMilliseconds: number;
   readonly requestRoundTripMilliseconds: number;
+  readonly pointDataViewRangeWaitMilliseconds: number;
+  readonly pointDataViewRangeRequestCount: number;
+  readonly pointDataViewRangeBytes: number;
+  readonly pointDataViewLazPerfMilliseconds: number;
+  readonly pointDataViewNonRangeMilliseconds: number;
+  readonly pointDataViewCacheWaitMilliseconds: number;
   readonly maxPointDataViewMilliseconds: number;
   readonly maxSampleMilliseconds: number;
   readonly maxGeometryMilliseconds: number;
   readonly maxWorkerTotalMilliseconds: number;
   readonly maxRequestQueueMilliseconds: number;
   readonly maxRequestRoundTripMilliseconds: number;
+  readonly maxPointDataViewRangeWaitMilliseconds: number;
+  readonly maxPointDataViewRangeRequestCount: number;
+  readonly maxPointDataViewRangeBytes: number;
+  readonly maxPointDataViewLazPerfMilliseconds: number;
+  readonly maxPointDataViewNonRangeMilliseconds: number;
+  readonly maxPointDataViewCacheWaitMilliseconds: number;
 }
 
 export interface CopcPointCloudLayerPointGeometryNodeTimingStats {
@@ -186,6 +200,12 @@ export interface CopcPointCloudLayerPointGeometryNodeTimingStats {
   readonly workerTotalMilliseconds: number;
   readonly requestQueueMilliseconds: number;
   readonly requestRoundTripMilliseconds: number;
+  readonly pointDataViewRangeWaitMilliseconds: number;
+  readonly pointDataViewRangeRequestCount: number;
+  readonly pointDataViewRangeBytes: number;
+  readonly pointDataViewLazPerfMilliseconds: number;
+  readonly pointDataViewNonRangeMilliseconds: number;
+  readonly pointDataViewCacheWaitMilliseconds: number;
 }
 
 export interface CopcPointCloudLayerPointGeometryCacheStats {
@@ -551,6 +571,7 @@ export class CopcPointCloudLayer {
     );
 
     this.source = new CopcSource(sourceInput, {
+      rangeGetterOptions: options.rangeGetterOptions,
       maxCachedHierarchyPages: options.maxCachedHierarchyPages,
       maxCachedHierarchyPageBytes: options.maxCachedHierarchyPageBytes,
       maxCachedSampleSets: options.maxCachedSampleSets,
@@ -577,6 +598,7 @@ export class CopcPointCloudLayer {
       createPointGeometryWorker: options.createPointGeometryWorker,
     });
     this.copcPointGeometryWorkerPool = new CesiumCopcPointGeometryWorkerPool({
+      rangeGetterOptions: options.rangeGetterOptions,
       pointGeometryLoading: options.pointGeometryLoading,
       maxConcurrentPointGeometryWorkerRequests:
         options.maxConcurrentPointGeometryWorkerRequests,
@@ -3957,6 +3979,31 @@ function summarizePointGeometryBatchTimings(
         workerTotalMilliseconds: timing.workerTotalMilliseconds,
         requestQueueMilliseconds: timing.requestQueueMilliseconds ?? 0,
         requestRoundTripMilliseconds: timing.requestRoundTripMilliseconds ?? 0,
+        pointDataViewRangeWaitMilliseconds:
+          readOptionalPointGeometryTiming(
+            timing,
+            "pointDataViewRangeWaitMilliseconds",
+          ),
+        pointDataViewRangeRequestCount: readOptionalPointGeometryTiming(
+          timing,
+          "pointDataViewRangeRequestCount",
+        ),
+        pointDataViewRangeBytes: readOptionalPointGeometryTiming(
+          timing,
+          "pointDataViewRangeBytes",
+        ),
+        pointDataViewLazPerfMilliseconds: readOptionalPointGeometryTiming(
+          timing,
+          "pointDataViewLazPerfMilliseconds",
+        ),
+        pointDataViewNonRangeMilliseconds: readOptionalPointGeometryTiming(
+          timing,
+          "pointDataViewNonRangeMilliseconds",
+        ),
+        pointDataViewCacheWaitMilliseconds: readOptionalPointGeometryTiming(
+          timing,
+          "pointDataViewCacheWaitMilliseconds",
+        ),
       };
     })
     .filter(isDefined);
@@ -4000,7 +4047,31 @@ function summarizePointGeometryBatchTimings(
     ),
     requestRoundTripMilliseconds: sumPointGeometryTiming(
       timings,
-      (timing) => timing.requestRoundTripMilliseconds ?? 0,
+      (timing) => timing.requestRoundTripMilliseconds,
+    ),
+    pointDataViewRangeWaitMilliseconds: sumPointGeometryTiming(
+      timings,
+      (timing) => timing.pointDataViewRangeWaitMilliseconds,
+    ),
+    pointDataViewRangeRequestCount: sumPointGeometryTiming(
+      timings,
+      (timing) => timing.pointDataViewRangeRequestCount,
+    ),
+    pointDataViewRangeBytes: sumPointGeometryTiming(
+      timings,
+      (timing) => timing.pointDataViewRangeBytes,
+    ),
+    pointDataViewLazPerfMilliseconds: sumPointGeometryTiming(
+      timings,
+      (timing) => timing.pointDataViewLazPerfMilliseconds,
+    ),
+    pointDataViewNonRangeMilliseconds: sumPointGeometryTiming(
+      timings,
+      (timing) => timing.pointDataViewNonRangeMilliseconds,
+    ),
+    pointDataViewCacheWaitMilliseconds: sumPointGeometryTiming(
+      timings,
+      (timing) => timing.pointDataViewCacheWaitMilliseconds,
     ),
     maxPointDataViewMilliseconds: maxPointGeometryTiming(
       timings,
@@ -4024,26 +4095,67 @@ function summarizePointGeometryBatchTimings(
     ),
     maxRequestRoundTripMilliseconds: maxPointGeometryTiming(
       timings,
-      (timing) => timing.requestRoundTripMilliseconds ?? 0,
+      (timing) => timing.requestRoundTripMilliseconds,
+    ),
+    maxPointDataViewRangeWaitMilliseconds: maxPointGeometryTiming(
+      timings,
+      (timing) => timing.pointDataViewRangeWaitMilliseconds,
+    ),
+    maxPointDataViewRangeRequestCount: maxPointGeometryTiming(
+      timings,
+      (timing) => timing.pointDataViewRangeRequestCount,
+    ),
+    maxPointDataViewRangeBytes: maxPointGeometryTiming(
+      timings,
+      (timing) => timing.pointDataViewRangeBytes,
+    ),
+    maxPointDataViewLazPerfMilliseconds: maxPointGeometryTiming(
+      timings,
+      (timing) => timing.pointDataViewLazPerfMilliseconds,
+    ),
+    maxPointDataViewNonRangeMilliseconds: maxPointGeometryTiming(
+      timings,
+      (timing) => timing.pointDataViewNonRangeMilliseconds,
+    ),
+    maxPointDataViewCacheWaitMilliseconds: maxPointGeometryTiming(
+      timings,
+      (timing) => timing.pointDataViewCacheWaitMilliseconds,
     ),
   };
 }
 
 function sumPointGeometryTiming(
-  timings: readonly CopcPointGeometryBatchTiming[],
-  readValue: (timing: CopcPointGeometryBatchTiming) => number,
+  timings: readonly CopcPointCloudLayerPointGeometryNodeTimingStats[],
+  readValue: (timing: CopcPointCloudLayerPointGeometryNodeTimingStats) => number,
 ): number {
   return timings.reduce((total, timing) => total + readValue(timing), 0);
 }
 
 function maxPointGeometryTiming(
-  timings: readonly CopcPointGeometryBatchTiming[],
-  readValue: (timing: CopcPointGeometryBatchTiming) => number,
+  timings: readonly CopcPointCloudLayerPointGeometryNodeTimingStats[],
+  readValue: (timing: CopcPointCloudLayerPointGeometryNodeTimingStats) => number,
 ): number {
   return timings.reduce(
     (maxValue, timing) => Math.max(maxValue, readValue(timing)),
     0,
   );
+}
+
+type OptionalPointGeometryTimingKey = keyof Pick<
+  CopcPointGeometryBatchTiming,
+  | "pointDataViewRangeWaitMilliseconds"
+  | "pointDataViewRangeRequestCount"
+  | "pointDataViewRangeBytes"
+  | "pointDataViewLazPerfMilliseconds"
+  | "pointDataViewNonRangeMilliseconds"
+  | "pointDataViewCacheWaitMilliseconds"
+>;
+
+function readOptionalPointGeometryTiming(
+  timing: CopcPointGeometryBatchTiming,
+  key: OptionalPointGeometryTimingKey,
+): number {
+  return timing[key] ?? 0;
 }
 
 function createCesiumBoundsSphere(

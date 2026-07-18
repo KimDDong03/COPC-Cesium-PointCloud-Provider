@@ -6,8 +6,8 @@ describe("createCopcWorkerPoolSettings", () => {
     expect(createCopcWorkerPoolSettings()).toEqual({
       pointSampleWorkerConcurrency: 4,
       pointSampleWorkerWarmupCount: 4,
-      pointGeometryWorkerConcurrency: 5,
-      pointGeometryWorkerWarmupCount: 5,
+      pointGeometryWorkerConcurrency: 4,
+      pointGeometryWorkerWarmupCount: 4,
       decodedNodeWorkerFallbackDelayMilliseconds: Number.POSITIVE_INFINITY,
     });
   });
@@ -16,8 +16,8 @@ describe("createCopcWorkerPoolSettings", () => {
     expect(createCopcWorkerPoolSettings({ hardwareConcurrency: 8 })).toEqual({
       pointSampleWorkerConcurrency: 6,
       pointSampleWorkerWarmupCount: 4,
-      pointGeometryWorkerConcurrency: 6,
-      pointGeometryWorkerWarmupCount: 6,
+      pointGeometryWorkerConcurrency: 4,
+      pointGeometryWorkerWarmupCount: 4,
       decodedNodeWorkerFallbackDelayMilliseconds: Number.POSITIVE_INFINITY,
     });
   });
@@ -26,8 +26,8 @@ describe("createCopcWorkerPoolSettings", () => {
     expect(createCopcWorkerPoolSettings({ hardwareConcurrency: 32 })).toEqual({
       pointSampleWorkerConcurrency: 6,
       pointSampleWorkerWarmupCount: 4,
-      pointGeometryWorkerConcurrency: 8,
-      pointGeometryWorkerWarmupCount: 8,
+      pointGeometryWorkerConcurrency: 4,
+      pointGeometryWorkerWarmupCount: 4,
       decodedNodeWorkerFallbackDelayMilliseconds: Number.POSITIVE_INFINITY,
     });
   });

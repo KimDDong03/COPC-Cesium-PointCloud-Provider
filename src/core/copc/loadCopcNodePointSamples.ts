@@ -24,6 +24,11 @@ export interface LoadCopcNodePointDataViewOptions {
   readonly getter: Getter;
   readonly copc: CopcData;
   readonly node: Hierarchy.Node;
+  readonly timing?: LoadCopcNodePointDataViewTiming;
+}
+
+export interface LoadCopcNodePointDataViewTiming {
+  onLazPerfInitialized(milliseconds: number): void;
 }
 
 export interface SampleCopcPointDataViewOptions {
@@ -60,12 +65,19 @@ export async function loadCopcNodePointSamples(
 export async function loadCopcNodePointDataView(
   options: LoadCopcNodePointDataViewOptions,
 ): Promise<CopcPointDataView> {
+  const lazPerfStartedAt = nowMilliseconds();
+  const lazPerf = await getSharedLazPerf();
+  const lazPerfEndedAt = nowMilliseconds();
+  options.timing?.onLazPerfInitialized(
+    Math.max(0, lazPerfEndedAt - lazPerfStartedAt),
+  );
+
   return Copc.loadPointDataView(
     options.getter,
     options.copc,
     options.node,
     {
-      lazPerf: await getSharedLazPerf(),
+      lazPerf,
       include: [
         "X",
         "Y",
@@ -78,6 +90,10 @@ export async function loadCopcNodePointDataView(
       ],
     },
   );
+}
+
+function nowMilliseconds(): number {
+  return typeof performance === "undefined" ? Date.now() : performance.now();
 }
 
 export function sampleCopcPointDataView(

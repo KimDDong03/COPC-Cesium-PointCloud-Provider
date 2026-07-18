@@ -179,6 +179,83 @@ describe("CopcPointCloudLayer coordinate transforms", () => {
     ).toThrow("maxConcurrentPointSampleWorkerRequests");
   });
 
+  it("passes range getter options to the owned source and COPC worker pool", async () => {
+    const geometryWorker = new ManualCopcPointGeometryWorker();
+    const layer = new CopcPointCloudLayer(createSceneStub(), {
+      source: new Blob([new Uint8Array([10, 11, 12, 13, 14])]),
+      rangeGetterOptions: { maxRangeByteLength: 3 },
+      pointGeometryLoading: "integrated-worker",
+      createCopcPointGeometryWorker: () =>
+        geometryWorker as unknown as Worker,
+    });
+    const sourceGetter = (layer.source as unknown as {
+      readonly getter: (begin: number, end: number) => Promise<Uint8Array>;
+    }).getter;
+
+    await expect(sourceGetter(0, 4)).rejects.toThrow(
+      "exceeds the configured maximum of 3 bytes",
+    );
+
+    const pool = layer as unknown as {
+      readonly copcPointGeometryWorkerPool: {
+        loadNodePointGeometryBatch: (options: {
+          readonly source: ReturnType<CopcPointCloudLayer["source"]["getDescriptor"]>;
+          readonly nodeKey: string;
+          readonly node: Hierarchy.Node;
+          readonly maxPointCount: number;
+          readonly transform: {
+            readonly kind: "geographic";
+            readonly heightScaleToMeters: number;
+          };
+        }) => Promise<unknown> | undefined;
+      };
+    };
+    const result =
+      pool.copcPointGeometryWorkerPool.loadNodePointGeometryBatch({
+        source: layer.source.getDescriptor(),
+        nodeKey: "0-0-0-0",
+        node: {
+          pointCount: 5,
+          pointDataOffset: 0,
+          pointDataLength: 4,
+        },
+        maxPointCount: 5,
+        transform: {
+          kind: "geographic",
+          heightScaleToMeters: 1,
+        },
+      });
+
+    if (!result) {
+      throw new Error("Expected worker-backed geometry loading.");
+    }
+
+    await waitForCopcGeometryWorkerRequestCount(geometryWorker, 1);
+    geometryWorker.dispatchRangeRequest({
+      type: "range:request",
+      rangeRequestId: 1,
+      sourceKey: layer.source.sourceKey,
+      begin: 0,
+      end: 4,
+    });
+    await expect.poll(() => geometryWorker.requests.length).toBe(2);
+
+    expect(geometryWorker.requests[1]).toMatchObject({
+      type: "range:error",
+      rangeRequestId: 1,
+      error: {
+        message: expect.stringContaining(
+          "exceeds the configured maximum of 3 bytes",
+        ),
+      },
+    });
+
+    geometryWorker.dispatchSuccess(1, "0-0-0-0", 1);
+    await expect(result).resolves.toBeDefined();
+
+    layer.destroy();
+  });
+
   it("warms the owned point sample workers before the first point request", () => {
     const workers: FakePointSampleWorker[] = [];
     const layer = new CopcPointCloudLayer(createSceneStub(), {
@@ -2019,6 +2096,18 @@ describe("CopcPointCloudLayer hierarchy loading", () => {
         maxPointDataViewMilliseconds: 50,
         workerTotalMilliseconds: 160,
         maxWorkerTotalMilliseconds: 100,
+        pointDataViewRangeWaitMilliseconds: 0,
+        maxPointDataViewRangeWaitMilliseconds: 0,
+        pointDataViewRangeRequestCount: 0,
+        maxPointDataViewRangeRequestCount: 0,
+        pointDataViewRangeBytes: 0,
+        maxPointDataViewRangeBytes: 0,
+        pointDataViewLazPerfMilliseconds: 0,
+        maxPointDataViewLazPerfMilliseconds: 0,
+        pointDataViewNonRangeMilliseconds: 0,
+        maxPointDataViewNonRangeMilliseconds: 0,
+        pointDataViewCacheWaitMilliseconds: 0,
+        maxPointDataViewCacheWaitMilliseconds: 0,
         slowestNodes: [
           expect.objectContaining({
             nodeKey: "1-0-0-0",
@@ -2026,6 +2115,12 @@ describe("CopcPointCloudLayer hierarchy loading", () => {
             sampledPointCount: 5,
             pointDataLength: 10,
             pointDataViewMilliseconds: 50,
+            pointDataViewRangeWaitMilliseconds: 0,
+            pointDataViewRangeRequestCount: 0,
+            pointDataViewRangeBytes: 0,
+            pointDataViewLazPerfMilliseconds: 0,
+            pointDataViewNonRangeMilliseconds: 0,
+            pointDataViewCacheWaitMilliseconds: 0,
           }),
           expect.objectContaining({
             nodeKey: "0-0-0-0",
@@ -2033,6 +2128,86 @@ describe("CopcPointCloudLayer hierarchy loading", () => {
             sampledPointCount: 3,
             pointDataLength: 10,
             pointDataViewMilliseconds: 30,
+            pointDataViewRangeWaitMilliseconds: 0,
+            pointDataViewRangeRequestCount: 0,
+            pointDataViewRangeBytes: 0,
+            pointDataViewLazPerfMilliseconds: 0,
+            pointDataViewNonRangeMilliseconds: 0,
+            pointDataViewCacheWaitMilliseconds: 0,
+          }),
+        ],
+      }),
+    );
+  });
+
+  it("reports summed and max separated point-data read and decode worker timings", async () => {
+    const pointRendering = createRecordingGeometryBatchPointRenderer();
+    const geometryWorker = new CountingCopcPointGeometryWorker((pointCount) => ({
+      pointDataViewRangeWaitMilliseconds: pointCount * 2,
+      pointDataViewRangeRequestCount: pointCount - 1,
+      pointDataViewRangeBytes: pointCount * 100,
+      pointDataViewLazPerfMilliseconds: pointCount + 1,
+      pointDataViewNonRangeMilliseconds: pointCount * 3,
+      pointDataViewCacheWaitMilliseconds: pointCount * 4,
+    }));
+    const layer = new CopcPointCloudLayer(createSceneStub(), {
+      url: "https://example.com/sample.copc.laz",
+      createPointRenderer: () => pointRendering.renderer,
+      pointGeometryLoading: "integrated-worker",
+      createCopcPointGeometryWorker: () => geometryWorker as unknown as Worker,
+    });
+
+    layer.source.inspect = async () => createInspection();
+    layer.source.loadHierarchySummary = async () =>
+      createHierarchy([
+        {
+          ...createHierarchyNode("0-0-0-0"),
+          pointCount: 3,
+        },
+        {
+          ...createHierarchyNode("1-0-0-0"),
+          pointCount: 5,
+        },
+      ]);
+
+    const result = await layer.renderNodes(["0-0-0-0", "1-0-0-0"], {
+      includePointsInResult: false,
+      maxPointCountPerNode: 5,
+      showBounds: false,
+    });
+
+    expect(result.renderStats.pointGeometryTimings).toEqual(
+      expect.objectContaining({
+        pointDataViewRangeWaitMilliseconds: 16,
+        maxPointDataViewRangeWaitMilliseconds: 10,
+        pointDataViewRangeRequestCount: 6,
+        maxPointDataViewRangeRequestCount: 4,
+        pointDataViewRangeBytes: 800,
+        maxPointDataViewRangeBytes: 500,
+        pointDataViewLazPerfMilliseconds: 10,
+        maxPointDataViewLazPerfMilliseconds: 6,
+        pointDataViewNonRangeMilliseconds: 24,
+        maxPointDataViewNonRangeMilliseconds: 15,
+        pointDataViewCacheWaitMilliseconds: 32,
+        maxPointDataViewCacheWaitMilliseconds: 20,
+        slowestNodes: [
+          expect.objectContaining({
+            nodeKey: "1-0-0-0",
+            pointDataViewRangeWaitMilliseconds: 10,
+            pointDataViewRangeRequestCount: 4,
+            pointDataViewRangeBytes: 500,
+            pointDataViewLazPerfMilliseconds: 6,
+            pointDataViewNonRangeMilliseconds: 15,
+            pointDataViewCacheWaitMilliseconds: 20,
+          }),
+          expect.objectContaining({
+            nodeKey: "0-0-0-0",
+            pointDataViewRangeWaitMilliseconds: 6,
+            pointDataViewRangeRequestCount: 2,
+            pointDataViewRangeBytes: 300,
+            pointDataViewLazPerfMilliseconds: 4,
+            pointDataViewNonRangeMilliseconds: 9,
+            pointDataViewCacheWaitMilliseconds: 12,
           }),
         ],
       }),
@@ -5157,6 +5332,12 @@ class CountingCopcPointGeometryWorker {
     | ((event: MessageEvent<CesiumCopcPointGeometryWorkerResponse>) => void)
     | undefined;
 
+  constructor(
+    private readonly createTimingExtras?: (
+      pointCount: number,
+    ) => Record<string, number>,
+  ) {}
+
   get loadRequests(): readonly CesiumCopcPointGeometryWorkerRequest[] {
     return this.requests.filter(
       (request) => request.type === "loadNodePointGeometry",
@@ -5197,6 +5378,14 @@ class CountingCopcPointGeometryWorker {
     }
 
     const pointCount = Math.min(message.node.pointCount, message.maxPointCount);
+    const timing = {
+      pointDataViewMilliseconds: pointCount * 10,
+      pointDataViewCacheHit: false,
+      sampleMilliseconds: pointCount,
+      geometryMilliseconds: pointCount * 2,
+      workerTotalMilliseconds: pointCount * 20,
+      ...this.createTimingExtras?.(pointCount),
+    };
 
     queueMicrotask(() => {
       this.emit({
@@ -5215,13 +5404,7 @@ class CountingCopcPointGeometryWorker {
             positions: new Float64Array(pointCount * 3),
             colors: new Uint8Array(pointCount * 4),
           },
-          timing: {
-            pointDataViewMilliseconds: pointCount * 10,
-            pointDataViewCacheHit: false,
-            sampleMilliseconds: pointCount,
-            geometryMilliseconds: pointCount * 2,
-            workerTotalMilliseconds: pointCount * 20,
-          },
+          timing,
         },
       });
     });
@@ -5336,6 +5519,20 @@ class ManualCopcPointGeometryWorker {
         nodeKey,
       },
     });
+  }
+
+  dispatchRangeRequest(request: {
+    readonly type: "range:request";
+    readonly rangeRequestId: number;
+    readonly sourceKey: string;
+    readonly begin: number;
+    readonly end: number;
+    readonly fetchBegin?: number;
+    readonly fetchEnd?: number;
+  }): void {
+    this.messageListener?.({
+      data: request,
+    } as unknown as MessageEvent<CesiumCopcPointGeometryWorkerResponse>);
   }
 
   private emit(response: CesiumCopcPointGeometryWorkerResponse): void {

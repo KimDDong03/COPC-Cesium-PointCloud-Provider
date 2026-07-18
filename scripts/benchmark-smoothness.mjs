@@ -53,6 +53,10 @@ const benchmarkStreamPointBudgets = readPositiveIntegerListEnv(
   "COPC_SMOOTHNESS_POINT_BUDGETS",
   [2_500, 5_000, 10_000, 20_000],
 );
+const customMillsiteUrl = readOptionalHttpUrlEnv(
+  "COPC_SMOOTHNESS_CUSTOM_MILLSITE_URL",
+  LIVE_COPC_SAMPLE_URLS.millsiteReservoir,
+);
 const smoothnessSampleCaseById = {
   "autzen-classified": {
     id: "autzen-classified",
@@ -76,7 +80,7 @@ const smoothnessSampleCaseById = {
     id: "custom-millsite",
     label: "Custom Millsite URL",
     kind: "custom",
-    url: LIVE_COPC_SAMPLE_URLS.millsiteReservoir,
+    url: customMillsiteUrl,
     sourceCrs: "EPSG:6341",
     sourceDefinition:
       "+proj=utm +zone=12 +ellps=GRS80 +units=m +no_defs +type=crs",
@@ -151,6 +155,27 @@ const benchmarkPrefetchWaitTimeoutMilliseconds = readPositiveIntegerEnv(
   "COPC_SMOOTHNESS_PREFETCH_WAIT_TIMEOUT_MS",
   benchmarkWaitForFinalDetail ? 5_000 : 2_000,
 );
+const benchmarkMaxCoalescedPointDataRangeBytes = readPositiveIntegerEnv(
+  "COPC_SMOOTHNESS_MAX_COALESCED_RANGE_BYTES",
+  undefined,
+);
+const benchmarkMaxCoalescedPointDataRangeGapBytes = readNonNegativeIntegerEnv(
+  "COPC_SMOOTHNESS_MAX_COALESCED_RANGE_GAP_BYTES",
+  undefined,
+);
+const benchmarkPointGeometryWorkerConcurrency = readPositiveIntegerEnv(
+  "COPC_SMOOTHNESS_POINT_GEOMETRY_WORKER_CONCURRENCY",
+  undefined,
+);
+
+if (
+  benchmarkPointGeometryWorkerConcurrency !== undefined &&
+  benchmarkPointGeometryWorkerConcurrency > 8
+) {
+  throw new Error(
+    "COPC_SMOOTHNESS_POINT_GEOMETRY_WORKER_CONCURRENCY must be at most 8.",
+  );
+}
 
 if (benchmarkMaxPointCountPerNode < Math.max(...benchmarkStreamPointBudgets)) {
   throw new Error(
@@ -196,6 +221,24 @@ function readPositiveIntegerListEnv(name, fallback) {
   }
 
   return [...new Set(values)];
+}
+
+function readOptionalHttpUrlEnv(name, fallback) {
+  const rawValue = process.env[name];
+  const candidate = rawValue?.trim() || fallback;
+
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(candidate);
+  } catch {
+    throw new Error(`${name} must be a valid http or https URL.`);
+  }
+
+  if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
+    throw new Error(`${name} must be a valid http or https URL.`);
+  }
+
+  return parsedUrl.toString();
 }
 
 function readNonNegativeIntegerEnv(name, fallback) {
@@ -493,6 +536,33 @@ function stopServer(serverProcess) {
   serverProcess.kill("SIGTERM");
 }
 
+function createExampleUrl(baseUrl) {
+  const url = new URL(baseUrl);
+
+  if (benchmarkMaxCoalescedPointDataRangeBytes !== undefined) {
+    url.searchParams.set(
+      "maxCoalescedPointDataRangeBytes",
+      String(benchmarkMaxCoalescedPointDataRangeBytes),
+    );
+  }
+
+  if (benchmarkMaxCoalescedPointDataRangeGapBytes !== undefined) {
+    url.searchParams.set(
+      "maxCoalescedPointDataRangeGapBytes",
+      String(benchmarkMaxCoalescedPointDataRangeGapBytes),
+    );
+  }
+
+  if (benchmarkPointGeometryWorkerConcurrency !== undefined) {
+    url.searchParams.set(
+      "pointGeometryWorkerConcurrency",
+      String(benchmarkPointGeometryWorkerConcurrency),
+    );
+  }
+
+  return url.toString();
+}
+
 function createSmoothnessFlow(
   baseUrl,
   maxPointCountPerNode,
@@ -513,6 +583,9 @@ function createSmoothnessFlow(
   finalDetailTimeoutMilliseconds,
   interactiveTimeoutMilliseconds,
   prefetchWaitTimeoutMilliseconds,
+  maxCoalescedPointDataRangeBytes,
+  maxCoalescedPointDataRangeGapBytes,
+  pointGeometryWorkerConcurrency,
 ) {
   return `async (page) => {
   const maxPointCountPerNode = ${JSON.stringify(maxPointCountPerNode)};
@@ -533,13 +606,25 @@ function createSmoothnessFlow(
   const finalDetailTimeoutMilliseconds = ${JSON.stringify(finalDetailTimeoutMilliseconds)};
   const interactiveTimeoutMilliseconds = ${JSON.stringify(interactiveTimeoutMilliseconds)};
   const prefetchWaitTimeoutMilliseconds = ${JSON.stringify(prefetchWaitTimeoutMilliseconds)};
+  const maxCoalescedPointDataRangeBytes = ${JSON.stringify(maxCoalescedPointDataRangeBytes)};
+  const maxCoalescedPointDataRangeGapBytes = ${JSON.stringify(maxCoalescedPointDataRangeGapBytes)};
+  const pointGeometryWorkerConcurrency = ${JSON.stringify(pointGeometryWorkerConcurrency)};
   const clearCachesBeforeRun = cacheResetMode !== "none";
+  const httpRangePhases = [
+    "camera-movement",
+    "terminal-refinement",
+    "post-terminal-prefetch",
+  ];
   const failures = [];
   const consoleProblems = [];
   const pageErrors = [];
   const results = [];
   const warmups = [];
   const hierarchyHolds = [];
+  const httpRangeRequests = [];
+  const activeHttpRangeRequests = new Map();
+  const pendingHttpRangeFinalizers = new Set();
+  let activeHttpRangeScope;
 
   async function readBrowserGraphics() {
     return page.evaluate(() => {
@@ -583,6 +668,399 @@ function createSmoothnessFlow(
 
   page.on("pageerror", (error) => {
     pageErrors.push(error.message);
+  });
+
+  function timestampMilliseconds() {
+    return Date.now();
+  }
+
+  function cloneScope(scope) {
+    return scope === undefined
+      ? undefined
+      : {
+          id: scope.id,
+          sampleId: scope.sampleId,
+          sampleLabel: scope.sampleLabel,
+          measurementType: scope.measurementType,
+          runIndex: scope.runIndex,
+          streamPointBudget: scope.streamPointBudget,
+          phase: scope.phase,
+          startedAtMilliseconds: scope.startedAtMilliseconds,
+        };
+  }
+
+  function readHeader(headers, name) {
+    const lowerName = name.toLowerCase();
+    return Object.entries(headers ?? {}).find(
+      ([key]) => key.toLowerCase() === lowerName,
+    )?.[1];
+  }
+
+  function readRequestTiming(request) {
+    try {
+      return typeof request.timing === "function" ? request.timing() : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  async function readRequestSizes(request) {
+    try {
+      return typeof request.sizes === "function"
+        ? await request.sizes()
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  function parseRangeHeader(rangeHeader) {
+    const match = rangeHeader?.match(/^bytes=(\\d+)-(\\d+)$/i);
+
+    if (!match) {
+      return undefined;
+    }
+
+    const start = Number(match[1]);
+    const end = Number(match[2]);
+
+    if (
+      !Number.isSafeInteger(start) ||
+      !Number.isSafeInteger(end) ||
+      end < start
+    ) {
+      return undefined;
+    }
+
+    return {
+      start,
+      end,
+      byteLength: end - start + 1,
+    };
+  }
+
+  function parseContentRangeHeader(contentRangeHeader) {
+    const match = contentRangeHeader?.match(/^bytes\\s+(\\d+)-(\\d+)\\/(\\d+|[*])$/i);
+
+    if (!match) {
+      return undefined;
+    }
+
+    const start = Number(match[1]);
+    const end = Number(match[2]);
+    const completeLength =
+      match[3] === "*" ? undefined : Number(match[3]);
+
+    if (
+      !Number.isSafeInteger(start) ||
+      !Number.isSafeInteger(end) ||
+      end < start ||
+      (completeLength !== undefined && !Number.isSafeInteger(completeLength))
+    ) {
+      return undefined;
+    }
+
+    return {
+      start,
+      end,
+      byteLength: end - start + 1,
+      completeLength,
+    };
+  }
+
+  function percentileRank(values, percentileRankValue) {
+    const finiteValues = values
+      .filter((value) => Number.isFinite(value))
+      .sort((left, right) => left - right);
+
+    if (finiteValues.length === 0) {
+      return undefined;
+    }
+
+    const index = Math.ceil((percentileRankValue / 100) * finiteValues.length) - 1;
+    return finiteValues[Math.max(0, Math.min(finiteValues.length - 1, index))];
+  }
+
+  function summarizeRanges(ranges) {
+    const normalizedRanges = ranges
+      .filter(Boolean)
+      .sort((left, right) => left.start - right.start || left.end - right.end);
+    let unionBytes = 0;
+    let requestedBytes = 0;
+    let duplicateBytes = 0;
+    let duplicateRangeCount = 0;
+    let currentStart;
+    let currentEnd;
+    const seenRanges = new Map();
+
+    for (const range of normalizedRanges) {
+      requestedBytes += range.byteLength;
+      const key = \`\${range.start}-\${range.end}\`;
+      const previousCount = seenRanges.get(key) ?? 0;
+      seenRanges.set(key, previousCount + 1);
+
+      if (previousCount > 0) {
+        duplicateRangeCount += 1;
+        duplicateBytes += range.byteLength;
+      }
+
+      if (currentStart === undefined) {
+        currentStart = range.start;
+        currentEnd = range.end;
+        continue;
+      }
+
+      if (range.start <= currentEnd + 1) {
+        currentEnd = Math.max(currentEnd, range.end);
+        continue;
+      }
+
+      unionBytes += currentEnd - currentStart + 1;
+      currentStart = range.start;
+      currentEnd = range.end;
+    }
+
+    if (currentStart !== undefined) {
+      unionBytes += currentEnd - currentStart + 1;
+    }
+
+    return {
+      unionBytes,
+      overlapBytes: Math.max(0, requestedBytes - unionBytes),
+      duplicateBytes,
+      duplicateRangeCount,
+    };
+  }
+
+  function summarizeHttpRangeRequests(records) {
+    const statusCounts = {};
+    let requestedRangeBytes = 0;
+    let finishedRangeBytes = 0;
+    let contentLengthBytes = 0;
+    let transferSizeBytes = 0;
+    let requestHeadersSizeBytes = 0;
+    let responseHeadersSizeBytes = 0;
+    let responseBodySizeBytes = 0;
+    let requestBodySizeBytes = 0;
+    let sizeRecordCount = 0;
+
+    for (const record of records) {
+      if (Number.isFinite(record.status)) {
+        statusCounts[record.status] = (statusCounts[record.status] ?? 0) + 1;
+      }
+
+      requestedRangeBytes += record.parsedRange?.byteLength ?? 0;
+
+      if (record.outcome === "finished") {
+        finishedRangeBytes +=
+          record.parsedContentRange?.byteLength ??
+          record.contentLengthBytes ??
+          record.parsedRange?.byteLength ??
+          0;
+      }
+
+      contentLengthBytes += record.contentLengthBytes ?? 0;
+
+      if (record.sizes) {
+        sizeRecordCount += 1;
+        requestBodySizeBytes += record.sizes.requestBodySize ?? 0;
+        requestHeadersSizeBytes += record.sizes.requestHeadersSize ?? 0;
+        responseBodySizeBytes += record.sizes.responseBodySize ?? 0;
+        responseHeadersSizeBytes += record.sizes.responseHeadersSize ?? 0;
+        transferSizeBytes +=
+          (record.sizes.responseHeadersSize ?? 0) +
+          (record.sizes.responseBodySize ?? 0);
+      }
+    }
+
+    const durations = records.map((record) => record.durationMilliseconds);
+    const rangeSummary = summarizeRanges(
+      records.map((record) => record.parsedRange),
+    );
+
+    return {
+      requestCount: records.length,
+      finishedCount: records.filter((record) => record.outcome === "finished").length,
+      failedCount: records.filter((record) => record.outcome === "failed").length,
+      abandonedCount: records.filter((record) => record.outcome === "abandoned").length,
+      statusCounts,
+      requestedRangeBytes,
+      finishedRangeBytes,
+      contentLengthBytes,
+      sizeRecordCount,
+      requestBodySizeBytes,
+      requestHeadersSizeBytes,
+      responseBodySizeBytes,
+      responseHeadersSizeBytes,
+      transferSizeBytes,
+      maxDurationMilliseconds: percentileRank(durations, 100),
+      p95DurationMilliseconds: percentileRank(durations, 95),
+      duplicateRangeCount: rangeSummary.duplicateRangeCount,
+      duplicateRangeBytes: rangeSummary.duplicateBytes,
+      overlapRangeBytes: rangeSummary.overlapBytes,
+      unionRangeBytes: rangeSummary.unionBytes,
+      evidenceScope: "browser-http-range-headers",
+      bytesCaveat:
+        "HTTP byte counts are browser-observed request/response metadata and do not include inner worker payload inference.",
+      phaseCaveat:
+        "HTTP range phases are classified by request start against benchmark controller boundaries; requests that race a boundary can be attributed to the previous or next phase.",
+    };
+  }
+
+  function summarizeHttpRangeRequestsByPhase(records) {
+    return Object.fromEntries(
+      httpRangePhases.map((phase) => [
+        phase,
+        summarizeHttpRangeRequests(
+          records.filter((record) => record.phase === phase),
+        ),
+      ]),
+    );
+  }
+
+  function beginHttpRangeScope(scope) {
+    activeHttpRangeScope = {
+      ...scope,
+      id: \`\${scope.sampleId}:\${scope.streamPointBudget}:\${scope.measurementType}:\${scope.runIndex}\`,
+      phase: "camera-movement",
+      startedAtMilliseconds: timestampMilliseconds(),
+    };
+    return activeHttpRangeScope;
+  }
+
+  function setHttpRangeScopePhase(scope, phase) {
+    if (!httpRangePhases.includes(phase)) {
+      throw new Error(\`Unknown HTTP range phase: \${phase}\`);
+    }
+
+    if (activeHttpRangeScope?.id === scope.id) {
+      activeHttpRangeScope.phase = phase;
+    }
+
+    scope.phase = phase;
+    scope.phaseUpdatedAtMilliseconds = timestampMilliseconds();
+  }
+
+  async function endHttpRangeScope(scope) {
+    await page.waitForTimeout(0);
+    while (pendingHttpRangeFinalizers.size > 0) {
+      await Promise.all([...pendingHttpRangeFinalizers]);
+    }
+    const endedAtMilliseconds = timestampMilliseconds();
+
+    for (const [request, record] of activeHttpRangeRequests) {
+      if (
+        record.scope?.id === scope.id &&
+        !record.finishedAtMilliseconds &&
+        !record.failedAtMilliseconds
+      ) {
+        record.outcome = "abandoned";
+        record.abandonedAtMilliseconds = endedAtMilliseconds;
+        record.durationMilliseconds =
+          endedAtMilliseconds - record.startedAtMilliseconds;
+        activeHttpRangeRequests.delete(request);
+      }
+    }
+
+    if (activeHttpRangeScope?.id === scope.id) {
+      activeHttpRangeScope = undefined;
+    }
+
+    const records = httpRangeRequests.filter(
+      (record) => record.scope?.id === scope.id,
+    );
+
+    return {
+      records,
+      summary: summarizeHttpRangeRequests(records),
+      phaseSummaries: summarizeHttpRangeRequestsByPhase(records),
+    };
+  }
+
+  page.on("request", (request) => {
+    const headers = request.headers();
+    const range = readHeader(headers, "range");
+
+    if (!range) {
+      return;
+    }
+
+    const record = {
+      id: \`\${httpRangeRequests.length + 1}\`,
+      url: request.url(),
+      range,
+      parsedRange: parseRangeHeader(range),
+      method: request.method(),
+      resourceType: request.resourceType(),
+      scope: cloneScope(activeHttpRangeScope),
+      phase: activeHttpRangeScope?.phase,
+      startedAtMilliseconds: timestampMilliseconds(),
+      timing: readRequestTiming(request),
+      outcome: "requested",
+    };
+
+    httpRangeRequests.push(record);
+    activeHttpRangeRequests.set(request, record);
+  });
+
+  page.on("response", (response) => {
+    const request = response.request();
+    const record = activeHttpRangeRequests.get(request);
+
+    if (!record) {
+      return;
+    }
+
+    const headers = response.headers();
+    const contentLength = Number(readHeader(headers, "content-length"));
+
+    record.respondedAtMilliseconds = timestampMilliseconds();
+    record.status = response.status();
+    record.statusText = response.statusText();
+    record.contentRange = readHeader(headers, "content-range");
+    record.parsedContentRange = parseContentRangeHeader(record.contentRange);
+    record.contentLength = readHeader(headers, "content-length");
+    record.contentLengthBytes = Number.isFinite(contentLength)
+      ? contentLength
+      : undefined;
+    record.etag = readHeader(headers, "etag");
+  });
+
+  page.on("requestfinished", (request) => {
+    const record = activeHttpRangeRequests.get(request);
+
+    if (!record) {
+      return;
+    }
+
+    const finalizer = (async () => {
+      record.finishedAtMilliseconds = timestampMilliseconds();
+      record.durationMilliseconds =
+        record.finishedAtMilliseconds - record.startedAtMilliseconds;
+      record.outcome =
+        record.outcome === "abandoned" ? "abandoned" : "finished";
+      record.timing ??= readRequestTiming(request);
+      record.sizes = await readRequestSizes(request);
+      activeHttpRangeRequests.delete(request);
+    })();
+    pendingHttpRangeFinalizers.add(finalizer);
+    void finalizer.finally(() => pendingHttpRangeFinalizers.delete(finalizer));
+  });
+
+  page.on("requestfailed", (request) => {
+    const record = activeHttpRangeRequests.get(request);
+
+    if (!record) {
+      return;
+    }
+
+    record.failedAtMilliseconds = timestampMilliseconds();
+    record.durationMilliseconds =
+      record.failedAtMilliseconds - record.startedAtMilliseconds;
+    record.outcome = record.outcome === "abandoned" ? "abandoned" : "failed";
+    record.failure = request.failure()?.errorText;
+    record.timing ??= readRequestTiming(request);
+    activeHttpRangeRequests.delete(request);
   });
 
   async function metadataValue(label) {
@@ -1334,27 +1812,135 @@ function createSmoothnessFlow(
     };
   }
 
-  function parsePointGeometryTiming(timingText) {
+  function readFiniteNumber(value) {
+    return typeof value === "number" && Number.isFinite(value)
+      ? value
+      : undefined;
+  }
+
+  function parseFormattedNumber(value) {
+    return value === undefined
+      ? undefined
+      : Number(value.replaceAll(",", ""));
+  }
+
+  function normalizePointGeometryTiming(timingData) {
+    if (!timingData || typeof timingData !== "object") {
+      return undefined;
+    }
+
+    const nodeCount = readFiniteNumber(timingData.nodeCount);
+    const cacheHitCount = readFiniteNumber(timingData.cacheHitCount);
+    const maxRequestRoundTripMilliseconds = readFiniteNumber(
+      timingData.maxRequestRoundTripMilliseconds,
+    );
+    const maxViewMilliseconds = readFiniteNumber(
+      timingData.maxPointDataViewMilliseconds,
+    );
+    const maxWorkerMilliseconds = readFiniteNumber(
+      timingData.maxWorkerTotalMilliseconds,
+    );
+    const maxQueueMilliseconds = readFiniteNumber(
+      timingData.maxRequestQueueMilliseconds,
+    );
+    const sumViewMilliseconds = readFiniteNumber(
+      timingData.pointDataViewMilliseconds,
+    );
+    const sumWorkerMilliseconds = readFiniteNumber(
+      timingData.workerTotalMilliseconds,
+    );
+    const sumQueueMilliseconds = readFiniteNumber(
+      timingData.requestQueueMilliseconds,
+    );
+
+    if (
+      nodeCount === undefined ||
+      cacheHitCount === undefined ||
+      maxRequestRoundTripMilliseconds === undefined ||
+      maxViewMilliseconds === undefined ||
+      maxWorkerMilliseconds === undefined ||
+      sumViewMilliseconds === undefined ||
+      sumWorkerMilliseconds === undefined ||
+      sumQueueMilliseconds === undefined
+    ) {
+      return undefined;
+    }
+
+    return {
+      nodeCount,
+      cacheHitCount,
+      maxRequestRoundTripMilliseconds,
+      maxDecodeMilliseconds: maxViewMilliseconds,
+      maxViewMilliseconds,
+      maxWorkerMilliseconds,
+      maxQueueMilliseconds,
+      sumDecodeMilliseconds: sumViewMilliseconds,
+      sumViewMilliseconds,
+      sumWorkerMilliseconds,
+      sumQueueMilliseconds,
+      pointDataViewRangeWaitMilliseconds: readFiniteNumber(
+        timingData.pointDataViewRangeWaitMilliseconds,
+      ),
+      maxPointDataViewRangeWaitMilliseconds: readFiniteNumber(
+        timingData.maxPointDataViewRangeWaitMilliseconds,
+      ),
+      pointDataViewRangeRequestCount: readFiniteNumber(
+        timingData.pointDataViewRangeRequestCount,
+      ),
+      pointDataViewRangeBytes: readFiniteNumber(
+        timingData.pointDataViewRangeBytes,
+      ),
+      pointDataViewLazPerfMilliseconds: readFiniteNumber(
+        timingData.pointDataViewLazPerfMilliseconds,
+      ),
+      maxPointDataViewLazPerfMilliseconds: readFiniteNumber(
+        timingData.maxPointDataViewLazPerfMilliseconds,
+      ),
+      pointDataViewNonRangeMilliseconds: readFiniteNumber(
+        timingData.pointDataViewNonRangeMilliseconds,
+      ),
+      maxPointDataViewNonRangeMilliseconds: readFiniteNumber(
+        timingData.maxPointDataViewNonRangeMilliseconds,
+      ),
+      pointDataViewCacheWaitMilliseconds: readFiniteNumber(
+        timingData.pointDataViewCacheWaitMilliseconds,
+      ),
+      maxPointDataViewCacheWaitMilliseconds: readFiniteNumber(
+        timingData.maxPointDataViewCacheWaitMilliseconds,
+      ),
+      evidenceSource: "point-geometry-timing-data",
+    };
+  }
+
+  function parsePointGeometryTiming(timingText, timingData) {
+    const structuredTiming = normalizePointGeometryTiming(timingData);
+    if (structuredTiming) {
+      return structuredTiming;
+    }
+
     const match = timingText?.match(
-      /([\\d,]+) nodes, ([\\d,]+) cache hits, max round trip ([\\d,.]+) ms, max decode ([\\d,.]+) ms, max worker ([\\d,.]+) ms(?:, max queue ([\\d,.]+) ms)?, sum decode ([\\d,.]+) ms, sum worker ([\\d,.]+) ms, sum queue ([\\d,.]+) ms/,
+      /([\\d,]+) nodes, ([\\d,]+) cache hits, max round trip ([\\d,.]+) ms, max (?:view|decode) ([\\d,.]+) ms, max worker ([\\d,.]+) ms(?:, max queue ([\\d,.]+) ms)?, sum (?:view|decode) ([\\d,.]+) ms, sum worker ([\\d,.]+) ms, sum queue ([\\d,.]+) ms/,
     );
 
     if (!match) {
       return undefined;
     }
 
+    const maxViewMilliseconds = parseFormattedNumber(match[4]);
+    const sumViewMilliseconds = parseFormattedNumber(match[7]);
+
     return {
-      nodeCount: Number(match[1].replaceAll(",", "")),
-      cacheHitCount: Number(match[2].replaceAll(",", "")),
-      maxRequestRoundTripMilliseconds: Number(match[3].replaceAll(",", "")),
-      maxDecodeMilliseconds: Number(match[4].replaceAll(",", "")),
-      maxWorkerMilliseconds: Number(match[5].replaceAll(",", "")),
-      maxQueueMilliseconds: match[6] === undefined
-        ? undefined
-        : Number(match[6].replaceAll(",", "")),
-      sumDecodeMilliseconds: Number(match[7].replaceAll(",", "")),
-      sumWorkerMilliseconds: Number(match[8].replaceAll(",", "")),
-      sumQueueMilliseconds: Number(match[9].replaceAll(",", "")),
+      nodeCount: parseFormattedNumber(match[1]),
+      cacheHitCount: parseFormattedNumber(match[2]),
+      maxRequestRoundTripMilliseconds: parseFormattedNumber(match[3]),
+      maxDecodeMilliseconds: maxViewMilliseconds,
+      maxViewMilliseconds,
+      maxWorkerMilliseconds: parseFormattedNumber(match[5]),
+      maxQueueMilliseconds: parseFormattedNumber(match[6]),
+      sumDecodeMilliseconds: sumViewMilliseconds,
+      sumViewMilliseconds,
+      sumWorkerMilliseconds: parseFormattedNumber(match[8]),
+      sumQueueMilliseconds: parseFormattedNumber(match[9]),
       evidenceSource: "point-geometry-timing",
     };
   }
@@ -1467,7 +2053,17 @@ function createSmoothnessFlow(
       measurementType === "warmup"
         ? \`warmup \${runIndex}\`
         : \`run \${runIndex}\`;
-    let measurement = await page.evaluate(
+    const httpRangeScope = beginHttpRangeScope({
+      sampleId: sampleSnapshot.sampleId,
+      sampleLabel: sampleSnapshot.label,
+      measurementType,
+      runIndex,
+      streamPointBudget,
+    });
+    let httpRangeEvidence = { records: [], summary: summarizeHttpRangeRequests([]) };
+    let measurement;
+
+    measurement = await page.evaluate(
       async ({ durationMilliseconds, cameraSteps, moveMeters, cameraHeightAboveCloudMeters, clearCachesBeforeRun, cacheResetMode }) => {
         const benchmark = window.__copcBasicViewerBenchmark;
 
@@ -1541,6 +2137,7 @@ function createSmoothnessFlow(
                 status: status?.status,
                 rendererTiming: status?.rendererTiming,
                 pointGeometryTiming: status?.pointGeometryTiming,
+                pointGeometryTimingData: status?.pointGeometryTimingData,
                 cameraStreamDiagnostics:
                   status?.cameraStreamDiagnosticsData,
                 cameraStreamVisualQuality:
@@ -1673,6 +2270,8 @@ function createSmoothnessFlow(
       },
       { durationMilliseconds, cameraSteps, moveMeters, cameraHeightAboveCloudMeters, clearCachesBeforeRun, cacheResetMode },
     );
+    setHttpRangeScopePhase(httpRangeScope, "terminal-refinement");
+
     const initialStatus = measurement.status;
     const expectedCameraStreamRequestId =
       initialStatus?.expectedCameraStreamRequestId;
@@ -1747,6 +2346,7 @@ function createSmoothnessFlow(
         measurement.frameCollectorId,
       );
     }
+    setHttpRangeScopePhase(httpRangeScope, "post-terminal-prefetch");
 
     measurement = {
       ...measurement,
@@ -1827,6 +2427,7 @@ function createSmoothnessFlow(
     );
     let pointGeometryTiming = parsePointGeometryTiming(
       measuredStatus.pointGeometryTiming,
+      measuredStatus.pointGeometryTimingData,
     );
 
     if (
@@ -1846,9 +2447,11 @@ function createSmoothnessFlow(
         cacheHitCount: cameraStreamNodeReuse.freshCachedFinalNodeCount,
         maxRequestRoundTripMilliseconds: 0,
         maxDecodeMilliseconds: 0,
+        maxViewMilliseconds: 0,
         maxWorkerMilliseconds: 0,
         maxQueueMilliseconds: 0,
         sumDecodeMilliseconds: 0,
+        sumViewMilliseconds: 0,
         sumWorkerMilliseconds: 0,
         sumQueueMilliseconds: 0,
         evidenceSource:
@@ -1960,6 +2563,8 @@ function createSmoothnessFlow(
       );
     }
 
+    httpRangeEvidence = await endHttpRangeScope(httpRangeScope);
+
     return {
       sampleId: sampleSnapshot.sampleId,
       sampleLabel: sampleSnapshot.label,
@@ -1985,6 +2590,8 @@ function createSmoothnessFlow(
       expectedCameraStreamCameraPoseFingerprint,
       cameraStreamDiagnosticsText: measuredStatus.cameraStreamDiagnostics,
       cameraStreamDiagnostics,
+      cameraStreamSelectionEvidence:
+        measuredStatus.cameraStreamSelectionEvidence,
       cameraStreamRenderSignature:
         measuredStatus.cameraStreamRenderSignature,
       cameraStreamRenderDisposition:
@@ -1999,6 +2606,9 @@ function createSmoothnessFlow(
       cameraStreamPrefetch: prefetchStatus.cameraStreamPrefetchData,
       pointGeometryTimingText: measuredStatus.pointGeometryTiming,
       pointGeometryTiming,
+      httpRangeRequests: httpRangeEvidence.records,
+      httpRangeSummary: httpRangeEvidence.summary,
+      httpRangePhaseSummaries: httpRangeEvidence.phaseSummaries,
       geometryCacheBefore,
       geometryCacheAfter,
       geometryCacheDelta,
@@ -2049,6 +2659,9 @@ function createSmoothnessFlow(
       cameraStreamDiagnostics: warmup.cameraStreamDiagnostics,
       cameraStreamPrefetch: warmup.cameraStreamPrefetch,
       pointGeometryTiming: warmup.pointGeometryTiming,
+      httpRangeSummary: warmup.httpRangeSummary,
+      httpRangePhaseSummaries: warmup.httpRangePhaseSummaries,
+      httpRangeRequests: warmup.httpRangeRequests,
       cacheReset: warmup.cacheReset,
       settle,
       summary: warmup.summary,
@@ -2061,6 +2674,9 @@ function createSmoothnessFlow(
       selectedNodeKeys: [...(result.cameraStreamSelectedNodeKeys ?? [])].sort(),
       renderSignature: result.cameraStreamRenderSignature,
       hierarchyCacheStats: result.hierarchyCacheStats,
+      cameraPoseFingerprint:
+        result.expectedCameraStreamCameraPoseFingerprint,
+      selectionEvidence: result.cameraStreamSelectionEvidence,
     });
   }
 
@@ -2217,8 +2833,57 @@ function createSmoothnessFlow(
                 measuredWarmHierarchyIdentity !== undefined &&
                 hierarchyIdentity !== measuredWarmHierarchyIdentity
               ) {
+                const expectedIdentity = JSON.parse(
+                  measuredWarmHierarchyIdentity,
+                );
+                const actualIdentity = JSON.parse(hierarchyIdentity);
+                const expectedNodeKeys = new Set(
+                  expectedIdentity.selectedNodeKeys,
+                );
+                const actualNodeKeys = new Set(actualIdentity.selectedNodeKeys);
+                const missingNodeKeys = expectedIdentity.selectedNodeKeys.filter(
+                  (nodeKey) => !actualNodeKeys.has(nodeKey),
+                );
+                const extraNodeKeys = actualIdentity.selectedNodeKeys.filter(
+                  (nodeKey) => !expectedNodeKeys.has(nodeKey),
+                );
                 failures.push(
-                  \`\${runLabel} did not reuse the exact warm frontier and additive render signature.\`,
+                  runLabel +
+                    " did not reuse the exact warm frontier and additive render signature (depth " +
+                    expectedIdentity.selectedDepth +
+                    "/" +
+                    actualIdentity.selectedDepth +
+                    "; node keys " +
+                    (missingNodeKeys.length === 0 && extraNodeKeys.length === 0
+                      ? "match"
+                      : "missing " +
+                        (missingNodeKeys.join(",") || "none") +
+                        ", extra " +
+                        (extraNodeKeys.join(",") || "none")) +
+                    "; render signature " +
+                    (expectedIdentity.renderSignature ===
+                    actualIdentity.renderSignature
+                      ? "matches"
+                      : "differs") +
+                    " [" +
+                    expectedIdentity.renderSignature.split("@").slice(1).join("@") +
+                    "/" +
+                    actualIdentity.renderSignature.split("@").slice(1).join("@") +
+                    "]; camera pose " +
+                    (expectedIdentity.cameraPoseFingerprint ===
+                    actualIdentity.cameraPoseFingerprint
+                      ? "matches"
+                      : "differs") +
+                    "; selection " +
+                    JSON.stringify(expectedIdentity.selectionEvidence) +
+                    "/" +
+                    JSON.stringify(actualIdentity.selectionEvidence) +
+                    "; hierarchy cache " +
+                    (JSON.stringify(expectedIdentity.hierarchyCacheStats) ===
+                    JSON.stringify(actualIdentity.hierarchyCacheStats)
+                      ? "matches"
+                      : "differs") +
+                    ").",
                 );
               }
 
@@ -2256,6 +2921,9 @@ function createSmoothnessFlow(
     maxPointCountPerNode,
     streamPointBudgets,
     requestedPointRenderer: pointRenderer,
+    maxCoalescedPointDataRangeBytes,
+    maxCoalescedPointDataRangeGapBytes,
+    pointGeometryWorkerConcurrency,
     sampleCases: sampleCases.map((sampleCase) => ({
       id: sampleCase.id,
       label: sampleCase.label,
@@ -2282,6 +2950,7 @@ function createSmoothnessFlow(
     warmups,
     hierarchyHolds,
     results,
+    httpRangeRequests,
   };
 }
 `;
@@ -2297,6 +2966,21 @@ function printBenchmarkSummary(result) {
 
   console.log(
     `- ${result.maxPointCountPerNode.toLocaleString()} max points / node, ${result.cameraSteps.toLocaleString()} camera steps`,
+  );
+  console.log(
+    `- coalesced range settings: ${
+      result.maxCoalescedPointDataRangeBytes === undefined
+        ? "default span"
+        : `max span ${result.maxCoalescedPointDataRangeBytes.toLocaleString()} bytes`
+    }${
+      result.maxCoalescedPointDataRangeGapBytes === undefined
+        ? ""
+        : `, max coalesced range gap ${result.maxCoalescedPointDataRangeGapBytes.toLocaleString()} bytes`
+    }${
+      result.pointGeometryWorkerConcurrency === undefined
+        ? ""
+        : `, geometry workers ${result.pointGeometryWorkerConcurrency.toLocaleString()}`
+    }`,
   );
 
   for (const sampleCase of result.sampleCases) {
@@ -2372,7 +3056,7 @@ function printBenchmarkSummary(result) {
       const geometrySummary =
         geometryTimings.length === 0
           ? undefined
-          : `geometry avg max decode/worker/roundtrip ${average(
+          : `geometry avg max view/worker/roundtrip ${average(
               geometryTimings.map((run) => run.maxDecodeMilliseconds),
             ).toFixed(1)}/${average(
               geometryTimings.map((run) => run.maxWorkerMilliseconds),
@@ -2410,6 +3094,19 @@ function printBenchmarkSummary(result) {
             ).toFixed(1)} nodes, skipped avg ${average(
               prefetches.map((prefetch) => prefetch.skippedNodeCount),
             ).toFixed(1)}`;
+      const httpRangeSummaries = runs
+        .map((run) => run.httpRangeSummary)
+        .filter(Boolean);
+      const httpRangeSummary =
+        httpRangeSummaries.length === 0
+          ? undefined
+          : `http range avg ${average(
+              httpRangeSummaries.map((summary) => summary.requestCount),
+            ).toFixed(1)} req, finished bytes avg ${average(
+              httpRangeSummaries.map((summary) => summary.finishedRangeBytes),
+            ).toFixed(0)}, union bytes avg ${average(
+              httpRangeSummaries.map((summary) => summary.unionRangeBytes),
+            ).toFixed(0)}`;
       const summaryParts = [
         `  - ${streamPointBudget.toLocaleString()} point stream budget`,
         `${runs.length.toLocaleString()} runs`,
@@ -2452,6 +3149,10 @@ function printBenchmarkSummary(result) {
         summaryParts.push(prefetchSummary);
       }
 
+      if (httpRangeSummary) {
+        summaryParts.push(httpRangeSummary);
+      }
+
       console.log(summaryParts.join(", "));
     }
   }
@@ -2468,6 +3169,7 @@ run(npmCommand, ["run", "build:example"], repoRoot);
 
 const port = await findAvailablePort(4373);
 const baseUrl = `http://localhost:${port}`;
+const exampleUrl = createExampleUrl(baseUrl);
 const serverOutput = [];
 const serverProcess = spawn(
   process.execPath,
@@ -2500,13 +3202,13 @@ serverProcess.stderr.on("data", (data) => {
 });
 
 try {
-  console.log(`Starting example preview at ${baseUrl}...`);
+  console.log(`Starting example preview at ${exampleUrl}...`);
   await waitForServer(baseUrl, serverProcess, serverOutput);
 
   await writeFile(
     benchmarkFlowPath,
     createSmoothnessFlow(
-      baseUrl,
+      exampleUrl,
       benchmarkMaxPointCountPerNode,
       benchmarkStreamPointBudgets,
       benchmarkPointRenderer,
@@ -2525,6 +3227,9 @@ try {
       benchmarkFinalDetailTimeoutMilliseconds,
       benchmarkInteractiveTimeoutMilliseconds,
       benchmarkPrefetchWaitTimeoutMilliseconds,
+      benchmarkMaxCoalescedPointDataRangeBytes,
+      benchmarkMaxCoalescedPointDataRangeGapBytes,
+      benchmarkPointGeometryWorkerConcurrency,
     ),
   );
 
@@ -2552,6 +3257,15 @@ try {
       benchmarkCacheResetMode !== "none"
         ? `${benchmarkCacheResetMode} cache reset,`
         : "",
+      benchmarkMaxCoalescedPointDataRangeBytes === undefined
+        ? ""
+        : `${benchmarkMaxCoalescedPointDataRangeBytes.toLocaleString()} max coalesced range bytes,`,
+      benchmarkMaxCoalescedPointDataRangeGapBytes === undefined
+        ? ""
+        : `${benchmarkMaxCoalescedPointDataRangeGapBytes.toLocaleString()} max coalesced range gap bytes,`,
+      benchmarkPointGeometryWorkerConcurrency === undefined
+        ? ""
+        : `${benchmarkPointGeometryWorkerConcurrency.toLocaleString()} point geometry workers,`,
       benchmarkMinSelectedDepthOverride === undefined
         ? "same-depth sample targets; mixed-depth budget progression"
         : `min selected depth ${benchmarkMinSelectedDepthOverride}`,

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createCopcCameraStreamDetailCompletionSettings,
   createCopcCameraStreamLodSettings,
+  createCopcCameraStreamMixedDepthThresholds,
   createCopcCameraStreamPrefetchNodeCount,
   createCopcCameraStreamPrefetchSettings,
   createCopcCameraStreamPreviewPointCountPerNode,
@@ -161,6 +162,43 @@ describe("createCopcCameraStreamLodSettings", () => {
         farther.targetPointSpacingScreenPixels,
       );
     }
+  });
+});
+
+describe("createCopcCameraStreamMixedDepthThresholds", () => {
+  it("keeps default hysteresis while the camera is moving", () => {
+    expect(
+      createCopcCameraStreamMixedDepthThresholds({
+        cameraSettled: false,
+        targetPointSpacingScreenPixels: 2.25,
+      }),
+    ).toEqual({
+      refineScreenSpaceError: undefined,
+      retainScreenSpaceError: undefined,
+    });
+  });
+
+  it("uses the retention high-water mark for deterministic settled selection", () => {
+    expect(
+      createCopcCameraStreamMixedDepthThresholds({
+        cameraSettled: true,
+        targetPointSpacingScreenPixels: 2.25,
+      }),
+    ).toEqual({
+      refineScreenSpaceError: 1.6875,
+      retainScreenSpaceError: 1.6875,
+    });
+  });
+
+  it("rejects invalid point-spacing targets", () => {
+    expect(() =>
+      createCopcCameraStreamMixedDepthThresholds({
+        cameraSettled: true,
+        targetPointSpacingScreenPixels: 0,
+      }),
+    ).toThrow(
+      "targetPointSpacingScreenPixels must be a positive finite number.",
+    );
   });
 });
 

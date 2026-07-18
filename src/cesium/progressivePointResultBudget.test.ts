@@ -253,6 +253,12 @@ describe("progressive point result limiting", () => {
       workerTotalMilliseconds: 0,
       requestQueueMilliseconds: 0,
       requestRoundTripMilliseconds: 0,
+      pointDataViewRangeWaitMilliseconds: 0,
+      pointDataViewRangeRequestCount: 0,
+      pointDataViewRangeBytes: 0,
+      pointDataViewLazPerfMilliseconds: 0,
+      pointDataViewNonRangeMilliseconds: 0,
+      pointDataViewCacheWaitMilliseconds: 0,
     });
   });
 });

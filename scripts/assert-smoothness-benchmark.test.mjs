@@ -112,6 +112,29 @@ test("accepts completed post-prefetch same-camera refinement evidence", async ()
   );
 });
 
+test("accepts a stable post-prefetch observation when the initial request was already terminal", async () => {
+  const benchmark = createBenchmark(1);
+  addPostPrefetchRefinementEvidence(benchmark);
+  const result = benchmark.results[0];
+  result.streamPointBudget = 360_000;
+  result.appliedStreamPointBudget = 360_000;
+  result.renderedPointCount = 329_517;
+  result.postPrefetchRefinement = {
+    ...result.postPrefetchRefinement,
+    observedRequestId: result.postPrefetchRefinement.initialRequestId,
+    requestAdvanced: false,
+    sameCameraFollowup: false,
+  };
+
+  const assertion = await runAssertion(
+    benchmark,
+    createPostPrefetchRefinementAssertionEnvironment(),
+  );
+
+  assert.equal(assertion.status, 0, assertion.stderr);
+  assert.deepEqual(assertion.report.failures, []);
+});
+
 test("rejects stale, shallow, sparse, or non-terminal post-prefetch refinement", async () => {
   const benchmark = createBenchmark(1);
   addPostPrefetchRefinementEvidence(benchmark);

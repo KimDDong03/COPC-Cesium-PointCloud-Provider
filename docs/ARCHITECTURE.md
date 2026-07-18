@@ -19,7 +19,9 @@ The library is intentionally not a standalone viewer product. The example app ex
 - No COPC-to-3D-Tiles conversion pipeline.
 - No live LiDAR or sensor ingestion.
 - No general point cloud editing/viewer application.
-- No persistent/offline cache, COPC editing, non-COPC format adapter, or application-specific styling system.
+- No general offline-package/service-worker system, COPC editing, non-COPC
+  format adapter, or application-specific styling system. A validated opt-in
+  IndexedDB byte-range cache supports repeat HTTP views.
 
 ## Layers
 
@@ -73,6 +75,35 @@ The current implementation includes:
   length before bytes enter the COPC parser. A configurable 256 MiB default
   single-read ceiling applies before allocation, HTTP requests use a 30 second
   body-inclusive deadline, and Blob reads must stay within the source bounds.
+- URL getters can additionally use an opt-in persistent fixed-block cache.
+  Strong-ETag mode uses a browser-cache-revalidated probe and validates the
+  complete source length before
+  reading IndexedDB, removes non-HTTP URL fragments, and keys 64 KiB default
+  blocks by an opaque SHA-256 URL identity/validator/range. Missing validation
+  headers or storage failures bypass persistence. If Web Crypto cannot create
+  the default opaque identity, the persistent path fails closed unless the
+  caller supplied a non-secret stable `sourceKey`.
+  Application-version mode instead requires an app-owned immutable version and
+  authoritative source length. The store is bounded by bytes and entry count,
+  returns copied buffers, maintains aggregate accounting without scanning stored
+  payloads on every write, and evicts least-recently-used blocks. Persistent
+  fetch coalescing remains bounded by the getter's public range ceiling.
+  `no-store` disables the getter's in-memory cache, atomically purges every
+  validator/version namespace for the stable source identity, and records one
+  identity tombstone in IndexedDB. Reads and writes honor that tombstone until
+  a fresh strong-validator response re-enables storage. A module-session
+  source-policy epoch advances before each source purge, so getters holding an
+  older epoch remain network-only after that re-enable and cannot revive stale
+  memory or validator state. Re-enable and revoke operations are serialized so
+  a racing `no-store` purge is the final policy writer. Custom stores without
+  this atomic source-policy contract are rejected. Header policy is applied
+  before Range/body/validator validation, including error responses.
+- `scripts/copc-edge-range-cache.mjs` is a benchmark/deployment reference, not
+  a `src/core` dependency or hosted viewer service. Exact paths map to fixed
+  HTTPS origins; query routing and redirects are rejected. It uses bounded
+  64 KiB blocks, strong ETag/length validation, whole-read generation checks,
+  and a clear-generation fence. The benchmark retains only this cache while
+  clearing browser HTTP and IndexedDB state.
 - `CopcSource.loadHierarchyPage` and `loadNextHierarchyPage` for on-demand COPC hierarchy page range reads from URL or Blob-backed sources.
 - Hierarchy node and pending-page provenance tracking via the source hierarchy page ID, plus bounded page-count and byte-aware hierarchy page eviction that restores evicted non-root leaf pages back to pending page references.
 - `selectHierarchyPagesForTarget` for choosing nearby pending hierarchy pages from their octree bounds.
@@ -280,6 +311,19 @@ Camera-based selection requires both directions:
   so aliases are not double-counted; the basic viewer enforces a 384 MiB
   per-layer hard cap in addition to entry-count limits.
 - Worker loading currently targets point data and worker-prepared Cesium geometry; hierarchy metadata selection remains on the main thread.
+- With default soft cancellation, integrated geometry workers proxy COPC byte
+  reads through one main-thread range broker while LAZ view construction stays
+  parallel inside the workers. The pool lazily plans point-data spans up to
+  2 MiB and may bridge at most 64 KiB between adjacent ranges. Setting
+  `maxCoalescedPointDataRangeGapBytes` to `0` restores exact-contiguous-only
+  planning. The span cap bounds the combined request and any deliberate gap
+  overfetch; terminating cancellation modes retain direct worker reads so
+  termination still stops their network work.
+- `rangeGetterOptions` is passed to both `CopcSource` and that shared broker,
+  allowing metadata, hierarchy, and brokered point-data blocks to reuse one
+  persistent store across new layers or page lifecycles. Direct worker reads
+  used by terminating cancellation modes intentionally bypass the main-thread
+  IndexedDB cache.
 - Worker cancellation is request-level for queued work and configurable for active integrated COPC geometry work. The default `"soft"` mode preserves a worker and ignores stale responses after the in-flight decode finishes; `"terminate-uncached"` terminates only active workers that have not retained decoded node data, while soft-canceling cache-owning workers so repeated zoom/pan work can reuse decompressed COPC nodes; `"terminate"` always stops the active worker so newer current-view work can start sooner, at the cost of dropping that worker's decoded cache. Queued integrated geometry requests can also carry a `requestPriority`, which the basic viewer uses to keep current-view camera work ahead of background prefetch and retained stale work. Integrated geometry queue dispatch is microtask-batched, so same-tick current-view detail requests can outrank lower-priority warmup requests before either one occupies an idle worker. The pool coalesces identical in-flight integrated geometry requests before they reach a worker, preserving per-caller abort handling while avoiding duplicate decode and geometry work for the same node/sample/transform request. Compatible same-node requests can also share a denser in-flight geometry task; queued lower-density work is upgraded when denser current-view detail arrives before dispatch, and lower-density callers receive a downsampled result.
 - Point-sample workers and integrated COPC geometry workers keep a source-aware
   LRU cache of decoded point-data views. Both worker pools prefer the worker
@@ -305,10 +349,10 @@ Camera-based selection requires both directions:
   is deliberately interactive-first for browser responsiveness:
   `createCopcWorkerPoolSettings()` keeps browser-derived point-sample
   concurrency capped at six workers and integrated COPC geometry concurrency
-  capped at eight workers while reserving browser capacity for Cesium
-  rendering. This avoids saturating high-core machines with LAZ decompression
-  when the current view needs a fast visible refinement instead of maximum
-  background throughput.
+  capped at four workers while reserving browser capacity for Cesium rendering
+  and per-origin Range traffic. This avoids saturating high-core machines with
+  queued remote reads and LAZ decompression when the current view needs a fast
+  visible refinement instead of maximum background throughput.
 - Camera streaming is bounded and regression-tested. The default terminal plan
   keeps the complete-depth frontier intact, expands it to the available additive
   ancestor closure, orders that closure coarse-to-fine, and distributes the
@@ -373,7 +417,18 @@ Camera-based selection requires both directions:
   short grace period. Render-capable superseded work is never retained; the
   grace period applies only to load-only overlap. Predictive prefetch after an
   exact retained render is suppressed during active movement and delayed by at
-  least 350 ms after it stops. Decoded-node XYZ is quantized to 10 bits per axis,
+  least 350 ms after it stops. When a committed renderer revision is still
+  current, the reference viewer also keeps that world-space point frame stable
+  during camera motion while the new current-view plan warms through cache-only
+  prefetch. `moveEnd` cancels the last in-motion render-capable request before
+  the settled request takes ownership, so small pans and zooms do not repeatedly
+  replace full-budget Cesium primitives. If the settled plan is unchanged, the
+  committed frame is retained exactly; otherwise one settled replacement
+  converges to the new additive set. Moving selections keep the mixed-depth
+  refine/retain hysteresis band. Settled selections collapse both thresholds to
+  the band's 75% retention edge, so the same pose converges to the same denser
+  frontier regardless of whether hierarchy and geometry arrived through a fast
+  cache path or a slower retained-request sequence. Decoded-node XYZ is quantized to 10 bits per axis,
   ordered by a stable four-pass Morton radix sort, then traversed with a centered
   bit-reversal permutation. Every lower density is therefore a nested,
   spatially distributed prefix of the denser result. Workers cache that order
