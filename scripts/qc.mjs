@@ -63,7 +63,10 @@ const liveEvidenceSteps = [
     !omitWarmZoomDetail || label !== "Warm zoom camera-stream smoothness QC",
 );
 const releaseFunctionalLiveSteps = liveEvidenceSteps.filter(
-  ([label]) => !label.includes("camera-stream smoothness QC"),
+  ([label]) =>
+    !label.includes("camera-stream smoothness QC") &&
+    // The local-file command runs the complete URL suite before its added file case.
+    label !== "Browser example smoke",
 );
 const groups = [
   { id: "product", label: "Deterministic product gate", steps: productSteps },

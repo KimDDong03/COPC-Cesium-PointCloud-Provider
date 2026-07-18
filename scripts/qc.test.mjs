@@ -63,9 +63,12 @@ test("lists hosted release functional checks without smoothness gates", () => {
     "Live COPC HTTP Range evidence",
     "Renderer benchmark",
     "Package consumer smoke",
-    "Browser example smoke",
     "Browser local-file smoke",
   ]);
+  assert.equal(
+    plan.groups[1].steps.includes("Browser example smoke"),
+    false,
+  );
   assert.ok(
     plan.groups[1].steps.some((step) =>
       step.includes("camera-stream smoothness QC"),
