@@ -15,6 +15,7 @@ import type { PointColor, PointSample } from "../core/PointSample";
 import type {
   CopcPointCloudGeometryBatchRenderer,
   PointGeometryBatch,
+  PointGeometryBatchPositionBounds,
   PointSampleBatch,
 } from "./CopcPointCloudRenderer";
 import {
@@ -278,15 +279,19 @@ export class CesiumPrimitivePointRenderer
         continue;
       }
 
-      const { colors, pointSpacing, pointSpacings, positions } =
-        flattenPointGeometryBatchPrimitiveChunk(chunk, this.pointSizeMode);
+      const flattened = flattenPointGeometryBatchPrimitiveChunk(
+        chunk,
+        this.pointSizeMode,
+      );
       this.batchPrimitives.set(
         chunk.key,
         this.addPrimitiveFromGeometryAttributes(
-          positions,
-          colors,
-          pointSpacing,
-          pointSpacings,
+          flattened.positions,
+          flattened.colors,
+          flattened.pointSpacing,
+          flattened.pointSpacings,
+          flattened.positionBounds,
+          flattened.hasTranslucentColors,
         ),
       );
     }
@@ -342,6 +347,8 @@ export class CesiumPrimitivePointRenderer
     colors: Uint8Array,
     pointSpacing?: number,
     pointSpacings?: Float32Array,
+    positionBounds?: PointGeometryBatchPositionBounds,
+    hasTranslucentColors?: boolean,
   ): Primitive {
     const attributes = new GeometryAttributes() as PointGeometryAttributes;
     attributes.position = new GeometryAttribute({
@@ -362,7 +369,20 @@ export class CesiumPrimitivePointRenderer
         values: pointSpacings,
       });
     }
-    const boundingSphere = BoundingSphere.fromVertices(positions);
+    const boundingSphere = positionBounds
+      ? BoundingSphere.fromCornerPoints(
+          new Cartesian3(
+            positionBounds.minX,
+            positionBounds.minY,
+            positionBounds.minZ,
+          ),
+          new Cartesian3(
+            positionBounds.maxX,
+            positionBounds.maxY,
+            positionBounds.maxZ,
+          ),
+        )
+      : BoundingSphere.fromVertices(positions);
     const geometry = new Geometry({
       attributes,
       primitiveType: PrimitiveType.POINTS,
@@ -384,7 +404,8 @@ export class CesiumPrimitivePointRenderer
           this.pointSizeMode === "adaptive" && pointSpacings === undefined
             ? (pointSpacing ?? 0)
             : undefined,
-        translucent: hasTranslucentPointColors(colors),
+        translucent:
+          hasTranslucentColors ?? hasTranslucentPointColors(colors),
       }),
       asynchronous: false,
       allowPicking: false,
@@ -619,6 +640,8 @@ function flattenPointGeometryBatchPrimitiveChunk(
   readonly colors: Uint8Array;
   readonly pointSpacing?: number;
   readonly pointSpacings?: Float32Array;
+  readonly positionBounds?: PointGeometryBatchPositionBounds;
+  readonly hasTranslucentColors?: boolean;
 } {
   const resolvedPointSpacings =
     pointSizeMode === "adaptive"
@@ -642,6 +665,8 @@ function flattenPointGeometryBatchPrimitiveChunk(
               resolvedPointSpacings[0],
             )
           : undefined,
+      positionBounds: batch.positionBounds,
+      hasTranslucentColors: batch.hasTranslucentColors,
     };
   }
 
@@ -665,7 +690,52 @@ function flattenPointGeometryBatchPrimitiveChunk(
     pointOffset += batch.pointCount;
   }
 
-  return { positions, colors, pointSpacing, pointSpacings };
+  return {
+    positions,
+    colors,
+    pointSpacing,
+    pointSpacings,
+    positionBounds: mergePointGeometryBatchPositionBounds(chunk.batches),
+    hasTranslucentColors: resolvePointGeometryBatchTranslucency(chunk.batches),
+  };
+}
+
+function mergePointGeometryBatchPositionBounds(
+  batches: readonly PointGeometryBatch[],
+): PointGeometryBatchPositionBounds | undefined {
+  if (batches.some((batch) => batch.positionBounds === undefined)) {
+    return undefined;
+  }
+
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let minZ = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  let maxZ = Number.NEGATIVE_INFINITY;
+  for (const batch of batches) {
+    const bounds = batch.positionBounds!;
+    minX = Math.min(minX, bounds.minX);
+    minY = Math.min(minY, bounds.minY);
+    minZ = Math.min(minZ, bounds.minZ);
+    maxX = Math.max(maxX, bounds.maxX);
+    maxY = Math.max(maxY, bounds.maxY);
+    maxZ = Math.max(maxZ, bounds.maxZ);
+  }
+
+  return { minX, minY, minZ, maxX, maxY, maxZ };
+}
+
+function resolvePointGeometryBatchTranslucency(
+  batches: readonly PointGeometryBatch[],
+): boolean | undefined {
+  if (batches.some((batch) => batch.hasTranslucentColors === true)) {
+    return true;
+  }
+
+  return batches.every((batch) => batch.hasTranslucentColors === false)
+    ? false
+    : undefined;
 }
 
 function createPointSpacingAttribute(

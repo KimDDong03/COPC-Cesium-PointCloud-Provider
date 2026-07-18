@@ -107,6 +107,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Worker-prepared geometry bounds and opacity hints avoid main-thread rescans;
+  custom batches retain the compatible fallback.
 - Typed camera-stream terminal refinement now retains the current preview or
   revision-proven frame while bounded worker requests finish, then performs one
   exact weighted full-budget renderer commit. This avoids repeated primitive

@@ -343,6 +343,12 @@ function createPointGeometryBatchFromPointData(options: {
   const pointCount = options.pointData.x.length;
   const positions = new Float64Array(pointCount * 3);
   const colors = new Uint8Array(pointCount * 4);
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let minZ = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  let maxZ = Number.NEGATIVE_INFINITY;
 
   for (let pointIndex = 0; pointIndex < pointCount; pointIndex += 1) {
     const position = options.coordinateTransform(
@@ -361,6 +367,18 @@ function createPointGeometryBatchFromPointData(options: {
     positions[positionOffset] = position[0];
     positions[positionOffset + 1] = position[1];
     positions[positionOffset + 2] = position[2];
+    if (
+      Number.isFinite(position[0]) &&
+      Number.isFinite(position[1]) &&
+      Number.isFinite(position[2])
+    ) {
+      minX = Math.min(minX, position[0]);
+      minY = Math.min(minY, position[1]);
+      minZ = Math.min(minZ, position[2]);
+      maxX = Math.max(maxX, position[0]);
+      maxY = Math.max(maxY, position[1]);
+      maxZ = Math.max(maxZ, position[2]);
+    }
     colors[colorOffset] = (packedColor >> 16) & 255;
     colors[colorOffset + 1] = (packedColor >> 8) & 255;
     colors[colorOffset + 2] = packedColor & 255;
@@ -372,6 +390,11 @@ function createPointGeometryBatchFromPointData(options: {
     pointCount,
     positions,
     colors,
+    positionBounds:
+      minX <= maxX && minY <= maxY && minZ <= maxZ
+        ? { minX, minY, minZ, maxX, maxY, maxZ }
+        : undefined,
+    hasTranslucentColors: false,
   };
 }
 

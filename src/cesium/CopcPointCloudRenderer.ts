@@ -11,6 +11,8 @@ export interface PointGeometryBatch {
   readonly pointCount: number;
   readonly positions: Float64Array;
   readonly colors: Uint8Array;
+  readonly positionBounds?: PointGeometryBatchPositionBounds;
+  readonly hasTranslucentColors?: boolean;
   /** Representative world-space spacing of the unsampled points. */
   readonly pointSpacingMeters?: number;
   /**
@@ -19,6 +21,15 @@ export interface PointGeometryBatch {
    * can use this to expand the effective spacing by `1 / sqrt(densityScale)`.
    */
   readonly pointDensityScale?: number;
+}
+
+export interface PointGeometryBatchPositionBounds {
+  readonly minX: number;
+  readonly minY: number;
+  readonly minZ: number;
+  readonly maxX: number;
+  readonly maxY: number;
+  readonly maxZ: number;
 }
 
 export interface CopcPointCloudRenderer {

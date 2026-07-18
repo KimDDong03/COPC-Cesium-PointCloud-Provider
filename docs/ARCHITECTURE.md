@@ -265,7 +265,10 @@ Camera-based selection requires both directions:
   geometry batches use stable per-node primitives with the renderer API's
   compatibility default. Balanced, detail, and ultra instead merge up to four
   batches: an incomplete progressive tail stays per-node, then a sealed group is
-  merged once without rebuilding a growing 1 -> 2 -> 3 -> 4 buffer. COPC spacing
+  merged once without rebuilding a growing 1 -> 2 -> 3 -> 4 buffer.
+  Worker-prepared bounds and opacity hints avoid main-thread full-array rescans;
+  custom batches retain the scan fallback.
+  COPC spacing
   is converted through the active CRS transform into a per-node metre scale,
   combined with the retained sample ratio, and projected in the vertex shader
   to produce bounded adaptive splats; one common effective spacing is embedded

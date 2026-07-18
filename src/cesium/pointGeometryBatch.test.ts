@@ -53,6 +53,15 @@ describe("point geometry batch creation", () => {
     expect(result.positions[1]).toBeCloseTo(expected.y, 6);
     expect(result.positions[2]).toBeCloseTo(expected.z, 6);
     expect(result.colors).toEqual(new Uint8Array([10, 20, 30, 255]));
+    expect(result.positionBounds).toEqual({
+      minX: result.positions[0],
+      minY: result.positions[1],
+      minZ: result.positions[2],
+      maxX: result.positions[0],
+      maxY: result.positions[1],
+      maxZ: result.positions[2],
+    });
+    expect(result.hasTranslucentColors).toBe(false);
   });
 
   it("uses classification colors when RGB is unavailable", () => {

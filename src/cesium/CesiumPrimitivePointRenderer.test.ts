@@ -21,6 +21,33 @@ describe("CesiumPrimitivePointRenderer adaptive point sizing", () => {
     expect(getPointSpacingAttribute(geometry)).toBeUndefined();
   });
 
+  it("uses worker-prepared position bounds without rescanning vertices", () => {
+    const { addedPrimitives, scene } = createSceneStub();
+    const renderer = new CesiumPrimitivePointRenderer(scene);
+
+    renderer.setPointGeometryBatches([
+      createPointGeometryBatch({
+        positionBounds: {
+          minX: 0,
+          minY: 0,
+          minZ: 0,
+          maxX: 2,
+          maxY: 4,
+          maxZ: 6,
+        },
+        hasTranslucentColors: false,
+      }),
+    ]);
+
+    const geometry = getPrimitiveGeometry(addedPrimitives[0] as Primitive);
+    const boundingSphere = geometry.boundingSphere;
+    expect(boundingSphere).toBeDefined();
+    expect(boundingSphere!.center.x).toBe(1);
+    expect(boundingSphere!.center.y).toBe(2);
+    expect(boundingSphere!.center.z).toBe(3);
+    expect(boundingSphere!.radius).toBeCloseTo(Math.sqrt(14));
+  });
+
   it("projects effective batch spacing in adaptive mode", () => {
     const { addedPrimitives, scene } = createSceneStub();
     const renderer = new CesiumPrimitivePointRenderer(scene, {
@@ -367,7 +394,10 @@ function createSceneStub(): {
 function createPointGeometryBatch(
   metadata: Pick<
     PointGeometryBatch,
-    "pointDensityScale" | "pointSpacingMeters"
+    | "hasTranslucentColors"
+    | "pointDensityScale"
+    | "pointSpacingMeters"
+    | "positionBounds"
   > = {},
 ): PointGeometryBatch {
   return {

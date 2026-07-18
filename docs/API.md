@@ -1435,6 +1435,9 @@ pixels and clamps the result to `minimumPointSize` / `maximumPointSize`.
 sample ratio automatically. Custom geometry-batch renderers can provide the
 optional `pointSpacingMeters` and `pointDensityScale` fields on
 `PointGeometryBatch`; missing spacing keeps the fixed `pointSize` fallback.
+Worker batches also provide optional `positionBounds` and
+`hasTranslucentColors` hints to skip main-thread rescans. Custom batches may
+omit them; the built-in renderer then derives them for compatibility.
 The renderer API itself defaults to `pointSizeMode: "fixed"` for compatibility,
 while the reference viewer's quality presets enable adaptive sizing.
 
