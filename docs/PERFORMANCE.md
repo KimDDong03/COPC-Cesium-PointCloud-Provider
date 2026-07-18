@@ -1396,7 +1396,7 @@ must be captured after the terminal visual-quality gate and must include the
 structured composition state; pre-gate partial-coverage runs are not comparable
 final-detail evidence.
 
-### Settled-LOD and Transport-Control Checkpoint (2026-07-18)
+### Settled-LOD Checkpoint (2026-07-18)
 
 The 550 m close-detail pose exposed a timing-dependent mixed-depth result. A
 fresh fast selection entered at the configured 2.25 px spacing threshold and
@@ -1412,30 +1412,10 @@ select the same nodes when those settled thresholds are equal. The cold and
 cache-controlled browser paths then both rendered 360,000 points from the same
 80/80 additive nodes at depth 5, with zero budget skips and terminal QC passing.
 
-An exact-range localhost proxy retained only byte responses between four
-otherwise identical cold-detail runs. The first phase fetched every requested
-range from the public S3 source; the final phase served every request from the
-proxy's exact-range memory cache. This is a transport control, not a production
-cache feature and not an Eptium comparison.
-
-| Phase | Proxy misses | Terminal refinement | Points | Nodes | Terminal p95 / max | QC |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Remote-backed seed | 138 | 20,283.5 ms | 360,000 | 80/80 | 16.8 / 116.6 ms | 0 failures |
-| Fully seeded replay | 0 | 542.1 ms | 360,000 | 80/80 | 16.8 / 66.7 ms | 0 failures |
-
-At equal visual work, removing remote range latency reduced terminal refinement
-by 97.33% on this run. The replay still performed the same COPC selection,
-worker decode, sampling, and Cesium render path; only its exact byte ranges were
-served locally. This establishes the next high-leverage direction as an
-origin/CDN/edge range cache close to users, with a persistent browser cache as a
-separate revisit optimization. More client-side worker or request-scheduling
-micro-tuning cannot plausibly recover the same order of magnitude from this
-network-bound cold path.
-
 ### Product Persistent-Range Cache Checkpoint (2026-07-18)
 
-`npm run benchmark:persistent-range-cache` turns that transport direction into
-an opt-in product path rather than a localhost-proxy upper bound. The benchmark
+`npm run benchmark:persistent-range-cache` measures the opt-in browser
+IndexedDB range-cache path as a repeat-visit library feature. The benchmark
 builds the real example, clears its browser HTTP and IndexedDB range caches,
 loads the Millsite
 COPC through the normal `CopcPointCloudLayer`/shared worker broker path, reloads
@@ -1448,7 +1428,7 @@ HTTP response must also be a matching `206` with consistent `Content-Range` and
 
 The default persistent block size is 64 KiB. Replaying the prior 132-request
 high-detail ledger showed why the original 1 MiB prototype was unsuitable for
-the cold path: 16.95 MiB of requested spans would occupy 81.00 MiB of unique
+this browser storage path: 16.95 MiB of requested spans would occupy 81.00 MiB of unique
 1 MiB blocks, versus 23.06 MiB of unique 64 KiB blocks. The smaller default
 keeps cross-request reuse while limiting this observed alignment overhead to
 1.36x instead of 4.78x.
@@ -1471,50 +1451,11 @@ evidence is
 
 This is production-path evidence for repeat visits, not a claim that browser
 storage fixes a first user's network path and not a direct Eptium comparison.
-Cold delivery still needs an origin/CDN/edge Range cache near users. Strong-ETag
-mode also requires CORS-visible `ETag` and complete `Content-Range`; otherwise
-it bypasses persistence. Application-version mode is available only when the
-host application can authoritatively version immutable bytes and provide their
-length.
-
-### Browser-Cold Edge Range Cache Reference Checkpoint (2026-07-18)
-
-`npm run benchmark:edge-range-cache` targets the cold first-user bottleneck
-without allowing browser persistence to hide the result. A local reference
-server exposes only the exact Millsite pathname and maps it to the fixed public
-S3 object. It canonicalizes requests into 64 KiB blocks, validates strong ETag
-and source length, bounds each downstream range and coalesced origin span to
-2 MiB, and keeps a bounded LRU block cache. This script-side server is not part
-of the library runtime and is not a deployed CDN result.
-
-The first phase clears the edge cache, IndexedDB, and Chromium HTTP cache. The
-second clears IndexedDB and Chromium HTTP cache again while retaining only the
-edge blocks. Both phases must reach the same depth-5 terminal frontier,
-80/80 required/rendered additive nodes, 360,000 points, camera fingerprint,
-render signature, and ordered raw renderer-geometry fingerprint. Browser Range
-request count and confirmed bytes must remain at least 90% of cold, while edge
-origin operations and bytes must fall by at least 90% and elapsed time by at
-least 80%.
-
-| Real page lifecycle | Elapsed | Browser ranges | Browser-confirmed bytes | Origin operations | Origin bytes | Edge block hits / misses |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Origin-cold / browser-cold | 31,648 ms | 120 | 25,953,475 | 118 | 25,953,473 | 3 / 397 |
-| Edge-warm / browser-cold | 5,366 ms | 121 | 26,674,371 | 3 | 720,896 | 400 / 11 |
-
-Elapsed time fell by 83.045%, a 5.898x speedup. Origin operations fell by
-97.458% and origin bytes by 97.222%. The warm browser deliberately performed
-0.833% more Range requests and confirmed 2.778% more bytes than cold, so a
-smaller browser workload cannot explain the improvement. Both phases produced
-the same `4136b54194783a14` terminal renderer-input fingerprint, and console and
-page errors were zero. The machine-readable evidence is
-`output/edge-range-cache/edge-range-cache-result.json`.
-
-The remaining 5.366 seconds includes the browser-to-local-edge request path,
-the 11 canonical block misses caused by a slightly different but larger Range
-ledger, LAZ decode and sampling, coordinate/color geometry preparation, Cesium
-submission, and the terminal/prefetch convergence gate. A real deployment must
-repeat this test against an actual edge provider and multiple regions before
-the local-reference reduction is treated as production first-visit evidence.
+It must not be used as evidence that the library beats Eptium in cold-load
+conditions. Strong-ETag mode also requires CORS-visible `ETag` and complete
+`Content-Range`; otherwise it bypasses persistence. Application-version mode is
+available only when the host application can authoritatively version immutable
+bytes and provide their length.
 
 The current live Eptium comparison was then rerun with two AB/BA repeats in one
 Chromium session on the documented RTX 3060 host. Both viewers used the same

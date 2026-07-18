@@ -19,9 +19,14 @@ The library is intentionally not a standalone viewer product. The example app ex
 - No COPC-to-3D-Tiles conversion pipeline.
 - No live LiDAR or sensor ingestion.
 - No general point cloud editing/viewer application.
+- No AWS, CloudFront, S3 operations guidance, CDN/edge server, backend proxy,
+  data-hosting product, or other external infrastructure component. Public
+  sample URLs are test inputs only, and infrastructure behavior is not used as
+  library performance evidence.
 - No general offline-package/service-worker system, COPC editing, non-COPC
   format adapter, or application-specific styling system. A validated opt-in
-  IndexedDB byte-range cache supports repeat HTTP views.
+  IndexedDB byte-range cache supports repeat HTTP views as a browser library
+  feature, not as cold-start or Eptium-comparison evidence.
 
 ## Layers
 
@@ -98,12 +103,6 @@ The current implementation includes:
   a racing `no-store` purge is the final policy writer. Custom stores without
   this atomic source-policy contract are rejected. Header policy is applied
   before Range/body/validator validation, including error responses.
-- `scripts/copc-edge-range-cache.mjs` is a benchmark/deployment reference, not
-  a `src/core` dependency or hosted viewer service. Exact paths map to fixed
-  HTTPS origins; query routing and redirects are rejected. It uses bounded
-  64 KiB blocks, strong ETag/length validation, whole-read generation checks,
-  and a clear-generation fence. The benchmark retains only this cache while
-  clearing browser HTTP and IndexedDB state.
 - `CopcSource.loadHierarchyPage` and `loadNextHierarchyPage` for on-demand COPC hierarchy page range reads from URL or Blob-backed sources.
 - Hierarchy node and pending-page provenance tracking via the source hierarchy page ID, plus bounded page-count and byte-aware hierarchy page eviction that restores evicted non-root leaf pages back to pending page references.
 - `selectHierarchyPagesForTarget` for choosing nearby pending hierarchy pages from their octree bounds.

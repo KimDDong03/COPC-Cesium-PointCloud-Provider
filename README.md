@@ -17,6 +17,23 @@ Allow a CesiumJS developer to load a COPC file or URL directly into a Cesium sce
 This project handles already-created COPC files. It does not target live LiDAR input, a general point cloud viewer app, or a COPC-to-3D-Tiles conversion pipeline.
 Here, streaming means on-demand COPC hierarchy and point-data range reads driven by camera/node selection, not real-time sensor ingestion.
 
+### Competition scope boundary
+
+This repository is intentionally limited to the Gaia3D competition task: a
+reusable TypeScript library that reads existing COPC data directly and renders
+it in CesiumJS. In scope are COPC URL/`File`/`Blob` inputs, byte-range reads,
+octree/LOD selection, browser workers and library-owned caches, Cesium-native
+rendering, the reference example, and repeatable library quality/performance
+tests.
+
+AWS, CloudFront, S3 deployment configuration, CDN/edge servers, backend or
+proxy products, data-hosting operations, deployment QC, COPC-to-3D-Tiles or
+other pre-tiling/conversion pipelines, and performance claims attributable to
+external delivery infrastructure are explicitly out of scope. Public S3 URLs
+in this repository are test data inputs, not infrastructure managed or required
+by the library. GitHub Pages only publishes the static reference example; it is
+not a runtime dependency or evidence of library performance.
+
 ## Current Scope
 
 The pre-1.0 library currently supports:
@@ -48,8 +65,8 @@ The pre-1.0 library currently supports:
    release gates.
 
 General offline packages/service workers, non-COPC formats, point-cloud editing,
-and application-specific classification styling remain outside the current
-scope.
+application-specific classification styling, and every external delivery or
+hosting layer listed above remain outside the current scope.
 
 The published runtime target is a modern browser application built with an ESM
 bundler. CesiumJS 1.140.0 is the minimum supported peer because it is the first
@@ -219,6 +236,9 @@ revalidation, and the built-in store purges all validator/version blocks for
 that stable source identity and retains one source tombstone across page
 recreation. A source-policy epoch permanently retires older live getters after
 revocation, even when a later fresh ETag safely re-enables new getters.
+This browser-owned IndexedDB feature is a library option for repeat visits. It
+does not improve an uncached first visit and is not counted as evidence that the
+renderer outperforms Eptium on a cold load.
 
 See [API](docs/API.md) for the current public surface and
 [examples/minimal-layer.ts](examples/minimal-layer.ts) for a type-checked
@@ -236,7 +256,6 @@ npm run build:example
 npm run build
 npm run benchmark:renderers
 npm run benchmark:eptium-comparison
-npm run benchmark:edge-range-cache
 npm run benchmark:persistent-range-cache
 npm run benchmark:quality-ab
 npm run benchmark:smoothness
@@ -274,7 +293,9 @@ The pinned `GitHub Pages` workflow obtains the repository's actual Pages
 point-worker, and LAZ WASM paths, and only then uploads and deploys
 `dist/example`. The repository owner must select **GitHub Actions** as the Pages
 source before the first deployment; the workflow does not change repository
-settings itself.
+settings itself. This publishes only the static reference example and does not
+provide COPC delivery, caching, a backend, or any runtime performance advantage
+to the library.
 In the latest 2026-07-14 release-candidate build snapshot, Vite split the
 projected-CRS dependency out of the application entry: the uncompressed
 generated JavaScript was 367.93 kB for the app entry and 131.70 kB for the
@@ -328,22 +349,9 @@ higher. This is controlled Autzen evidence, not universal superiority evidence.
 IndexedDB path from a cold browser/store through a fresh page lifecycle. Both
 phases must reproduce the same terminal camera, frontier, point count, and raw
 renderer-geometry hash. The result is written to
-`output/persistent-range-cache/persistent-range-cache-result.json`.
-
-`npm run benchmark:edge-range-cache` runs the same Millsite terminal workload
-through a local 64 KiB block cache. It clears browser HTTP and IndexedDB state
-before both phases and retains only edge blocks. The gate requires the same raw
-renderer input, at least 90% of cold browser traffic, at least 90% fewer origin
-operations/bytes, and at least 80% lower elapsed time. This is a local reference,
-not deployed-CDN evidence. Output is
-`output/edge-range-cache/edge-range-cache-result.json`.
-
-The repository-only [AWS edge reference](https://github.com/KimDDong03/COPC_VIEWER/tree/main/deploy/aws)
-serves immutable paths from private S3 through public CloudFront OAC. Run
-`npm run qc:deployed-edge -- https://copc.example.com/copc/public/sha256/<digest>.copc.laz https://viewer.example.com copc.example.com`.
-It gates preflight, exact repeated `206` bytes and validators, CORS exposure,
-and a repeat hit; missing inputs are non-pass. This is not browser proof, and
-deployment assets are outside the npm tarball.
+`output/persistent-range-cache/persistent-range-cache-result.json`. It measures
+repeat-visit reuse inside the browser library and is excluded from cold-load or
+Eptium superiority claims.
 
 `npm run benchmark:smoothness` builds the example, starts a temporary preview server, enables camera streaming, moves the Cesium camera, records browser frame intervals through both camera movement and the exact terminal-refinement boundary, first visible application response timing, stream-stage timing, selected LOD depth, and structured decoded-worker cache telemetry, then writes the result to `output/smoothness-benchmark/smoothness.json`. A first response is accepted only after an actual scene commit (`app-render-commit`) or after the application proves that the unchanged exact frame is still resident (`app-render-retained`); beginning a load or resolving a cache lookup is not response evidence. Versioned current artifacts must contain terminal-frame and aggregate cache-envelope evidence; only explicitly unversioned legacy artifacts retain compatibility. The defaults are Autzen, Millsite Reservoir, and Custom Millsite URL samples; 2,500 / 5,000 / 10,000 / 20,000 camera-stream point budgets; 2 repeats per budget; 24 camera steps; 3 seconds per run; and sample-specific minimum selected-depth checks. On PowerShell, override them with `$env:COPC_SMOOTHNESS_SAMPLES="autzen-classified,millsite-reservoir"; $env:COPC_SMOOTHNESS_POINT_BUDGETS="5000,10000"; $env:COPC_SMOOTHNESS_REPEATS="5"; $env:COPC_SMOOTHNESS_MIN_SELECTED_DEPTH="2"; npm run benchmark:smoothness`.
 For range-coalescing sweeps, set

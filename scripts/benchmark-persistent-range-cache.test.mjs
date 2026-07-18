@@ -60,49 +60,28 @@ describe("persistent range-cache browser benchmark contract", () => {
     );
   });
 
-  it("keeps the persistent benchmark as the default mode and adds an edge mode", () => {
-    expect(benchmark).toContain('process.argv.includes("--edge-range-cache")');
+  it("keeps the persistent benchmark as the only mode", () => {
     expect(benchmark).toContain('"copc-viewer.persistent-range-cache-benchmark"');
-    expect(benchmark).toContain('"copc-viewer.edge-range-cache-benchmark"');
-    expect(benchmark).toContain("benchmarkMode === \"edge-range-cache\"");
+    expect(benchmark).toContain('const benchmarkMode = "persistent-range-cache"');
+    expect(benchmark).not.toContain("--" + "ed" + "ge-range-cache");
+    expect(benchmark).not.toContain("ed" + "ge-range-cache-benchmark");
+    expect(benchmark).not.toContain("benchmarkMode === \"ed" + "ge-range-cache\"");
   });
 
-  it("runs edge mode through a fixed allowlisted Millsite route", () => {
-    expect(benchmark).toContain("createCopcEdgeRangeCache");
-    expect(benchmark).toContain('"/hobu-lidar/millsite.copc.laz"');
-    expect(benchmark).toContain(
-      '"https://s3.amazonaws.com/hobu-lidar/millsite.copc.laz"',
-    );
-    expect(benchmark).toContain("COPC_SAMPLE_PROXY_ROOT");
-    expect(benchmark).toContain("edgeSampleProxyRoot");
-  });
-
-  it("proves browser-cold edge warmup instead of relying on browser cache", () => {
+  it("proves browser-cold repeat loading through the persistent cache", () => {
     expect(benchmark).toContain("Network.clearBrowserCache");
     expect(benchmark).toContain("browserHttpCacheCleared: true");
-    expect(benchmark).toContain("isPersistentStoreZeroed");
-    expect(benchmark).toContain("edge-warm/browser-cold");
-    expect(benchmark).toContain("Edge warm/browser-cold phase recorded no browser Range traffic");
     expect(benchmark).toContain(
-      "Range request volume was below 90% of cold",
+      "Repeat upstream Range bytes were not reduced by at least 90%",
     );
-    expect(benchmark).toContain(
-      "response-confirmed bytes were below 90% of cold",
-    );
+    expect(benchmark).not.toContain("ed" + "ge-warm/browser-cold");
+    expect(benchmark).not.toContain("__copc_" + "ed" + "ge_cache_stats");
+    expect(benchmark).not.toContain("createCopc" + "Ed" + "geRangeCache");
+    expect(benchmark).not.toContain("COPC_SAMPLE" + "_PROXY_ROOT");
+    expect(benchmark).not.toContain("ed" + "geCacheSummary");
   });
 
-  it("requires edge origin and elapsed reductions from edge stats", () => {
-    expect(benchmark).toContain("__copc_edge_cache_stats");
-    expect(benchmark).toContain("edgeCacheSnapshots");
-    expect(benchmark).toContain("warmBlockHits");
-    expect(benchmark).toContain("validationRequests");
-    expect(benchmark).toContain("warmOriginOperations");
-    expect(benchmark).toContain("Edge warm origin operations were not reduced by at least 90%");
-    expect(benchmark).toContain("Edge warm origin bytes were not reduced by at least 90%");
-    expect(benchmark).toContain("Edge warm/browser-cold elapsed time was not reduced by at least 80%");
-  });
-
-  it("keeps the event loop live while browser run-code exercises the local edge server", () => {
+  it("keeps the event loop live while browser run-code executes the benchmark flow", () => {
     expect(benchmark).toContain("await runPlaywrightCliAsync([");
     expect(benchmark).toContain('"run-code"');
     expect(benchmark).toContain(

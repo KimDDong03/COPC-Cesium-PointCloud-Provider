@@ -1,6 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
 import { mkdir, rm, writeFile } from "node:fs/promises";
-import http from "node:http";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,10 +8,7 @@ import { resolveLocalPackageBinary } from "./resolve-local-package-binary.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..");
-const benchmarkMode = process.argv.includes("--edge-range-cache")
-  ? "edge-range-cache"
-  : "persistent-range-cache";
-const isEdgeRangeCacheMode = benchmarkMode === "edge-range-cache";
+const benchmarkMode = "persistent-range-cache";
 const outputRoot = path.join(repoRoot, "output", benchmarkMode);
 const resultPath = path.join(outputRoot, `${benchmarkMode}-result.json`);
 const flowPath = path.join(outputRoot, `${benchmarkMode}-flow.mjs`);
@@ -36,21 +32,10 @@ runCommand("npm", [
 ]);
 
 const port = await findAvailablePort(4389);
-const edgePort = isEdgeRangeCacheMode ? await findAvailablePort(4489) : undefined;
 const baseUrl = `http://localhost:${port}`;
-const edgeBaseUrl = edgePort === undefined ? undefined : `http://localhost:${edgePort}`;
 const exampleUrl =
   `${baseUrl}/?persistentRangeCache=1&terminalRenderInputHash=1`;
 const sourceUrl = `${baseUrl}/copc-samples/millsite.copc.laz`;
-const edgeStatsUrl = edgeBaseUrl === undefined
-  ? undefined
-  : `${edgeBaseUrl}/__copc_edge_cache_stats`;
-const edgeSampleProxyRoot = edgeBaseUrl === undefined
-  ? undefined
-  : `${edgeBaseUrl}/hobu-lidar`;
-const edgeCacheServer = isEdgeRangeCacheMode
-  ? await startEdgeRangeCacheServer(edgePort)
-  : undefined;
 const serverOutput = [];
 const serverProcess = spawn(
   process.execPath,
@@ -74,9 +59,6 @@ const serverProcess = spawn(
     stdio: ["ignore", "pipe", "pipe"],
     env: {
       ...process.env,
-      ...(edgeSampleProxyRoot === undefined
-        ? {}
-        : { COPC_SAMPLE_PROXY_ROOT: edgeSampleProxyRoot }),
     },
   },
 );
@@ -85,15 +67,9 @@ serverProcess.stderr.on("data", (data) => serverOutput.push(data.toString()));
 
 try {
   await waitForServer(baseUrl, serverProcess, serverOutput);
-  if (edgeStatsUrl !== undefined) {
-    await waitForUrl(edgeStatsUrl, edgeCacheServer.output);
-  }
   await writeFile(
     flowPath,
-    createBrowserFlow(exampleUrl, sourceUrl, {
-      mode: benchmarkMode,
-      edgeStatsUrl,
-    }),
+    createBrowserFlow(exampleUrl, sourceUrl),
   );
   runPlaywrightCli(["--config", playwrightConfigPath, "open", "about:blank"]);
   const browserOutput = await runPlaywrightCliAsync([
@@ -104,9 +80,7 @@ try {
   const browserResult = extractPlaywrightResult(browserOutput);
   const failures = validateResult(browserResult);
   const result = {
-    schema: isEdgeRangeCacheMode
-      ? "copc-viewer.edge-range-cache-benchmark"
-      : "copc-viewer.persistent-range-cache-benchmark",
+    schema: "copc-viewer.persistent-range-cache-benchmark",
     schemaVersion: 2,
     verdict: failures.length === 0 ? "passed" : "failed",
     failures,
@@ -124,19 +98,14 @@ try {
     // The browser may already be closed after a failed flow.
   }
   stopServer(serverProcess);
-  if (edgeCacheServer !== undefined) {
-    await edgeCacheServer.close();
-  }
   await rm(flowPath, { force: true });
 }
 
-function createBrowserFlow(exampleUrl, sourceUrl, options = {}) {
+function createBrowserFlow(exampleUrl, sourceUrl) {
   return `async (page) => {
   const exampleUrl = ${JSON.stringify(exampleUrl)};
   const sourceUrl = ${JSON.stringify(sourceUrl)};
-  const benchmarkMode = ${JSON.stringify(options.mode ?? "persistent-range-cache")};
-  const isEdgeRangeCacheMode = benchmarkMode === "edge-range-cache";
-  const edgeStatsUrl = ${JSON.stringify(options.edgeStatsUrl)};
+  const benchmarkMode = "persistent-range-cache";
   const phaseTimeoutMilliseconds = 120_000;
   const qualityGates = {
     minSelectedDepth: 5,
@@ -239,56 +208,7 @@ function createBrowserFlow(exampleUrl, sourceUrl, options = {}) {
       afterClearCacheStats?.cachedRangeBytes === 0,
   };
 
-  const edgeCacheSnapshots = [];
-  if (isEdgeRangeCacheMode) {
-    edgeCacheSnapshots.push(await readEdgeCacheSnapshot("after-browser-cache-clear"));
-  }
   const cold = await loadTerminalView("cold");
-  if (isEdgeRangeCacheMode) {
-    edgeCacheSnapshots.push(await readEdgeCacheSnapshot("after-cold"));
-    const browserCacheResetEvidence = await clearBrowserAndPersistentCachesForEdgeWarm();
-    edgeCacheSnapshots.push(await readEdgeCacheSnapshot("after-browser-cache-reset"));
-    scope = "edge-warm/browser-cold";
-    const beforeReloadStatus = await readStatusSnapshot();
-    await page.reload({ waitUntil: "domcontentloaded" });
-    await waitForBenchmarkApi();
-    const afterReloadStatus = await readStatusSnapshot();
-    recordPhase("edge-warm/browser-cold-reload", "completed", afterReloadStatus, {
-      beforeReloadStatus,
-      browserCacheResetEvidence,
-    });
-    const repeat = await loadTerminalView("edge-warm/browser-cold");
-    edgeCacheSnapshots.push(await readEdgeCacheSnapshot("after-edge-warm-browser-cold"));
-    scope = "complete";
-
-    return {
-      exampleUrl,
-      sourceUrl,
-      benchmarkMode,
-      phaseTimeoutMilliseconds,
-      qualityGates,
-      cacheClearEvidence,
-      browserCacheResetEvidence,
-      reloadEvidence: {
-        beforeReloadStatus,
-        afterReloadStatus,
-        freshCameraSignal: compareFreshCameraSignal(beforeReloadStatus, afterReloadStatus),
-      },
-      cold,
-      repeat,
-      edgeWarmBrowserCold: repeat,
-      edgeCacheSnapshots,
-      edgeCacheSummary: summarizeEdgeCache(edgeCacheSnapshots),
-      rangeRequests,
-      rangeSummary: {
-        cold: summarizeRanges("cold"),
-        repeat: summarizeRanges("edge-warm/browser-cold"),
-      },
-      phaseProgress,
-      consoleProblems,
-      pageErrors,
-    };
-  }
   scope = "reload";
   const beforeReloadStatus = await readStatusSnapshot();
   await page.reload({ waitUntil: "domcontentloaded" });
@@ -332,23 +252,6 @@ function createBrowserFlow(exampleUrl, sourceUrl, options = {}) {
     );
   }
 
-  async function clearBrowserAndPersistentCachesForEdgeWarm() {
-    const cleared = await page.evaluate(() =>
-      window.__copcBasicViewerBenchmark.clearPersistentRangeCache(),
-    );
-    const persistentStats = await page.evaluate(() =>
-      window.__copcBasicViewerBenchmark.getPersistentRangeCacheStats(),
-    );
-    await clearBrowserHttpCache();
-    return {
-      persistentRangeCacheCleared: cleared,
-      persistentRangeCacheStats: persistentStats,
-      browserHttpCacheCleared: true,
-      isPersistentStoreZeroed: persistentStats?.cachedRangeCount === 0 &&
-        persistentStats?.cachedRangeBytes === 0,
-    };
-  }
-
   async function clearBrowserHttpCache() {
     const session = await page.context().newCDPSession(page);
     try {
@@ -357,26 +260,6 @@ function createBrowserFlow(exampleUrl, sourceUrl, options = {}) {
     } finally {
       await session.detach();
     }
-  }
-
-  async function readEdgeCacheSnapshot(label) {
-    if (typeof edgeStatsUrl !== "string") return { label, unavailable: true };
-    const result = await page.evaluate(async (url) => {
-      const response = await fetch(url, { cache: "no-store" });
-      return {
-        ok: response.ok,
-        status: response.status,
-        stats: response.ok ? await response.json() : undefined,
-      };
-    }, edgeStatsUrl);
-    if (!result.ok) {
-      throw new Error("Edge cache stats endpoint returned HTTP " + result.status);
-    }
-    return {
-      label,
-      atMilliseconds: Date.now(),
-      stats: result.stats,
-    };
   }
 
   async function loadTerminalView(nextScope) {
@@ -736,39 +619,6 @@ function createBrowserFlow(exampleUrl, sourceUrl, options = {}) {
     };
   }
 
-  function summarizeEdgeCache(snapshots) {
-    const afterCold = snapshots.find((snapshot) => snapshot.label === "after-cold")?.stats;
-    const afterWarm = snapshots.find((snapshot) => snapshot.label === "after-edge-warm-browser-cold")?.stats;
-    if (!afterCold || !afterWarm) {
-      return { available: false };
-    }
-    return {
-      available: true,
-      coldOriginRequests: afterCold.originRequests,
-      coldValidationRequests: afterCold.validationRequests,
-      coldOriginOperations:
-        (afterCold.originRequests ?? 0) + (afterCold.validationRequests ?? 0),
-      warmCumulativeOriginRequests: afterWarm.originRequests,
-      warmCumulativeValidationRequests: afterWarm.validationRequests,
-      warmOriginRequests:
-        (afterWarm.originRequests ?? 0) - (afterCold.originRequests ?? 0),
-      warmValidationRequests:
-        (afterWarm.validationRequests ?? 0) - (afterCold.validationRequests ?? 0),
-      warmOriginOperations:
-        ((afterWarm.originRequests ?? 0) + (afterWarm.validationRequests ?? 0)) -
-        ((afterCold.originRequests ?? 0) + (afterCold.validationRequests ?? 0)),
-      coldOriginBytes: afterCold.originBytes,
-      warmCumulativeOriginBytes: afterWarm.originBytes,
-      warmOriginBytes: (afterWarm.originBytes ?? 0) - (afterCold.originBytes ?? 0),
-      coldBlockHits: afterCold.blockHits,
-      warmCumulativeBlockHits: afterWarm.blockHits,
-      warmBlockHits: (afterWarm.blockHits ?? 0) - (afterCold.blockHits ?? 0),
-      coldBlockMisses: afterCold.blockMisses,
-      warmCumulativeBlockMisses: afterWarm.blockMisses,
-      warmBlockMisses: (afterWarm.blockMisses ?? 0) - (afterCold.blockMisses ?? 0),
-    };
-  }
-
   function validateRangeResponse(record) {
     const failures = [];
     if (record.outcome === "failed") {
@@ -862,8 +712,6 @@ function createBrowserFlow(exampleUrl, sourceUrl, options = {}) {
 
 function validateResult(result) {
   const failures = [];
-  const isEdgeRangeCacheMode = result.benchmarkMode === "edge-range-cache" ||
-    result.mode === "edge-range-cache";
   const coldStatus = result.cold?.status;
   const repeatStatus = result.repeat?.status;
   const coldRanges = result.rangeSummary?.cold;
@@ -981,14 +829,10 @@ function validateResult(result) {
   ) {
     failures.push("A measured upstream Range request did not finish.");
   }
-  if (
-    !isEdgeRangeCacheMode &&
-    !(repeatRanges?.requestedBytes <= coldRanges?.requestedBytes * 0.1)
-  ) {
+  if (!(repeatRanges?.requestedBytes <= coldRanges?.requestedBytes * 0.1)) {
     failures.push("Repeat upstream Range bytes were not reduced by at least 90%.");
   }
   if (
-    !isEdgeRangeCacheMode &&
     !(
       repeatRanges?.responseConfirmedBytes <=
       coldRanges?.responseConfirmedBytes * 0.1
@@ -997,9 +841,6 @@ function validateResult(result) {
     failures.push(
       "Repeat response-confirmed Range bytes were not reduced by at least 90%.",
     );
-  }
-  if (isEdgeRangeCacheMode) {
-    failures.push(...validateEdgeRangeCacheResult(result, coldRanges, repeatRanges));
   }
   if (!hasExactPointHashEvidence(result.cold?.pointHashEvidence)) {
     failures.push("Cold view did not report an exact terminal render-input hash.");
@@ -1020,63 +861,6 @@ function validateResult(result) {
   }
   if (result.pageErrors?.length > 0) {
     failures.push("Browser page errors were recorded.");
-  }
-
-  return failures;
-}
-
-function validateEdgeRangeCacheResult(result, coldRanges, repeatRanges) {
-  const failures = [];
-  const edge = result.edgeCacheSummary;
-
-  if (result.browserCacheResetEvidence?.browserHttpCacheCleared !== true) {
-    failures.push("Edge warm phase did not report browser HTTP cache clearing.");
-  }
-  if (result.browserCacheResetEvidence?.isPersistentStoreZeroed !== true) {
-    failures.push("Edge warm phase did not start from a zeroed persistent range-cache store.");
-  }
-  if (!(repeatRanges?.requestCount > 0) || !(repeatRanges?.requestedBytes > 0)) {
-    failures.push("Edge warm/browser-cold phase recorded no browser Range traffic.");
-  }
-  if (!(repeatRanges?.requestCount >= coldRanges?.requestCount * 0.9)) {
-    failures.push(
-      "Edge warm/browser-cold Range request volume was below 90% of cold.",
-    );
-  }
-  if (
-    !(
-      repeatRanges?.responseConfirmedBytes >=
-      coldRanges?.responseConfirmedBytes * 0.9
-    )
-  ) {
-    failures.push(
-      "Edge warm/browser-cold response-confirmed bytes were below 90% of cold.",
-    );
-  }
-  if (edge?.available !== true) {
-    failures.push("Edge cache stats were not recorded.");
-    return failures;
-  }
-  if (!(edge.coldOriginRequests > 0) || !(edge.coldOriginBytes > 0)) {
-    failures.push("Edge cold phase recorded no origin Range traffic.");
-  }
-  if (!(edge.warmBlockHits > 0)) {
-    failures.push("Edge warm/browser-cold phase reported no edge block hits.");
-  }
-  if (!(edge.warmOriginOperations <= edge.coldOriginOperations * 0.1)) {
-    failures.push("Edge warm origin operations were not reduced by at least 90%.");
-  }
-  if (!(edge.warmOriginBytes <= edge.coldOriginBytes * 0.1)) {
-    failures.push("Edge warm origin bytes were not reduced by at least 90%.");
-  }
-  if (
-    !(
-      Number.isFinite(result.cold?.elapsedMilliseconds) &&
-      Number.isFinite(result.repeat?.elapsedMilliseconds) &&
-      result.repeat.elapsedMilliseconds <= result.cold.elapsedMilliseconds * 0.2
-    )
-  ) {
-    failures.push("Edge warm/browser-cold elapsed time was not reduced by at least 80%.");
   }
 
   return failures;
@@ -1165,9 +949,6 @@ function formatValue(value) {
 function printSummary(result) {
   const cold = result.rangeSummary.cold;
   const repeat = result.rangeSummary.repeat;
-  const repeatLabel = result.benchmarkMode === "edge-range-cache"
-    ? "edge-warm/browser-cold"
-    : "repeat";
   const reduction = cold.requestedBytes > 0
     ? (1 - repeat.requestedBytes / cold.requestedBytes) * 100
     : 0;
@@ -1177,111 +958,12 @@ function printSummary(result) {
       `${cold.requestCount} ranges, ${cold.requestedBytes.toLocaleString()} bytes`,
   );
   console.log(
-    `- ${repeatLabel}: ${result.repeat.elapsedMilliseconds.toLocaleString()} ms, ` +
+    `- repeat: ${result.repeat.elapsedMilliseconds.toLocaleString()} ms, ` +
       `${repeat.requestCount} ranges, ${repeat.requestedBytes.toLocaleString()} bytes`,
   );
   console.log(`- browser Range byte reduction: ${reduction.toFixed(2)}%`);
-  if (result.edgeCacheSummary?.available === true) {
-    console.log(
-      `- edge origin operations: ${result.edgeCacheSummary.coldOriginOperations} cold, ` +
-        `${result.edgeCacheSummary.warmOriginOperations} warm`,
-    );
-    console.log(
-      `- edge origin GET requests: ${result.edgeCacheSummary.coldOriginRequests} cold, ` +
-        `${result.edgeCacheSummary.warmOriginRequests} warm`,
-    );
-    console.log(
-      `- edge origin bytes: ${result.edgeCacheSummary.coldOriginBytes.toLocaleString()} cold, ` +
-        `${result.edgeCacheSummary.warmOriginBytes.toLocaleString()} warm`,
-    );
-  }
   console.log(`- result: ${resultPath}`);
   for (const failure of result.failures) console.error(`- ${failure}`);
-}
-
-async function startEdgeRangeCacheServer(port) {
-  const { createCopcEdgeRangeCache } = await import("./copc-edge-range-cache.mjs");
-  const cache = createCopcEdgeRangeCache({
-    routes: {
-      "/hobu-lidar/millsite.copc.laz":
-        "https://s3.amazonaws.com/hobu-lidar/millsite.copc.laz",
-    },
-    blockByteLength: 64 * 1024,
-    onError: (error) => {
-      output.push(`${error?.stack ?? error}\n`);
-    },
-  });
-  const output = [];
-  const server = http.createServer(async (request, response) => {
-    try {
-      if (request.url === "/__copc_edge_cache_stats") {
-        await writeNodeResponse(
-          response,
-          new Response(JSON.stringify(cache.getStats()), {
-            status: 200,
-            headers: {
-              "Access-Control-Allow-Origin": "*",
-              "Cache-Control": "no-store",
-              "Content-Type": "application/json; charset=utf-8",
-            },
-          }),
-        );
-        return;
-      }
-
-      const handled = await cache.handle(createWebRequest(request, port));
-      await writeNodeResponse(response, handled);
-    } catch (error) {
-      output.push(`${error?.stack ?? error}\n`);
-      response.writeHead(500, {
-        "Access-Control-Allow-Origin": "*",
-        "Content-Type": "text/plain; charset=utf-8",
-      });
-      response.end("Edge range cache server error");
-    }
-  });
-
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(port, "localhost", resolve);
-  });
-
-  return {
-    output,
-    close: () =>
-      new Promise((resolve) => {
-        server.close(() => resolve());
-      }),
-  };
-}
-
-function createWebRequest(request, port) {
-  const headers = new Headers();
-  for (const [name, value] of Object.entries(request.headers)) {
-    if (Array.isArray(value)) {
-      for (const entry of value) headers.append(name, entry);
-    } else if (value !== undefined) {
-      headers.set(name, value);
-    }
-  }
-  return new Request(`http://localhost:${port}${request.url}`, {
-    method: request.method,
-    headers,
-  });
-}
-
-async function writeNodeResponse(nodeResponse, webResponse) {
-  const headers = {};
-  webResponse.headers.forEach((value, key) => {
-    headers[key] = value;
-  });
-  nodeResponse.writeHead(webResponse.status, headers);
-  if (webResponse.body === null) {
-    nodeResponse.end();
-    return;
-  }
-  const bytes = new Uint8Array(await webResponse.arrayBuffer());
-  nodeResponse.end(bytes);
 }
 
 function runCommand(command, args) {
@@ -1433,19 +1115,6 @@ async function waitForServer(url, processHandle, output) {
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   throw new Error(`Timed out waiting for ${url}.`);
-}
-
-async function waitForUrl(url, output = []) {
-  for (let attempt = 0; attempt < 60; attempt += 1) {
-    try {
-      const response = await fetch(url, { signal: AbortSignal.timeout(1_000) });
-      if (response.ok) return;
-    } catch {
-      // Retry while the local server starts.
-    }
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
-  throw new Error(`Timed out waiting for ${url}.\n${output.join("")}`);
 }
 
 function stopServer(processHandle) {

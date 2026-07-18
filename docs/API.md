@@ -113,7 +113,7 @@ const persistentCache = new CopcIndexedDbRangeCache({
   maxCachedRangeCount: 4_096,
 });
 
-const getter = createCopcRangeGetter("https://cdn.example.com/cloud.copc.laz", {
+const getter = createCopcRangeGetter("https://data.example.com/cloud.copc.laz", {
   persistentRangeCache: {
     cache: persistentCache,
     validation: { mode: "strong-etag" },

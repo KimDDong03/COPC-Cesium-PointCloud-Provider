@@ -42,10 +42,10 @@ describe("normalizeCopcSampleProxyRoot", () => {
     ).toThrow(/ALLOW_UNSAFE_REMOTE=true/);
     expect(
       readCopcSampleProxyRoot({
-        COPC_SAMPLE_PROXY_ROOT: "https://cdn.example.com/data/",
+        COPC_SAMPLE_PROXY_ROOT: "https://data.example.com/copc/",
         COPC_SAMPLE_PROXY_ALLOW_UNSAFE_REMOTE: "true",
       }),
-    ).toBe("https://cdn.example.com/data");
+    ).toBe("https://data.example.com/copc");
   });
 
   it("rejects unsupported protocols", () => {

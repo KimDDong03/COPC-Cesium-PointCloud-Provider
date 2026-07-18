@@ -18,6 +18,20 @@ COPC file or URL
 -> render points in CesiumJS
 ```
 
+## Competition Scope Guard
+
+Keep implementation and performance work inside the Gaia3D competition task:
+direct COPC URL/`File`/`Blob` reading, COPC octree/LOD and HTTP Range use,
+browser-side decode/cache/worker logic, CesiumJS-native rendering, reusable
+library APIs, the reference example, and repeatable library verification.
+
+Do not add AWS, CloudFront, S3 operations, CDN/edge servers, backend or proxy
+products, data-hosting infrastructure, deployment QC, or pre-tiling/format
+conversion pipelines. Do not attribute library performance to external delivery
+infrastructure. Public remote COPC URLs are test inputs only. Static hosting of
+the reference example is demonstration support, not a runtime dependency or a
+performance optimization.
+
 ## First Milestone Scope
 
 Keep the first milestone as a small technical prototype:
@@ -85,4 +99,3 @@ Useful checks will depend on project state, but prefer:
 - Build.
 - Browser smoke test for Cesium rendering.
 - A focused COPC sample read test once COPC loading exists.
-
