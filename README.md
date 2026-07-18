@@ -365,10 +365,19 @@ Structured point-geometry timing reports the full point-data-view wait and then
 splits range, laz-perf initialization, non-range view work, and cache wait; the
 legacy environment variable containing `GEOMETRY_DECODE` retains its name for
 compatibility but does not represent pure decompression CPU time.
-Browser smoke and benchmark commands request Chromium's high-performance GPU and
-record the actual WebGL vendor/renderer/version in their result. Systems without
-a discrete GPU can still fall back to their available adapter, so use the
-recorded renderer instead of assuming a GPU from Windows numbering.
+Browser smoke and benchmark commands default to Chromium's high-performance GPU
+request. For an integrated-GPU check, use:
+
+```powershell
+$env:COPC_BROWSER_GPU_PROFILE="low-power"
+$env:COPC_BROWSER_GPU_RENDERER_PATTERN="AMD Radeon\(TM\) Graphics"
+npm run smoke:example:file
+```
+
+This profile only removes the high-performance request; the asserted and
+recorded WebGL renderer remains the source of truth. Prefer environment
+variables with `npm run`. Set `COPC_BROWSER_HEADED=1` for a visible smoothness
+run.
 Renderer and smoothness benchmark JSON also embeds a validated `runEvidence`
 record: generation UTC, Git HEAD and clean/dirty state, a SHA-256 fingerprint of
 the tracked diff plus non-ignored untracked content, Node/platform/npm context,
@@ -435,7 +444,9 @@ branches.
 The example keeps sample COPC URLs and their transform factories in a small preset list while still allowing direct custom URL entry or a browser-selected local COPC file.
 Bundled sample presets use the Vite `/copc-samples/*` proxy so local dev and preview runs can issue same-origin COPC range requests even when a browser blocks direct S3 requests.
 For custom URLs or local files, the default path reads projected CRS WKT from the COPC metadata. The example also accepts an explicit source CRS and optional proj4 definition as an override for files with missing or unusable WKT.
-The hierarchy node selector lists currently loaded nodes and lets the example render one selected node at a time.
+The hierarchy node selector keeps at most 300 loaded nodes in the DOM, provides
+a node-key filter/direct-entry field for nodes outside that window, and lets the
+example render one selected node at a time.
 The renderer selector starts on the typed-array primitive renderer and can switch to the stable point-primitive renderer or the experimental buffer renderer for comparison.
 The Quality selector switches between fast preview, balanced detail, high
 detail, and ultra density presets. These presets tune the point budget together
@@ -542,7 +553,20 @@ Render results include `renderStats` with browser CPU-side coordinate transform 
 When integrated point-geometry workers are active, `renderStats.pointGeometryTimings` also separates summed worker work from the slowest single request and exposes `slowestNodes` so expensive COPC nodes can be identified without parsing logs.
 The smoothness benchmark adds browser `requestAnimationFrame` interval measurements while the example camera-stream path is active. It splits the trace at the exact end of synthetic camera movement and keeps collecting through the expected request's terminal refinement, so worker-driven detail cannot hide outside the frame gate. It also records first-response source and renderer revision, selected depth, exact frontier/additive signatures, structured hierarchy-cache state, hierarchy expansion, hierarchy UI application, node selection, retained node reuse, point rendering, total stream-update timing, and the decoded-worker memory envelope so point-budget tuning can be compared with repeatable frame-time and cache data.
 The basic viewer enables `pointSampleLoading: "worker"` so COPC point-data reads and LAZ decoding run in a Web Worker when the browser supports it. If worker creation is unavailable, `CopcSource` falls back to the existing main-thread point sampling path. Worker point sampling uses a small concurrency limit so camera-driven requests do not all dispatch at once. Point sample APIs accept an `AbortSignal`; the basic viewer aborts stale camera-stream point reads when a newer camera request starts.
-The basic viewer also warms the point-sample worker pool and integrated geometry worker pool when a COPC source is opened, so the first zoom or pan does not pay worker startup cost on top of range reads and decoding. It parses COPC metadata once on the main source, passes that metadata with point-sample work and every integrated-geometry load/prefetch request, and seeds every integrated geometry worker during source-aware warmup instead of making each worker repeat the LAS/COPC header and VLR ranges. A later parsed value replaces a failed worker-local bootstrap promise, covering pre-load warmup and lazily created workers. Worker pool sizing is capped for interactive camera streaming: the helper falls back to four point-sample and four geometry workers, caps point-sample concurrency at six and integrated geometry concurrency at four, reserves browser capacity for rendering and remote Range traffic, and avoids unbounded worker creation on high-core machines. Integrated geometry workers prefer decoded-node affinity so repeated zoom/pan density upgrades reuse worker-local decoded COPC views when that worker is available. Each retained decoded node also caches one `Uint32Array` spatial order, adding exactly 4 bytes per decoded point to the cache estimate; density changes reuse that order instead of sorting the node again. The worker-pool helper keeps strict decoded-worker affinity by default, preventing a busy cache owner from triggering the same HTTP range read and LAZ decode on an idle worker; applications can supply a finite `decodedNodeWorkerFallbackDelayMilliseconds` only when their own measurements favor bounded wait latency over cache reuse. The demo uses soft cancellation for superseded integrated-geometry work so a nearly complete cold range/decode can enter the worker cache rather than terminating the worker and repeating that range on the next view. A 768 MiB layer-wide decoded-view ceiling, divided across both worker pools with a 128 MiB per-worker ceiling, prevents that cache from multiplying into several GiB on high-core machines; `getDecodedPointDataCacheStats()` exposes the measured envelope.
+The basic viewer warms integrated geometry workers when a source opens and
+warms the lower-level point-sample pool only before the first manual single-node
+render, avoiding workers unused by camera streaming. It parses COPC metadata
+once on the main source, passes it with all worker work, and seeds geometry
+workers instead of repeating header/VLR reads. A later parsed value replaces a
+failed worker bootstrap. Pool sizing remains bounded: four workers per path by
+default, at most six sample workers and four geometry workers. Geometry workers
+prefer decoded-node affinity; each retained node reuses one spatial-order
+`Uint32Array` (4 bytes per decoded point). Strict affinity avoids duplicate
+range/decode work unless an application explicitly supplies a finite
+`decodedNodeWorkerFallbackDelayMilliseconds`. Soft cancellation lets nearly
+complete work enter the cache. The viewer caps decoded views at 768 MiB across
+both pools and 128 MiB per worker; `getDecodedPointDataCacheStats()` exposes the
+measured envelope.
 
 Spatial ordering quantizes each decoded node to 10 bits per XYZ axis, performs a
 stable four-pass radix sort over Morton codes, then applies a centered

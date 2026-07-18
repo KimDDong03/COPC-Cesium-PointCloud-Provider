@@ -110,6 +110,10 @@ import {
 } from "./visualBenchmarkCameraPose";
 import { selectCameraStreamAdaptiveBudgetState } from "./selectCameraStreamAdaptiveBudgetState";
 import {
+  resolveLoadedHierarchyNodeKey,
+  selectBoundedHierarchyNodeOptions,
+} from "./selectBoundedHierarchyNodeOptions";
+import {
   createLocalFileCopcSource,
   createCustomCopcSource,
   DEFAULT_SAMPLE_COPC_SOURCE,
@@ -191,6 +195,7 @@ const POINT_GEOMETRY_WORKER_CONCURRENCY =
 const POINT_GEOMETRY_WORKER_WARMUP_COUNT =
   POINT_GEOMETRY_WORKER_CONCURRENCY_OVERRIDE ??
   WORKER_POOL_SETTINGS.pointGeometryWorkerWarmupCount;
+const MAX_HIERARCHY_NODE_SELECT_OPTIONS = 300;
 const CAMERA_STREAM_DETAIL_MAX_ACTIVE_NODE_REQUESTS = Math.max(
   1,
   Math.min(
@@ -463,6 +468,7 @@ let pendingInspectionLayer: CopcPointCloudLayer | undefined;
 let inspectionRequestId = 0;
 let currentInspection: CopcInspection | undefined;
 let currentHierarchy: CopcHierarchySummary | undefined;
+let currentHierarchyNodeKeys: ReadonlySet<string> = new Set();
 let currentCoordinateTransform: CopcCoordinateTransformStatus | undefined;
 let currentSuggestion: CopcHierarchyNodeSuggestion | undefined;
 let currentSource: CopcSourceConfig = DEFAULT_SAMPLE_COPC_SOURCE;
@@ -510,6 +516,7 @@ let cameraStreamCameraEpoch = 0;
 let activeAutomaticStreamCameraEpoch = 0;
 let manualRenderRequestId = 0;
 let manualRenderAbortController: AbortController | undefined;
+let didWarmPointSampleWorkersForCurrentLayer = false;
 let suppressNextAutomaticCameraStream = false;
 let suppressedAutomaticCameraPoseFingerprint: string | undefined;
 let suppressAutomaticCameraStreamEvents = false;
@@ -717,13 +724,15 @@ elements.applySuggestionButton.addEventListener("click", () => {
     return;
   }
 
-  elements.nodeSelect.value = currentSuggestion.node.key;
+  selectManualNodeKey(currentSuggestion.node.key);
   void renderSelectedHierarchyNode();
 });
 
 elements.addSelectedButton.addEventListener("click", () => {
-  if (elements.nodeSelect.value) {
-    addNodeToRenderSet(elements.nodeSelect.value);
+  const nodeKey = readManualNodeKey();
+
+  if (nodeKey) {
+    addNodeToRenderSet(nodeKey);
   }
 });
 
@@ -1798,9 +1807,6 @@ async function inspectSource(
       coordinateTransforms: activeSource.coordinateTransforms,
     });
     pendingInspectionLayer = layer;
-    layer.warmUpPointSampleWorkers({
-      workerCount: POINT_SAMPLE_WORKER_WARMUP_COUNT,
-    });
     const { inspection, hierarchy, coordinateTransform } = await layer.load();
     layer.warmUpPointGeometryWorkers({
       workerCount: POINT_GEOMETRY_WORKER_WARMUP_COUNT,
@@ -1813,12 +1819,14 @@ async function inspectSource(
 
     pendingInspectionLayer = undefined;
     currentLayer = layer;
+    didWarmPointSampleWorkersForCurrentLayer = false;
     didCommitLayer = true;
     previousLayer?.destroy();
     previewRenderer.clear();
     setInspectionLoading(activeSource.label);
     currentInspection = undefined;
     currentHierarchy = undefined;
+    currentHierarchyNodeKeys = new Set();
     currentCoordinateTransform = undefined;
     currentSuggestion = undefined;
     lastCameraStreamDiagnostics = undefined;
@@ -1854,6 +1862,7 @@ async function inspectSource(
     renderRenderSetControls();
     currentInspection = inspection;
     currentHierarchy = hierarchy;
+    currentHierarchyNodeKeys = new Set(hierarchy.nodes.map((node) => node.key));
     currentCoordinateTransform = coordinateTransform;
     if (
       DEFAULT_AUTO_STREAM_ON_CAMERA_MOVE &&
@@ -1964,6 +1973,9 @@ function setInspectionLoading(
   };
   setViewerStatus("Reading COPC metadata...", "metadata");
   elements.metadataList.replaceChildren();
+  elements.nodeKeyInput.disabled = true;
+  elements.nodeKeyInput.value = "";
+  elements.nodeKeyInput.placeholder = "Loading hierarchy...";
   elements.nodeSelect.disabled = true;
   elements.nodeSelect.replaceChildren(new Option("Loading hierarchy...", ""));
   invalidateCameraStreamCommittedRender();
@@ -2004,7 +2016,11 @@ function setInspectionError(
   }
 
   elements.metadataList.replaceChildren();
+  elements.nodeKeyInput.disabled = true;
+  elements.nodeKeyInput.value = "";
+  elements.nodeKeyInput.placeholder = "Load a COPC source first";
   elements.nodeSelect.disabled = true;
+  elements.nodeSelect.replaceChildren(new Option("Load a COPC source first", ""));
   invalidateCameraStreamCommittedRender();
   currentLayer?.clear();
   renderSuggestion(undefined);
@@ -2414,21 +2430,50 @@ elements.fitCloudButton.addEventListener("click", () => {
   setViewerStatus("Camera fitted to the active COPC bounds.", "ready");
 });
 
+elements.nodeKeyInput.addEventListener("input", () => {
+  if (currentHierarchy) {
+    refreshNodeSelectOptions(
+      currentHierarchy,
+      elements.nodeKeyInput.value,
+      elements.nodeKeyInput.value,
+    );
+  }
+
+  renderSuggestion(currentSuggestion);
+  renderRenderSetControls();
+});
+
+elements.nodeKeyInput.addEventListener("change", () => {
+  void renderSelectedHierarchyNode();
+});
+
+elements.nodeKeyInput.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") {
+    return;
+  }
+
+  event.preventDefault();
+  void renderSelectedHierarchyNode();
+});
+
 elements.nodeSelect.addEventListener("change", () => {
+  selectManualNodeKey(elements.nodeSelect.value);
   void renderSelectedHierarchyNode();
 });
 
 async function renderSelectedHierarchyNode(): Promise<void> {
-  if (!currentInspection || !currentLayer || !elements.nodeSelect.value) {
+  const nodeKey = readManualNodeKey();
+
+  if (!currentInspection || !currentLayer || !nodeKey) {
     return;
   }
 
   const layer = currentLayer;
-  const nodeKey = elements.nodeSelect.value;
   const manualRequest = beginManualCameraRender();
   setViewerStatus(`Reading COPC node ${nodeKey}...`, "refining");
 
   try {
+    warmUpPointSampleWorkersForManualNode(layer);
     const result = await layer.renderNode(nodeKey, {
       signal: manualRequest.signal,
     });
@@ -2478,7 +2523,7 @@ async function loadNextHierarchyPage(): Promise<void> {
   }
 
   const manualRequest = beginManualCameraRender();
-  const previousNodeKey = elements.nodeSelect.value;
+  const previousNodeKey = readManualNodeKey();
   setViewerStatus(
     `Reading COPC hierarchy page ${nextPage.key}...`,
     "refining",
@@ -2492,6 +2537,7 @@ async function loadNextHierarchyPage(): Promise<void> {
     }
 
     currentHierarchy = hierarchy;
+    currentHierarchyNodeKeys = new Set(hierarchy.nodes.map((node) => node.key));
     populateNodeSelect(hierarchy, previousNodeKey);
     renderHierarchyPageControls();
     updateSuggestedNode();
@@ -4722,7 +4768,7 @@ function renderSuggestion(
     return;
   }
 
-  const isSelected = suggestion.node.key === elements.nodeSelect.value;
+  const isSelected = suggestion.node.key === readManualNodeKey();
   elements.suggestionText.textContent = `Suggested node: ${suggestion.node.key} (${formatSuggestionDistance(suggestion.distanceToBounds)})`;
   elements.applySuggestionButton.disabled = isSelected;
   renderRenderSetControls();
@@ -4750,9 +4796,12 @@ function applyHierarchyExpansion(
 
   const refreshNodeSelect = options.refreshNodeSelect ?? true;
   currentHierarchy = expansion.hierarchy;
+  currentHierarchyNodeKeys = new Set(
+    expansion.hierarchy.nodes.map((node) => node.key),
+  );
 
   if (refreshNodeSelect) {
-    populateNodeSelect(expansion.hierarchy, elements.nodeSelect.value);
+    populateNodeSelect(expansion.hierarchy, readManualNodeKey());
   }
 
   renderHierarchyPageControls();
@@ -4777,7 +4826,7 @@ function renderHierarchyPageControls(): void {
 function renderRenderSetControls(): void {
   const nodeKeys = [...renderNodeSet];
   const hasNodes = nodeKeys.length > 0;
-  const selectedNodeKey = elements.nodeSelect.value;
+  const selectedNodeKey = readManualNodeKey();
   const suggestedNodeKey = currentSuggestion?.node.key;
   const canUseCameraSelection = Boolean(
     currentInspection &&
@@ -5523,8 +5572,34 @@ function populateNodeSelect(
   hierarchy: CopcHierarchySummary,
   preferredNodeKey = "",
 ): void {
+  const selectedNodeKey = hierarchy.nodes.some(
+    (node) => node.key === preferredNodeKey,
+  )
+    ? preferredNodeKey
+    : (hierarchy.nodes[0]?.key ?? "");
+
+  elements.nodeKeyInput.disabled = hierarchy.nodes.length === 0;
+  elements.nodeKeyInput.value = selectedNodeKey;
+  elements.nodeKeyInput.placeholder =
+    hierarchy.nodes.length === 0
+      ? "Load a COPC source first"
+      : "Type a loaded node key";
+  refreshNodeSelectOptions(hierarchy, selectedNodeKey);
+}
+
+function refreshNodeSelectOptions(
+  hierarchy: CopcHierarchySummary,
+  preferredNodeKey = "",
+  query = "",
+): void {
+  const nodeOptions = selectBoundedHierarchyNodeOptions(hierarchy.nodes, {
+    preferredNodeKey,
+    query,
+    maxOptionCount: MAX_HIERARCHY_NODE_SELECT_OPTIONS,
+  });
+
   elements.nodeSelect.replaceChildren(
-    ...hierarchy.nodes.map((node) => {
+    ...nodeOptions.map((node) => {
       const option = new Option(
         `${node.key} | ${node.pointCount.toLocaleString()} pts | ${formatBytes(node.pointDataLength)}`,
         node.key,
@@ -5533,12 +5608,47 @@ function populateNodeSelect(
       return option;
     }),
   );
-  elements.nodeSelect.disabled = hierarchy.nodes.length === 0;
-  elements.nodeSelect.value = hierarchy.nodes.some(
+  elements.nodeSelect.disabled = nodeOptions.length === 0;
+  elements.nodeSelect.value = nodeOptions.some(
     (node) => node.key === preferredNodeKey,
   )
     ? preferredNodeKey
-    : (hierarchy.nodes[0]?.key ?? "");
+    : (nodeOptions[0]?.key ?? "");
+  elements.nodeSelect.title =
+    hierarchy.nodes.length > nodeOptions.length
+      ? `Showing ${nodeOptions.length.toLocaleString()} of ${hierarchy.nodes.length.toLocaleString()} loaded nodes. Type to filter or enter a node key manually.`
+      : "";
+}
+
+function selectManualNodeKey(nodeKey: string): void {
+  if (currentHierarchy) {
+    populateNodeSelect(currentHierarchy, nodeKey);
+  } else {
+    elements.nodeKeyInput.value = nodeKey;
+    elements.nodeSelect.value = nodeKey;
+  }
+
+  renderSuggestion(currentSuggestion);
+  renderRenderSetControls();
+}
+
+function readManualNodeKey(): string {
+  return resolveLoadedHierarchyNodeKey(
+    currentHierarchyNodeKeys,
+    elements.nodeKeyInput.value,
+    elements.nodeSelect.value,
+  );
+}
+
+function warmUpPointSampleWorkersForManualNode(layer: CopcPointCloudLayer): void {
+  if (didWarmPointSampleWorkersForCurrentLayer) {
+    return;
+  }
+
+  layer.warmUpPointSampleWorkers({
+    workerCount: POINT_SAMPLE_WORKER_WARMUP_COUNT,
+  });
+  didWarmPointSampleWorkersForCurrentLayer = true;
 }
 
 function getPrototypeElements(): {
@@ -5555,6 +5665,7 @@ function getPrototypeElements(): {
   readonly fileInput: HTMLInputElement;
   readonly sourceCrsInput: HTMLInputElement;
   readonly sourceDefinitionInput: HTMLTextAreaElement;
+  readonly nodeKeyInput: HTMLInputElement;
   readonly nodeSelect: HTMLSelectElement;
   readonly hierarchyPagesText: HTMLParagraphElement;
   readonly loadMoreHierarchyButton: HTMLButtonElement;
@@ -5608,6 +5719,8 @@ function getPrototypeElements(): {
   const sourceDefinitionInput = document.querySelector<HTMLTextAreaElement>(
     "#copc-source-definition",
   );
+  const nodeKeyInput =
+    document.querySelector<HTMLInputElement>("#copc-node-key");
   const nodeSelect =
     document.querySelector<HTMLSelectElement>("#copc-node-select");
   const hierarchyPagesText = document.querySelector<HTMLParagraphElement>(
@@ -5679,6 +5792,7 @@ function getPrototypeElements(): {
     !fileInput ||
     !sourceCrsInput ||
     !sourceDefinitionInput ||
+    !nodeKeyInput ||
     !nodeSelect ||
     !hierarchyPagesText ||
     !loadMoreHierarchyButton ||
@@ -5721,6 +5835,7 @@ function getPrototypeElements(): {
     fileInput,
     sourceCrsInput,
     sourceDefinitionInput,
+    nodeKeyInput,
     nodeSelect,
     hierarchyPagesText,
     loadMoreHierarchyButton,

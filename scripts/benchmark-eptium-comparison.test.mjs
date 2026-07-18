@@ -58,6 +58,9 @@ describe("external Eptium comparison benchmark contract", () => {
     expect(browserFlow).toContain("cameraStreamMaxPoints=");
     expect(orchestrator).toContain("readOptionalPositiveIntegerArgument");
     expect(orchestrator).toContain("observed ours-high-detail terminal point count");
+    expect(orchestrator).toContain(
+      "browserGpuRendererPattern: browserGpu.rendererPattern ?? null",
+    );
   });
 
   it("accepts an optional non-negative coalesced-range gap and threads it through local benchmark evidence", () => {

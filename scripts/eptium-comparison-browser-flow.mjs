@@ -374,6 +374,7 @@ export async function runEptiumComparisonBrowserFlow(page, configuration) {
       capture.screenSpaceError,
     );
     const browserGraphics = await readBrowserGraphics(activePage, "eptium");
+    assertExpectedBrowserGpuRenderer(browserGraphics);
     const cleanCapture = await prepareCleanCanvasCapture(activePage, "eptium");
     const canvas = activePage.locator("#external-comparison-canvas");
     await canvas.screenshot({ path: paths.visualOutputImagePath });
@@ -500,6 +501,7 @@ export async function runEptiumComparisonBrowserFlow(page, configuration) {
     const stockStatus = await waitForOursTerminal(activePage);
     const stockWorkloadStatus = summarizeOursWorkloadStatus(stockStatus);
     const stockBrowserGraphics = await readBrowserGraphics(activePage, "ours");
+    assertExpectedBrowserGpuRenderer(stockBrowserGraphics);
     await prepareCleanCanvasCapture(activePage, "ours");
     await activePage
       .locator("#external-comparison-canvas")
@@ -528,6 +530,7 @@ export async function runEptiumComparisonBrowserFlow(page, configuration) {
     );
     const geometryMaskReadyAt = Date.now();
     const browserGraphics = await readBrowserGraphics(activePage, "ours");
+    assertExpectedBrowserGpuRenderer(browserGraphics);
     const cleanCapture = await prepareCleanCanvasCapture(activePage, "ours");
     const canvas = activePage.locator("#external-comparison-canvas");
     await canvas.screenshot({ path: paths.pointImagePath });
@@ -1121,6 +1124,26 @@ export async function runEptiumComparisonBrowserFlow(page, configuration) {
         canvasDrawingBufferHeight: canvas.height,
       };
     }, vendor);
+  }
+
+  function assertExpectedBrowserGpuRenderer(browserGraphics) {
+    if (!configuration.browserGpuRendererPattern) {
+      return;
+    }
+
+    const renderer = typeof browserGraphics?.renderer === "string"
+      ? browserGraphics.renderer
+      : "";
+    const rendererRegex = new RegExp(
+      configuration.browserGpuRendererPattern,
+      "i",
+    );
+
+    if (!rendererRegex.test(renderer)) {
+      throw new Error(
+        `Browser WebGL renderer "${renderer}" did not match ${configuration.browserGpuRendererPattern}.`,
+      );
+    }
   }
 
   async function settlePointOffCanvas(activePage, vendor) {

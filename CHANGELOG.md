@@ -6,6 +6,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-07-19
+
 ### Added
 
 - Direct COPC URL and browser `File`/`Blob` loading with bounded HTTP range,
@@ -104,6 +106,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   two-repeat controlled Autzen checkpoint passes the strict equal-count visual
   and p95 gates and records a product-ready advantage, while retaining the
   explicit unique-byte/request-count deficit and cross-run tail-latency caveat.
+- High-performance/low-power browser GPU profiles with actual-renderer
+  assertions, persisted device evidence, and optional headed smoothness runs.
+- A hierarchy-node picker capped at 300 DOM options, with filtering/direct entry
+  for every loaded node.
 
 ### Changed
 
@@ -126,6 +132,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   terminal node or point-count contract. Four transition-time predictive
   prefetch requests and the larger unique-byte union remain explicit network
   blockers.
+- The viewer warms point-sample workers only before manual node rendering;
+  camera streaming still warms geometry workers at source load.
 
 - Camera-stream temporal LOD can now retain a revision-proven GPU frame until
   the first replacement contains the complete coarse baseline, at least 65%
@@ -218,6 +226,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Browser smoke validates current point-geometry timing text and, when present,
+  structured finite/cache-consistency data instead of obsolete wording.
+- Smoothness browser-flow output allows 64 MiB, preventing multi-repeat
+  cold-detail `ENOBUFS` failures.
 - Same-camera hierarchy follow-up signatures now include refined depth. A
   hierarchy-complete depth-5 transition can no longer collide with a prior
   depth-4 complete signature for the same visible node set and leave a cold
@@ -332,4 +344,5 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   chase a deeper screen-space target through more pages than the bounded cache
   can retain, eliminating terminal timeouts caused by hierarchy cache churn.
 
-[Unreleased]: https://github.com/KimDDong03/COPC_VIEWER/commits/main
+[Unreleased]: https://github.com/KimDDong03/COPC_VIEWER/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/KimDDong03/COPC_VIEWER/releases/tag/v0.1.0

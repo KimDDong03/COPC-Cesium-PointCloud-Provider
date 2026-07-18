@@ -168,9 +168,21 @@
                 <label class="copc-node-label" for="copc-node-select"
                   >Hierarchy node</label
                 >
-                <select id="copc-node-select" disabled>
-                  <option value="">Load a COPC source first</option>
-                </select>
+                <div class="copc-node-picker">
+                  <input
+                    id="copc-node-key"
+                    name="copc-node-key"
+                    type="text"
+                    aria-label="Hierarchy node key"
+                    autocomplete="off"
+                    spellcheck="false"
+                    placeholder="Load a COPC source first"
+                    disabled
+                  />
+                  <select id="copc-node-select" disabled>
+                    <option value="">Load a COPC source first</option>
+                  </select>
+                </div>
                 <div class="copc-hierarchy-pages">
                   <p id="copc-hierarchy-pages">
                     Hierarchy pages: not loaded.

@@ -4,6 +4,10 @@ import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { LIVE_COPC_SAMPLE_URLS } from "../config/live-copc-sources.mjs";
+import {
+  createBrowserGpuRendererAssertionSource,
+  resolveBrowserGpuProfile,
+} from "./browser-gpu-profile.mjs";
 import { createRunEvidence } from "./run-evidence.mjs";
 import { resolveLocalPackageBinary } from "./resolve-local-package-binary.mjs";
 
@@ -27,12 +31,18 @@ const benchmarkFlowPath = path.join(
   benchmarkRoot,
   `${path.parse(benchmarkOutputName).name}-flow.mjs`,
 );
-const playwrightConfigPath = path.join(
+const basePlaywrightConfigPath = path.join(
   scriptDir,
   "playwright.high-performance-gpu.json",
 );
+const browserGpu = await resolveBrowserGpuProfile({
+  baseConfigPath: basePlaywrightConfigPath,
+  outputRoot,
+});
+const playwrightConfigPath = browserGpu.configPath;
 const isWindows = process.platform === "win32";
 const npmCommand = "npm";
+const browserHeaded = readBooleanEnv("COPC_BROWSER_HEADED", false);
 
 function readBenchmarkOutputName() {
   const outputName =
@@ -388,6 +398,7 @@ function runPlaywrightCli(args) {
   const result = spawnSync(process.execPath, [playwrightCliPath, ...args], {
     cwd: repoRoot,
     encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
     shell: false,
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -586,6 +597,12 @@ function createSmoothnessFlow(
   maxCoalescedPointDataRangeBytes,
   maxCoalescedPointDataRangeGapBytes,
   pointGeometryWorkerConcurrency,
+  browserGpuProfile = "high-performance",
+  browserGpuConfigPath = "",
+  browserGpuRendererPattern = null,
+  browserGpuRendererAssertionSource =
+    "function assertExpectedBrowserGpuRenderer() {}",
+  browserIsHeaded = false,
 ) {
   return `async (page) => {
   const maxPointCountPerNode = ${JSON.stringify(maxPointCountPerNode)};
@@ -625,6 +642,7 @@ function createSmoothnessFlow(
   const activeHttpRangeRequests = new Map();
   const pendingHttpRangeFinalizers = new Set();
   let activeHttpRangeScope;
+${browserGpuRendererAssertionSource}
 
   async function readBrowserGraphics() {
     return page.evaluate(() => {
@@ -2916,8 +2934,15 @@ function createSmoothnessFlow(
     throw new Error(failures.join("\\n"));
   }
 
+  const browserGraphics = await readBrowserGraphics();
+  assertExpectedBrowserGpuRenderer(browserGraphics);
+
   return {
     profile,
+    browserGpuProfile: ${JSON.stringify(browserGpuProfile)},
+    browserGpuConfigPath: ${JSON.stringify(browserGpuConfigPath)},
+    browserGpuRendererPattern: ${JSON.stringify(browserGpuRendererPattern)},
+    browserIsHeaded: ${JSON.stringify(browserIsHeaded)},
     maxPointCountPerNode,
     streamPointBudgets,
     requestedPointRenderer: pointRenderer,
@@ -2944,7 +2969,7 @@ function createSmoothnessFlow(
     finalDetailTimeoutMilliseconds,
     interactiveTimeoutMilliseconds,
     prefetchWaitTimeoutMilliseconds,
-    browserGraphics: await readBrowserGraphics(),
+    browserGraphics,
     browserEnvironment: await readBrowserEnvironment(),
     pointRenderer: await metadataValue("Point renderer"),
     warmups,
@@ -3230,6 +3255,11 @@ try {
       benchmarkMaxCoalescedPointDataRangeBytes,
       benchmarkMaxCoalescedPointDataRangeGapBytes,
       benchmarkPointGeometryWorkerConcurrency,
+      browserGpu.profile,
+      playwrightConfigPath,
+      browserGpu.rendererPattern ?? null,
+      createBrowserGpuRendererAssertionSource(browserGpu.rendererPattern),
+      browserHeaded,
     ),
   );
 
@@ -3273,7 +3303,13 @@ try {
       .filter(Boolean)
       .join(" "),
   );
-  runPlaywrightCli(["--config", playwrightConfigPath, "open", "about:blank"]);
+  runPlaywrightCli([
+    "--config",
+    playwrightConfigPath,
+    "open",
+    ...(browserHeaded ? ["--headed"] : []),
+    "about:blank",
+  ]);
   const output = runPlaywrightCli([
     "run-code",
     "--filename",

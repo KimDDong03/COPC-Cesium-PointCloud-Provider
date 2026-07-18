@@ -5,6 +5,10 @@ import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PNG } from "pngjs";
+import {
+  createBrowserGpuRendererAssertionSource,
+  resolveBrowserGpuProfile,
+} from "./browser-gpu-profile.mjs";
 import { isExpectedNonFatalWebGlDriverWarning } from "./browser-console-policy.mjs";
 import {
   analyzePointCloudImagePair,
@@ -28,10 +32,15 @@ const playwrightCliPath = resolveLocalPackageBinary(
   "playwright-cli",
 );
 const viteCliPath = resolveLocalPackageBinary(repoRoot, "vite", "vite");
-const playwrightConfigPath = path.join(
+const basePlaywrightConfigPath = path.join(
   scriptDir,
   "playwright.quality-ab.json",
 );
+const browserGpu = await resolveBrowserGpuProfile({
+  baseConfigPath: basePlaywrightConfigPath,
+  outputRoot,
+});
+const playwrightConfigPath = browserGpu.configPath;
 const variants = ["legacy", "enhanced"];
 const viewport = { width: 1600, height: 900 };
 const quality = readStringArgument("--quality", "detail");
@@ -133,6 +142,9 @@ try {
       variants,
       viewport,
       deviceScaleFactor: 1,
+      browserGpuProfile: browserGpu.profile,
+      browserGpuConfigPath: playwrightConfigPath,
+      browserGpuRendererPattern: browserGpu.rendererPattern ?? null,
     },
     environment: {
       browserGraphics: browserResult.browserGraphics,
@@ -202,6 +214,7 @@ function createQualityAbFlow({ baseUrl, captures }) {
   const results = [];
   const sourceResponseByUrl = new Map();
   const isExpectedNonFatalWebGlDriverWarning = ${isExpectedNonFatalWebGlDriverWarning.toString()};
+${createBrowserGpuRendererAssertionSource(browserGpu.rendererPattern)}
 
   page.on("console", (message) => {
     const type = message.type();
@@ -325,6 +338,7 @@ function createQualityAbFlow({ baseUrl, captures }) {
 
   await page.setViewportSize(${JSON.stringify(viewport)});
   const browserGraphics = await readBrowserGraphics();
+  assertExpectedBrowserGpuRenderer(browserGraphics);
 
   for (const capture of captures) {
     const url =

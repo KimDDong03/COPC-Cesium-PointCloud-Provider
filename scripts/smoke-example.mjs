@@ -8,8 +8,13 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { LIVE_COPC_SAMPLE_URLS } from "../config/live-copc-sources.mjs";
+import {
+  createBrowserGpuRendererAssertionSource,
+  resolveBrowserGpuProfile,
+} from "./browser-gpu-profile.mjs";
 import { isExpectedNonFatalWebGlDriverWarning } from "./browser-console-policy.mjs";
 import { isInteractiveRenderReady } from "./interactive-render-status-policy.mjs";
+import { hasExpectedPointGeometryTimingMetadata } from "./point-geometry-timing-contract.mjs";
 import { resolveLocalPackageBinary } from "./resolve-local-package-binary.mjs";
 import {
   createRunEvidence,
@@ -42,10 +47,15 @@ const verificationScreenshotPath = path.join(
   screenshotDir,
   "smoke-example-final-verification.png",
 );
-const playwrightConfigPath = path.join(
+const basePlaywrightConfigPath = path.join(
   scriptDir,
   "playwright.high-performance-gpu.json",
 );
+const browserGpu = await resolveBrowserGpuProfile({
+  baseConfigPath: basePlaywrightConfigPath,
+  outputRoot,
+});
+const playwrightConfigPath = browserGpu.configPath;
 const localFileSampleUrl = LIVE_COPC_SAMPLE_URLS.autzenClassified;
 const localFileSamplePath = path.join(
   localFileSampleRoot,
@@ -111,6 +121,65 @@ function runPlaywrightCli(args) {
   if (`${result.stdout}\n${result.stderr}`.includes("### Error")) {
     throw new Error(`playwright-cli ${args.join(" ")} reported an error`);
   }
+
+  return `${result.stdout}\n${result.stderr}`;
+}
+
+function parsePlaywrightResult(output) {
+  const marker = "### Result";
+  const markerIndex = output.lastIndexOf(marker);
+
+  if (markerIndex === -1) {
+    throw new Error("Could not find Playwright result output.");
+  }
+
+  const outputAfterMarker = output.slice(markerIndex + marker.length);
+  const jsonStart = outputAfterMarker.search(/[\[{]/);
+
+  if (jsonStart === -1) {
+    throw new Error("Could not find Playwright result JSON.");
+  }
+
+  const jsonText = outputAfterMarker.slice(jsonStart);
+  let depth = 0;
+  let isInsideString = false;
+  let isEscaped = false;
+
+  for (let index = 0; index < jsonText.length; index += 1) {
+    const character = jsonText[index];
+
+    if (isInsideString) {
+      if (isEscaped) {
+        isEscaped = false;
+      } else if (character === "\\") {
+        isEscaped = true;
+      } else if (character === '"') {
+        isInsideString = false;
+      }
+
+      continue;
+    }
+
+    if (character === '"') {
+      isInsideString = true;
+      continue;
+    }
+
+    if (character === "{" || character === "[") {
+      depth += 1;
+      continue;
+    }
+
+    if (character === "}" || character === "]") {
+      depth -= 1;
+
+      if (depth === 0) {
+        return JSON.parse(jsonText.slice(0, index + 1));
+      }
+    }
+  }
+
+  throw new Error("Could not parse complete Playwright result JSON.");
 }
 
 async function findAvailablePort(startPort) {
@@ -191,6 +260,7 @@ function createSmokeFlow(baseUrl) {
   const ignoredConsoleWarnings = [];
   const pageErrors = [];
   const isExpectedNonFatalWebGlDriverWarning = ${isExpectedNonFatalWebGlDriverWarning.toString()};
+  const hasExpectedPointGeometryTimingMetadata = ${hasExpectedPointGeometryTimingMetadata.toString()};
 
   page.on("console", (message) => {
     const type = message.type();
@@ -227,6 +297,7 @@ function createSmokeFlow(baseUrl) {
   let typedRendererTiming = "";
   let typedRendererPayload = "";
   let typedPointGeometryTiming = "";
+  let typedPointGeometryTimingData;
   let typedPointGeometryCache = "";
   let localFileRendererTiming = "";
   let cameraStreamControllerSmoke;
@@ -237,6 +308,7 @@ function createSmokeFlow(baseUrl) {
   let autzenTerminalVisualQuality;
   let millsiteTerminalVisualQuality;
   let browserGraphics;
+${createBrowserGpuRendererAssertionSource(browserGpu.rendererPattern)}
 
   async function readBrowserGraphics() {
     return page.evaluate(() => {
@@ -523,6 +595,7 @@ function createSmokeFlow(baseUrl) {
 
   await page.goto(${JSON.stringify(baseUrl)}, { waitUntil: "domcontentloaded" });
   browserGraphics = await readBrowserGraphics();
+  assertExpectedBrowserGpuRenderer(browserGraphics);
   await waitForInteractivePointCount(minDefaultInteractivePointCount);
   await check(
     async () =>
@@ -563,6 +636,11 @@ function createSmokeFlow(baseUrl) {
   typedRendererPayload = (await metadataValue("Renderer payload")) ?? "";
   typedPointGeometryTiming =
     (await metadataValue("Point geometry timing")) ?? "";
+  typedPointGeometryTimingData = await page.evaluate(
+    () =>
+      window.__copcBasicViewerBenchmark?.getStatus()
+        .pointGeometryTimingData,
+  );
   typedPointGeometryCache =
     (await metadataValue("Point geometry cache")) ?? "";
   await check(
@@ -575,11 +653,9 @@ function createSmokeFlow(baseUrl) {
   );
   await check(
     async () =>
-      typedPointGeometryTiming === "Not available" ||
-      (
-        typedPointGeometryTiming.includes("decode") &&
-        typedPointGeometryTiming.includes("worker") &&
-        typedPointGeometryTiming.includes("slowest")
+      hasExpectedPointGeometryTimingMetadata(
+        typedPointGeometryTiming,
+        typedPointGeometryTimingData,
       ),
     "Default point geometry timing metadata was not reported.",
   );
@@ -1127,6 +1203,7 @@ function createSmokeFlow(baseUrl) {
     typedRendererTiming,
     typedRendererPayload,
     typedPointGeometryTiming,
+    typedPointGeometryTimingData,
     typedPointGeometryCache,
     cameraStreamControllerSmoke,
     autzenOverviewStatus,
@@ -1134,6 +1211,8 @@ function createSmokeFlow(baseUrl) {
     autzenWheelZoomStatus,
     autzenTerminalVisualQuality,
     millsiteTerminalVisualQuality,
+    browserGpuProfile: ${JSON.stringify(browserGpu.profile)},
+    browserGpuConfigPath: ${JSON.stringify(playwrightConfigPath)},
     browserGraphics,
     ignoredConsoleWarnings,
     localFileRendererTiming,
@@ -1206,7 +1285,12 @@ try {
     "open",
     "about:blank",
   ]);
-  runPlaywrightCli(["run-code", "--filename", smokeFlowPath]);
+  const playwrightOutput = runPlaywrightCli([
+    "run-code",
+    "--filename",
+    smokeFlowPath,
+  ]);
+  const browserResult = parsePlaywrightResult(playwrightOutput);
 
   const completedRunEvidence = await createRunEvidence({ repoRoot });
   const sourceStateFailures = validateRunEvidenceSourceState(
@@ -1235,6 +1319,14 @@ try {
         generatedAt: new Date().toISOString(),
         status: "passed",
         mode: shouldRunLocalFileSmoke ? "url-and-local-file" : "url",
+        browser: {
+          gpuProfile: browserResult.browserGpuProfile,
+          gpuConfigPath: path
+            .relative(repoRoot, browserResult.browserGpuConfigPath)
+            .replaceAll("\\", "/"),
+          rendererPattern: browserGpu.rendererPattern ?? null,
+          graphics: browserResult.browserGraphics,
+        },
         runEvidence,
         screenshots,
       },

@@ -145,6 +145,21 @@ test("cold-detail waits for and gates the refined same-camera terminal", async (
   );
 });
 
+test("Playwright output buffering covers repeated smoothness evidence", async () => {
+  const benchmarkSource = await readFile(benchmarkScriptPath, "utf8");
+
+  assert.match(benchmarkSource, /maxBuffer: 64 \* 1024 \* 1024/);
+});
+
+test("smoothness benchmark can record an explicit headed hardware run", async () => {
+  const benchmarkSource = await readFile(benchmarkScriptPath, "utf8");
+
+  assert.match(benchmarkSource, /COPC_BROWSER_HEADED/);
+  assert.match(benchmarkSource, /browserIsHeaded:/);
+  assert.match(benchmarkSource, /browserGpuRendererPattern:/);
+  assert.match(benchmarkSource, /browserHeaded \? \["--headed"\] : \[\]/);
+});
+
 test("generated fallback parses the terminal additive camera-stream status", async () => {
   const flow = await createGeneratedFlow();
   const parseCameraStreamPointCount = extractGeneratedFunction(

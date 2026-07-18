@@ -24,6 +24,7 @@ import {
   createPointDifferenceMask,
 } from "./point-cloud-image-metrics.mjs";
 import { compareCameraPoseFingerprints } from "./quality-ab-equivalence.mjs";
+import { resolveBrowserGpuProfile } from "./browser-gpu-profile.mjs";
 import { resolveLocalPackageBinary } from "./resolve-local-package-binary.mjs";
 import { createRunEvidence } from "./run-evidence.mjs";
 
@@ -42,10 +43,15 @@ const playwrightCliPath = resolveLocalPackageBinary(
   "playwright-cli",
 );
 const viteCliPath = resolveLocalPackageBinary(repoRoot, "vite", "vite");
-const playwrightConfigPath = path.join(
+const basePlaywrightConfigPath = path.join(
   scriptDir,
   "playwright.eptium-comparison.json",
 );
+const browserGpu = await resolveBrowserGpuProfile({
+  baseConfigPath: basePlaywrightConfigPath,
+  outputRoot: path.join(repoRoot, "output"),
+});
+const playwrightConfigPath = browserGpu.configPath;
 const viewport = { width: 1600, height: 900 };
 const repeats = readPositiveIntegerArgument("--repeats", 2);
 const keepGeneratedFlow = process.argv.includes("--keep-generated-flow");
@@ -144,6 +150,8 @@ try {
     performanceMovement,
     repeats,
     capturePaths,
+    browserGpuProfile: browserGpu.profile,
+    browserGpuRendererPattern: browserGpu.rendererPattern,
   };
   await writeFile(
     flowPath,
@@ -245,6 +253,9 @@ try {
       orderControl: "AB/BA reverse order on alternating repeats",
       viewport,
       deviceScaleFactor: 1,
+      browserGpuProfile: browserGpu.profile,
+      browserGpuConfigPath: playwrightConfigPath,
+      browserGpuRendererPattern: browserGpu.rendererPattern ?? null,
       cameraPoseFingerprint: EPTIUM_AUTZEN_CAMERA_POSE_FINGERPRINT,
       captureMode:
         "stock visual output (EDL on) is preserved separately; geometry metrics use EDL off for both viewers, paired point-on/off subtraction, and all non-canvas overlays hidden",

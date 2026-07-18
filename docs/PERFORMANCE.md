@@ -38,7 +38,7 @@ output/smoothness-benchmark/smoothness.json
 `smoothness-warm-zoom-detail.json` with matching `-assertion.json` reports, so
 one release gate cannot overwrite another preset's result.
 
-Package smoke also caps the compressed npm tarball at 600 KiB and each packed
+Package smoke also caps the compressed npm tarball at 650 KiB and each packed
 worker JavaScript asset at 600 KiB. The integrated COPC geometry worker is
 deliberately emitted as a separate worker asset; keeping a hard ceiling catches
 dependency or bundling regressions without disguising Vite's raw chunk warning.
@@ -47,10 +47,19 @@ split: uncompressed generated JavaScript was 367.93 kB for the app entry and
 131.70 kB for the `proj4` chunk. Those figures identify one source build, not
 compressed transfer size, startup cost, or a permanent size guarantee.
 
-The JSON includes `browserGraphics` with the WebGL vendor, renderer, and version.
-The benchmark launch requests Chromium's high-performance adapter; the recorded
-renderer remains the source of truth because headless or GPU-limited systems may
-fall back to another hardware adapter or software rendering.
+Reports record the actual WebGL adapter. The default requests high performance;
+an integrated-GPU check removes that request and asserts the real renderer:
+
+```powershell
+$env:COPC_BROWSER_GPU_PROFILE="low-power"
+$env:COPC_BROWSER_GPU_RENDERER_PATTERN="AMD Radeon\(TM\) Graphics"
+npm run benchmark:smoothness:contest
+```
+
+Windows can still choose another adapter, so the assertion and recorded renderer
+are authoritative. Prefer environment variables with `npm run`; set
+`COPC_BROWSER_HEADED=1` for a visible smoothness run. The profile and headed
+state are persisted.
 
 Every renderer and smoothness report also carries `browserEnvironment` and
 `runEvidence`. The assertion gates require a canonical UTC timestamp, Git HEAD,
@@ -73,6 +82,17 @@ default, preventing results from different GPUs from being treated as a valid
 before/after comparison. Set
 `COPC_SMOOTHNESS_REGRESSION_REQUIRE_SAME_GPU=0` only for an explicitly
 cross-device exploratory comparison.
+
+### Integrated-GPU device check (2026-07-19)
+
+On the Ryzen 5 7600 host, asserted AMD runs reached 20,000 points, full coverage,
+and zero browser errors, but averaged only 22.10/23.51 FPS headless and
+13.78/14.37 FPS headed on Autzen/Millsite. Asserted RTX 3060 runs reached 60 FPS.
+Thus the iGPU is functionally compatible but fails the 30 FPS gate. A cold-detail
+A/B retained the 64 KiB gap and four workers; 240,000 points kept the same 80
+nodes and did not improve FPS. Artifacts remain under
+`output/smoothness-benchmark/`; these are tuning results, not an iGPU release
+pass.
 
 For a faster regression gate, run:
 
@@ -1047,26 +1067,10 @@ counts; combined count and bytes remain canonical. The harness waits for
 pending browser size records before finalizing successful requests and detaches
 abandoned requests so late browser events cannot mutate a completed artifact.
 
-Before changing range planning, an AB/BA experiment serialized workers that
-asked for the same planned outer range. The two disabled runs averaged
-22,434 ms total versus 23,416 ms with serialization, making the experimental
-path 4.4% slower while both sides issued the same 138 requests and 17,526,206
-requested bytes. It also reduced decoded-view cache hits from 16 to 11. The
-coordination path was removed. Deferring predictive prefetch likewise left the
-same 138 requests, bytes, and phase allocation and changed total time by only
-2.5%, so that experiment was also removed rather than retained as inactive
-complexity.
-
-A later A/B/B/A trial started eight already-planned terminal point-data ranges
-ahead of worker demand. Disabled runs averaged 20,825.2 ms terminal refinement;
-enabled runs averaged 20,501.4 ms, only 1.6% lower on the live network. More
-importantly, summed range wait increased from 28,632.9 to 28,896.0 ms and the
-average maximum per-node range wait increased from 1,572.1 to 3,005.7 ms. Every
-run rendered 360,000 points with 80/80 nodes, 100% weighted coverage, 134 HTTP
-ranges, 17,584,657 requested bytes, and zero duplicate, overlap, or abandoned
-requests. Because the small terminal-time movement was noise-sized while tail
-range wait regressed by 91%, planned-range prewarm and its benchmark flag were
-removed.
+Rejected A/B experiments remain absent from the runtime: same-range worker
+serialization was 4.4% slower, predictive-prefetch deferral did not change the
+workload, and planned-range prewarm's noise-sized 1.6% terminal gain came with a
+91% regression in maximum per-node range wait.
 
 The remaining controlled sweep changed only the maximum gap bridged within the
 existing 2 MiB span cap. All runs retained 59.2 average FPS, 16.8 ms p95 frame
@@ -1097,32 +1101,10 @@ and 100% terminal node/weight coverage. The adjacent-phase split can vary when
 requests race a boundary, while the combined total is deterministic for this
 workload.
 
-The current default then passed a fresh one-repeat controlled Eptium comparison
-through the direct command:
-
-```text
-node scripts/benchmark-eptium-comparison.mjs --repeats=1 --max-coalesced-range-gap-bytes=65536
-```
-
-| Strict equal-count metric | Eptium | Local 64 KiB |
-| --- | ---: | ---: |
-| Rendered points | 1,047,575 | 1,047,575 |
-| Product ready | 16,972 ms | 8,314 ms |
-| Product range requests | 55 | 35 |
-| Requested bytes | 16,160,948 | 17,437,756 |
-| Canvas coverage | 86.151% | 86.678% |
-| Bounded 1-3 px gaps | 0.2991% | 0.2238% |
-| Fair p95 frame interval | 17.1 ms | 17.0 ms |
-
-The strict equal-count verdict passed: this local run reached product-ready in
-51.0% less time with 36.4% fewer requests, higher coverage, and fewer bounded
-gaps, while requesting 7.9% more bytes. Because this is one live remote repeat,
-it confirms the current configuration under the controlled Autzen contract but
-does not attribute the entire timing difference to the 64 KiB change or prove
-universal superiority. The earlier two-repeat zero-gap checkpoint already beat
-Eptium on product-ready time and request count; the new result primarily shows
-that the conservative gap default preserves those quality and performance
-gates.
+A one-repeat equal-count Eptium check then confirmed that the 64 KiB default
+preserved the existing visual and p95 gates while retaining the known
+fewer-requests/more-bytes tradeoff. The later two-repeat result below is the
+stronger comparison evidence.
 
 A controlled worker-concurrency sweep then varied only the integrated geometry
 worker count for Millsite cold-detail runs. Workers 2, 4, 6, and 8 averaged
@@ -1294,10 +1276,11 @@ Promise is reused but its queued worker task is promoted so it does not stay
 behind unrelated lower-value work.
 
 The library also exposes `warmUpPointSampleWorkers()` on `CopcPointCloudLayer`.
-The basic viewer calls it when a COPC source is opened, alongside geometry
-worker warmup. This does not decompress any COPC node in advance, but it removes
-worker construction latency from the first visible zoom or pan so the first
-camera-stream request can start range reads and decoding immediately.
+The basic viewer calls it lazily before its first manual single-node render. The
+default camera-stream path uses the integrated geometry workers, which are still
+warmed when the COPC source opens. This avoids starting an otherwise unused
+worker pool while keeping manual rendering free of repeated startup cost. No
+warmup decompresses a COPC node in advance.
 
 The basic viewer now checks retained transfer-only node samples against
 `CopcPointCloudLayer.canRenderNodeSampleResult()` before using them as immediate

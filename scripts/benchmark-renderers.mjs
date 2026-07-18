@@ -3,6 +3,10 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  createBrowserGpuRendererAssertionSource,
+  resolveBrowserGpuProfile,
+} from "./browser-gpu-profile.mjs";
 import { createRunEvidence } from "./run-evidence.mjs";
 import { resolveLocalPackageBinary } from "./resolve-local-package-binary.mjs";
 
@@ -18,10 +22,15 @@ const outputRoot = path.join(repoRoot, "output");
 const benchmarkRoot = path.join(outputRoot, "renderer-benchmark");
 const benchmarkFlowPath = path.join(benchmarkRoot, "renderer-benchmark-flow.mjs");
 const benchmarkResultPath = path.join(benchmarkRoot, "renderers.json");
-const playwrightConfigPath = path.join(
+const basePlaywrightConfigPath = path.join(
   scriptDir,
   "playwright.high-performance-gpu.json",
 );
+const browserGpu = await resolveBrowserGpuProfile({
+  baseConfigPath: basePlaywrightConfigPath,
+  outputRoot,
+});
+const playwrightConfigPath = browserGpu.configPath;
 const isWindows = process.platform === "win32";
 const npmCommand = "npm";
 const benchmarkPointCount = readPositiveIntegerEnv(
@@ -242,6 +251,7 @@ function createBenchmarkFlow(baseUrl, targetPointCount, repeatCount) {
   const consoleProblems = [];
   const pageErrors = [];
   const results = [];
+${createBrowserGpuRendererAssertionSource(browserGpu.rendererPattern)}
 
   async function readBrowserGraphics() {
     return page.evaluate(() => {
@@ -423,10 +433,16 @@ function createBenchmarkFlow(baseUrl, targetPointCount, repeatCount) {
     throw new Error(failures.join("\\n"));
   }
 
+  const browserGraphics = await readBrowserGraphics();
+  assertExpectedBrowserGpuRenderer(browserGraphics);
+
   return {
     targetPointCount,
     repeatCount,
-    browserGraphics: await readBrowserGraphics(),
+    browserGpuProfile: ${JSON.stringify(browserGpu.profile)},
+    browserGpuConfigPath: ${JSON.stringify(playwrightConfigPath)},
+    browserGpuRendererPattern: ${JSON.stringify(browserGpu.rendererPattern ?? null)},
+    browserGraphics,
     browserEnvironment: await readBrowserEnvironment(),
     sourcePreset: await metadataValue("Source preset"),
     coordinateTransform: await metadataValue("Coordinate transform"),

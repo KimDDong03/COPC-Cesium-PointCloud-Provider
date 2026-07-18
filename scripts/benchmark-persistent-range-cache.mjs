@@ -3,6 +3,10 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  createBrowserGpuRendererAssertionSource,
+  resolveBrowserGpuProfile,
+} from "./browser-gpu-profile.mjs";
 import { createRunEvidence } from "./run-evidence.mjs";
 import { resolveLocalPackageBinary } from "./resolve-local-package-binary.mjs";
 
@@ -18,10 +22,15 @@ const playwrightCliPath = resolveLocalPackageBinary(
   "playwright-cli",
 );
 const viteCliPath = resolveLocalPackageBinary(repoRoot, "vite", "vite");
-const playwrightConfigPath = path.join(
+const basePlaywrightConfigPath = path.join(
   scriptDir,
   "playwright.high-performance-gpu.json",
 );
+const browserGpu = await resolveBrowserGpuProfile({
+  baseConfigPath: basePlaywrightConfigPath,
+  outputRoot: path.join(repoRoot, "output"),
+});
+const playwrightConfigPath = browserGpu.configPath;
 const isWindows = process.platform === "win32";
 const browserRunTimeoutMilliseconds = 300_000;
 
@@ -117,6 +126,7 @@ function createBrowserFlow(exampleUrl, sourceUrl) {
   const pageErrors = [];
   const phaseProgress = [];
   let scope = "startup";
+${createBrowserGpuRendererAssertionSource(browserGpu.rendererPattern)}
 
   page.on("request", (request) => {
     if (request.url() !== sourceUrl) return;
@@ -219,11 +229,17 @@ function createBrowserFlow(exampleUrl, sourceUrl) {
   });
   const repeat = await loadTerminalView("repeat");
   scope = "complete";
+  const browserGraphics = await readBrowserGraphics();
+  assertExpectedBrowserGpuRenderer(browserGraphics);
 
   return {
     exampleUrl,
     sourceUrl,
     benchmarkMode,
+    browserGpuProfile: ${JSON.stringify(browserGpu.profile)},
+    browserGpuConfigPath: ${JSON.stringify(playwrightConfigPath)},
+    browserGpuRendererPattern: ${JSON.stringify(browserGpu.rendererPattern ?? null)},
+    browserGraphics,
     phaseTimeoutMilliseconds,
     qualityGates,
     cacheClearEvidence,
@@ -260,6 +276,29 @@ function createBrowserFlow(exampleUrl, sourceUrl) {
     } finally {
       await session.detach();
     }
+  }
+
+  async function readBrowserGraphics() {
+    return page.evaluate(() => {
+      const canvas = document.createElement("canvas");
+      const context = canvas.getContext("webgl2") ?? canvas.getContext("webgl");
+
+      if (!context) {
+        throw new Error("WebGL is unavailable in the persistent range cache benchmark.");
+      }
+
+      const debugInfo = context.getExtension("WEBGL_debug_renderer_info");
+
+      return {
+        vendor: debugInfo
+          ? context.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL)
+          : context.getParameter(context.VENDOR),
+        renderer: debugInfo
+          ? context.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL)
+          : context.getParameter(context.RENDERER),
+        version: context.getParameter(context.VERSION),
+      };
+    });
   }
 
   async function loadTerminalView(nextScope) {

@@ -5,6 +5,10 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  createBrowserGpuRendererAssertionSource,
+  resolveBrowserGpuProfile,
+} from "./browser-gpu-profile.mjs";
 import { isExpectedNonFatalWebGlDriverWarning } from "./browser-console-policy.mjs";
 import { summarizeRecoveredHttpRangeResponses } from "./http-range-response-policy.mjs";
 import { resolveLocalPackageBinary } from "./resolve-local-package-binary.mjs";
@@ -31,10 +35,15 @@ const browserScreenshotPath = path.join(
   screenshotRoot,
   "smoke-package-consumer.png",
 );
-const playwrightConfigPath = path.join(
+const basePlaywrightConfigPath = path.join(
   scriptDir,
   "playwright.high-performance-gpu.json",
 );
+const browserGpu = await resolveBrowserGpuProfile({
+  baseConfigPath: basePlaywrightConfigPath,
+  outputRoot,
+});
+const playwrightConfigPath = browserGpu.configPath;
 const isWindows = process.platform === "win32";
 const npmCommand = "npm";
 // Keep total package growth bounded while allowing the required evidence docs
@@ -291,11 +300,35 @@ function createPackageBrowserFlow(baseUrl) {
   const pageErrors = [];
   const browserSourceRangeRequests = [];
   const isExpectedNonFatalWebGlDriverWarning = ${isExpectedNonFatalWebGlDriverWarning.toString()};
+${createBrowserGpuRendererAssertionSource(browserGpu.rendererPattern)}
 
   function recordFailure(condition, message) {
     if (!condition) {
       failures.push(message);
     }
+  }
+
+  async function readBrowserGraphics() {
+    return page.evaluate(() => {
+      const canvas = document.createElement("canvas");
+      const context = canvas.getContext("webgl2") ?? canvas.getContext("webgl");
+
+      if (!context) {
+        throw new Error("WebGL is unavailable in the package smoke test.");
+      }
+
+      const debugInfo = context.getExtension("WEBGL_debug_renderer_info");
+
+      return {
+        vendor: debugInfo
+          ? context.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL)
+          : context.getParameter(context.VENDOR),
+        renderer: debugInfo
+          ? context.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL)
+          : context.getParameter(context.RENDERER),
+        version: context.getParameter(context.VERSION),
+      };
+    });
   }
 
   page.on("console", (message) => {
@@ -693,10 +726,16 @@ function createPackageBrowserFlow(baseUrl) {
   if (pageErrors.length > 0) {
     failures.push("Page errors:\\n" + pageErrors.join("\\n"));
   }
+  const browserGraphics = await readBrowserGraphics();
+  assertExpectedBrowserGpuRenderer(browserGraphics);
 
   return {
     status: failures.length === 0 ? "passed" : "failed",
     failures,
+    browserGpuProfile: ${JSON.stringify(browserGpu.profile)},
+    browserGpuConfigPath: ${JSON.stringify(playwrightConfigPath)},
+    browserGpuRendererPattern: ${JSON.stringify(browserGpu.rendererPattern ?? null)},
+    browserGraphics,
     runtimeResult,
     canvasCount,
     visibleCanvasCount,
