@@ -53,7 +53,7 @@ jobs:
         run: npm audit
 
       - name: Run release QC
-        run: npm run qc
+        run: npm run qc:release
 
       - name: Upload QC classification diagnostics
         if: always()
@@ -66,6 +66,9 @@ jobs:
             output/live-copc-range/live-copc-range.json
             output/smoothness-benchmark/*.json
             output/renderer-benchmark/*.json
+            output/package-smoke/
+            output/example-smoke/
+            output/playwright/
 
       - name: Upload verified package and evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -81,7 +84,7 @@ jobs:
             output/qc/qc-status.json
             output/live-copc-range/live-copc-range.json
             output/renderer-benchmark/*.json
-            output/smoothness-benchmark/*.json
+            output/example-smoke/*.json
             output/playwright/smoke-example-autzen-stream.png
             output/playwright/smoke-example-millsite-stream.png
             output/playwright/smoke-example-final-verification.png

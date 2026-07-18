@@ -69,7 +69,7 @@ jobs:
         run: npm audit
 
       - name: Run release QC and create candidate
-        run: npm run qc
+        run: npm run qc:release
 
       - name: Upload reproduced QC classification diagnostics
         if: always()
@@ -80,6 +80,10 @@ jobs:
           path: |
             output/qc/qc-status.json
             output/live-copc-range/live-copc-range.json
+            output/renderer-benchmark/*.json
+            output/package-smoke/
+            output/example-smoke/
+            output/playwright/
 
       - name: Download approved release candidate
         shell: bash

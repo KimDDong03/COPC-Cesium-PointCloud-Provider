@@ -797,11 +797,23 @@ for (const requiredPath of [
   "docs/COMPETITION.md",
   "docs/DATASETS.md",
   "docs/PERFORMANCE.md",
+  "docs/RELEASE.md",
   "docs/sbom.spdx.json",
   "examples/minimal-layer.ts",
 ]) {
   if (!packedPaths.has(requiredPath)) {
     throw new Error(`Packed package is missing ${requiredPath}.`);
+  }
+}
+
+for (const repositoryOnlyPath of [
+  "docs/DEMO_SCRIPT_KO.md",
+  "docs/SUBMISSION_CHECKLIST_KO.md",
+]) {
+  if (packedPaths.has(repositoryOnlyPath)) {
+    throw new Error(
+      `Packed package contains repository-only submission material ${repositoryOnlyPath}.`,
+    );
   }
 }
 

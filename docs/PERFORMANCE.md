@@ -218,23 +218,25 @@ node scripts/smoothness-regression-qc.mjs --install-baseline-candidate "output/s
 The installer validates the candidate again before replacing the versioned
 baseline. Candidate creation and installation are not part of normal QC.
 `npm run qc:product` is the deterministic product group (tests, license/SBOM,
-build, and whitespace). `npm run qc:live-copc` is the separate live
+build, and whitespace). Hosted `qc:release` is functional-only and excludes
+smoothness; see [RELEASE.md](RELEASE.md). `npm run qc:live-copc` is the live
 external-source group and begins with `npm run live:copc-range`, which probes
 both documented samples and writes
 `output/live-copc-range/live-copc-range.json`. `npm run qc` remains the blocking
-combination of both groups and writes `output/qc/qc-status.json` so product
-failure, live source contract failure, external unavailability, and live
-benchmark failure are not conflated. The renderer benchmark belongs to the live
-group because its benchmark node is decoded from the remote Autzen sample. The
-cold-detail gate runs immediately after the range preflight, before the renderer
-and contest GPU workloads, so its cold-frame evidence is not contaminated by
-earlier benchmark processes in the same QC chain.
+combination with the unchanged live performance thresholds and writes
+`output/qc/qc-status.json` so product failure, live source contract failure,
+external unavailability, and live benchmark failure are not conflated. The
+renderer benchmark belongs to the live group because its benchmark node is
+decoded from the remote Autzen sample. The cold-detail gate runs immediately
+after the range preflight, before the renderer and contest GPU workloads, so
+its cold-frame evidence is not contaminated by earlier benchmark processes in
+the same QC chain.
 
 `npm run qc:contest-device` avoids a duplicate one-session warm run in the main
 QC chain and finishes with the three-session regression runner.
 An adapter mismatch is a failed comparison, not a performance regression or a
-pass. Use `npm run qc:contest-device` for the full release gate plus this
-same-device comparison on the approved workstation.
+pass. Use `npm run qc:contest-device` for the full release gate and approved
+RTX same-device comparison; those artifacts remain the performance authority.
 
 The contest QC preset uses the same gate but includes both Autzen and the
 Hobu-hosted COPC matching the public-domain USGS 3DEP Millsite collection at a

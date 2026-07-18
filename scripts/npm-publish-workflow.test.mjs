@@ -41,4 +41,9 @@ describe("npm publish workflow", () => {
       /npm publish "\$\{\{ steps\.candidate\.outputs\.tarball \}\}" --access public --provenance --ignore-scripts/,
     );
   });
+
+  test("reproduces the approved candidate with release functional QC", () => {
+    assert.match(workflow, /run: npm run qc:release/);
+    assert.doesNotMatch(workflow, /run: npm run qc$/m);
+  });
 });

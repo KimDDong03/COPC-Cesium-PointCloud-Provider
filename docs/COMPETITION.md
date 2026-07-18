@@ -99,8 +99,8 @@ load 성능이나 Eptium 대비 우위 근거로 사용하지 않는다.
 [공식 양식](https://api.osscontest.kr/static/uploads/46414fba-c473-4dae-b595-7214d635b494.zip)을
 사용한다. 참가 접수, 팀 정보, 지원 이력, 영상 업로드처럼 저장소 밖에서만
 완료할 수 있는 항목은 코드 완료와 별도로 관리해야 한다. 실행 순서는
-[출품 체크리스트](SUBMISSION_CHECKLIST_KO.md), 3분 구성은
-[시연 구성안](DEMO_SCRIPT_KO.md)에 고정한다.
+[출품 체크리스트](https://github.com/KimDDong03/COPC_VIEWER/blob/main/docs/SUBMISSION_CHECKLIST_KO.md),
+3분 구성은 [시연 구성안](https://github.com/KimDDong03/COPC_VIEWER/blob/main/docs/DEMO_SCRIPT_KO.md)에 고정한다.
 
 운영규정 제15조 제2항에 따라 대회 진행 중 동일 프로젝트로 다른 정부지원
 사업의 수상 또는 지원금 수혜 사실을 인지한 경우, 인지일로부터 7일 이내에
@@ -159,6 +159,9 @@ npm run qc:contest-device
 세션 기준선과 비교한다. 외부 호스트나 네트워크가 응답하지 않으면 제품
 회귀로 오인하지 않고 별도 분류 JSON과 종료 코드 2를 남기되, 최종 참가
 장비 게이트 자체는 계속 통과로 처리하지 않는다.
+
+GitHub `qc:release`는 기능 전용이며 SwiftShader 가능성 때문에 smoothness를
+제외한다. 성능 근거는 clean RTX `qc:contest-device` 매니페스트만 사용한다.
 
 최종 실행은 제출 커밋을 만든 뒤 변경 사항이 없는 깨끗한 Git worktree에서
 수행해야 한다. 명령의 마지막 단계는 `npm run evidence:contest`로 증거

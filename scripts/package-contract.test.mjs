@@ -45,6 +45,27 @@ describe("published package contract", () => {
     }
   });
 
+  test("packages consumer evidence without repository-only submission scripts", () => {
+    const publishedDocs = packageJson.files.filter((entry) =>
+      entry.startsWith("docs/"),
+    );
+
+    assert.deepEqual(publishedDocs, [
+      "docs/API.md",
+      "docs/ARCHITECTURE.md",
+      "docs/COMPETITION.md",
+      "docs/DATASETS.md",
+      "docs/PERFORMANCE.md",
+      "docs/RELEASE.md",
+      "docs/sbom.spdx.json",
+    ]);
+    assert.equal(publishedDocs.includes("docs/DEMO_SCRIPT_KO.md"), false);
+    assert.equal(
+      publishedDocs.includes("docs/SUBMISSION_CHECKLIST_KO.md"),
+      false,
+    );
+  });
+
   test("locks the browser QC CLI and runs only the local binary", () => {
     assert.equal(packageJson.devDependencies["@playwright/cli"], "0.1.17");
     assert.equal(

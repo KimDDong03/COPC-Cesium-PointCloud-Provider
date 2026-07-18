@@ -2,7 +2,10 @@ import { spawn } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { classifyLiveCopcExecutionFailure } from "./live-copc-range-check.mjs";
+import {
+  classifyQcStepFailure,
+  getQcFailureGuidance,
+} from "./qc-policy.mjs";
 import { createRunEvidence } from "./run-evidence.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -13,10 +16,19 @@ const npmCommand = "npm";
 const omitWarmZoomDetail = process.argv.includes("--omit-warm-zoom-detail");
 const productOnly = process.argv.includes("--product-only");
 const liveOnly = process.argv.includes("--live-only");
+const releaseFunctional = process.argv.includes("--release-functional");
 const listOnly = process.argv.includes("--list");
 
-if (productOnly && liveOnly) {
-  throw new Error("--product-only and --live-only cannot be used together.");
+const selectedModes = [
+  ["--product-only", productOnly],
+  ["--live-only", liveOnly],
+  ["--release-functional", releaseFunctional],
+]
+  .filter(([, selected]) => selected)
+  .map(([flag]) => flag);
+
+if (selectedModes.length > 1) {
+  throw new Error(`${selectedModes.join(" and ")} cannot be used together.`);
 }
 
 const productSteps = [
@@ -50,9 +62,21 @@ const liveEvidenceSteps = [
   ([label]) =>
     !omitWarmZoomDetail || label !== "Warm zoom camera-stream smoothness QC",
 );
+const releaseFunctionalLiveSteps = liveEvidenceSteps.filter(
+  ([label]) => !label.includes("camera-stream smoothness QC"),
+);
 const groups = [
   { id: "product", label: "Deterministic product gate", steps: productSteps },
-  { id: "live", label: "Live external COPC evidence", steps: liveEvidenceSteps },
+  {
+    id: "live",
+    label: "Live external COPC evidence",
+    steps: liveEvidenceSteps,
+  },
+  {
+    id: "release-functional",
+    label: "Hosted release functional evidence",
+    steps: releaseFunctionalLiveSteps,
+  },
 ].filter(({ id }) => {
   if (productOnly) {
     return id === "product";
@@ -62,6 +86,14 @@ const groups = [
     return id === "live";
   }
 
+  if (releaseFunctional) {
+    return id !== "live";
+  }
+
+  if (id === "release-functional") {
+    return false;
+  }
+
   return true;
 });
 
@@ -69,7 +101,7 @@ if (listOnly) {
   console.log(
     JSON.stringify(
       {
-        mode: productOnly ? "product-only" : liveOnly ? "live-only" : "full",
+        mode: getMode(),
         groups: groups.map(({ id, label, steps }) => ({
           id,
           label,
@@ -107,7 +139,7 @@ async function runQc() {
         continue;
       }
 
-      const classification = classifyStepFailure(group.id, label, result);
+      const classification = classifyQcStepFailure(group.id, label, result);
       const status =
         classification === "external-source-unavailable"
           ? "unavailable"
@@ -126,11 +158,7 @@ async function runQc() {
         [
           `QC ${status}: ${classification}.`,
           `Failed step: ${label}.`,
-          classification === "external-source-unavailable"
-            ? "The external COPC host or network was unavailable; deterministic product checks are reported separately and this is not a code-regression verdict."
-            : group.id === "live"
-              ? "The live source was reachable, so this remains a blocking live-evidence failure."
-              : "A deterministic product check failed.",
+          getQcFailureGuidance(group.id, classification),
           `Classification evidence: ${statusPath}`,
         ].join("\n"),
       );
@@ -144,7 +172,9 @@ async function runQc() {
     ? "product-gate-passed"
     : liveOnly
       ? "live-evidence-passed"
-      : "full-qc-passed";
+      : releaseFunctional
+        ? "release-functional-gate-passed"
+        : "full-qc-passed";
   await writeStatus({
     startedAt,
     status: "passed",
@@ -158,22 +188,10 @@ async function runQc() {
       ? "\nDeterministic product QC passed."
       : liveOnly
         ? "\nLive external COPC evidence passed."
-        : "\nQC passed: deterministic product gate and live external COPC evidence both passed.",
+        : releaseFunctional
+          ? "\nHosted release functional QC passed."
+          : "\nQC passed: deterministic product gate and live external COPC evidence both passed.",
   );
-}
-
-function classifyStepFailure(groupId, label, result) {
-  if (groupId === "product") {
-    return "product-regression";
-  }
-
-  if (label === "Live COPC HTTP Range evidence") {
-    return result.status === 2
-      ? "external-source-unavailable"
-      : "live-source-contract-failure";
-  }
-
-  return classifyLiveCopcExecutionFailure(result.output);
 }
 
 function run(command, args) {
@@ -234,11 +252,27 @@ async function writeStatus(fields) {
         schema: "copc-viewer.qc-status",
         schemaVersion: 1,
         generatedAt: new Date().toISOString(),
-        mode: productOnly ? "product-only" : liveOnly ? "live-only" : "full",
+        mode: getMode(),
         ...fields,
       },
       null,
       2,
     )}\n`,
   );
+}
+
+function getMode() {
+  if (productOnly) {
+    return "product-only";
+  }
+
+  if (liveOnly) {
+    return "live-only";
+  }
+
+  if (releaseFunctional) {
+    return "release-functional";
+  }
+
+  return "full";
 }

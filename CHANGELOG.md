@@ -10,7 +10,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Release browser benchmarks now apply the existing exact headless-Linux WebGL
   `ReadPixels` advisory policy while preserving every other console warning and
-  error as a blocking failure.
+  error as blocking; hosted QC omits device-only FPS gates.
+- The npm tarball keeps consumer and evidence documentation while leaving the
+  submission checklist and demo script in the repository only.
 
 ## [0.1.0] - 2026-07-19
 

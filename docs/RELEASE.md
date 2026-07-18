@@ -1,8 +1,8 @@
 # Release Procedure
 
-Releases are manual and intentional. The `Release Candidate` workflow produces
-evidence and a package candidate; it does not publish to npm or create a GitHub
-release. The separate `Publish npm Package` workflow is manual-only, requires
+Releases are manual and intentional. `Release Candidate` produces hosted
+functional evidence and a package candidate, not an npm or GitHub release.
+The separate `Publish npm Package` workflow is manual-only and requires
 the protected `npm` GitHub Environment, an existing matching version tag, and
 an explicit confirmation input.
 
@@ -40,7 +40,7 @@ WebGL renderer. Confirm each benchmark's machine-readable `runEvidence` records
 the expected UTC, commit SHA, clean/dirty state, source fingerprint, runtime,
 and browser version; a dirty candidate must be explained and rerun from the
 final clean commit before publication. Confirm the GitHub CI, browser smoke,
-and CodeQL runs for that same SHA.
+Release Candidate functional evidence, and CodeQL runs for that same SHA.
 Also confirm `output/package-smoke/browser-result.json` retains the same
 validated `runEvidence` together with the exact `releaseCandidateArtifact`
 tarball byte length and SHA-256; this is the source-to-candidate identity link.
@@ -52,19 +52,17 @@ rejects any artifact changed after manifest generation.
 
 ## 3. Stage a candidate
 
-Trigger `.github/workflows/release-candidate.yml` manually. Download the
-artifact and verify that it contains:
+Trigger `.github/workflows/release-candidate.yml` manually. Its functional-only
+`qc:release` omits smoothness because hosted Ubuntu may use SwiftShader. Verify:
 
 - the `.tgz` package candidate;
 - the adjacent `.tgz.sha256` checksum generated from that exact candidate;
-- renderer and smoothness JSON;
+- functional QC, live Range, renderer, and package-smoke JSON;
 - browser smoke screenshots;
 - `THIRD_PARTY_NOTICES.md` and `docs/sbom.spdx.json`.
 
-Install that exact tarball into a fresh consumer project before approval. Do
-not rebuild a different tarball for publication. Record the successful
-`Release Candidate` workflow run ID; the publish workflow requires it and
-rejects a run from any other workflow, commit, or conclusion.
+Install that tarball in a fresh consumer; do not rebuild or cite it as
+smoothness evidence. Publishing requires the successful same-workflow/SHA run ID.
 
 ## 4. Publish
 
@@ -83,7 +81,7 @@ Before publishing:
   environment and remove it immediately after trusted publishing is enabled;
 - manually dispatch `Publish npm Package` on the exact tag, set
   `confirm_publish`, and provide the approved Release Candidate run ID; the
-  workflow reruns release QC, downloads the approved same-SHA artifact,
+  workflow reruns `npm run qc:release`, downloads the approved same-SHA artifact,
   verifies its checksum, requires the locally reproduced tarball SHA to match,
   and publishes the downloaded approved tarball with npm provenance;
 - attach the approved candidate and checksums to the GitHub release;

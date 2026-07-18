@@ -266,6 +266,7 @@ npm run benchmark:smoothness:cache-reset
 npm run benchmark:smoothness:cold-reset
 npm run license:evidence:check
 npm run qc
+npm run qc:release
 npm run qc:contest-device
 npm run evidence:contest
 npm run evidence:contest:check
@@ -302,8 +303,9 @@ generated JavaScript was 367.93 kB for the app entry and 131.70 kB for the
 `proj4` chunk. These are source-snapshot build artifacts, not network-transfer
 or runtime-memory guarantees.
 `npm pack --dry-run` builds the library through `prepack` and inspects the
-package contents without publishing. `npm publish` additionally runs the full
-`prepublishOnly` QC gate before packaging; it is not part of normal builds.
+package contents without publishing. Direct `npm publish` runs the full
+`prepublishOnly` QC; the protected workflow runs `qc:release`, verifies the
+approved same-SHA tarball, and publishes it with lifecycle scripts disabled.
 `npm run smoke:example` builds the example, starts a temporary preview server, and verifies the CC BY 4.0 Autzen sample, the Hobu-hosted COPC matching the public-domain USGS 3DEP Millsite collection, and Custom URL + proj4 rendering in a browser. Run `npm run smoke:example:install-browser` once if Playwright reports that Chrome for Testing is missing.
 `npm run smoke:example:file` runs the same browser smoke flow, downloads the Autzen COPC sample into the ignored `output/local-copc-samples` cache, then verifies that the browser file input can load and render that local COPC file through the same layer API.
 `npm run smoke:package` first validates the generated license/SPDX evidence, then packs the local build, verifies required documentation and package/worker size budgets, and installs the exact tarball into a temporary consumer pinned to CesiumJS 1.140.0. The consumer passes strict Bundler and NodeNext declaration checks, builds with the documented Cesium Vite asset setup, then starts a real browser, creates `Viewer` and a package-imported layer, renders an Autzen node through the packaged worker path, and rejects console, page, worker, or missing-asset errors.
@@ -418,16 +420,16 @@ cannot be deduplicated against an earlier complete pass. These are
 machine-specific regression observations from a dirty source snapshot, not
 universal performance guarantees.
 `npm run license:evidence` regenerates [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and the [SPDX 2.3 SBOM](docs/sbom.spdx.json) from the lockfile and installed dependency manifests. `npm run license:evidence:check` is the read-only artifact gate. `npm run license:evidence:self-test` additionally proves that package/notice deletion, unreviewed licenses, unknown or duplicate packages, and broken relationship endpoints are rejected while platform-specific optional packages remain portable; CI and release QC use this stronger form.
-`npm run qc:product` runs the deterministic product gate: tests, license/SBOM evidence, build, and `git diff --check`. `npm run qc:live-copc` separately runs the strict live-range evidence, the latency-sensitive cold-detail camera-stream gate before other GPU workloads, the live Autzen renderer benchmark, contest/warm camera-stream QC, package smoke, remote browser smoke, and local-file browser smoke. `npm run qc` runs both groups sequentially and remains the blocking release command. Its machine-readable result is `output/qc/qc-status.json`; external host/network failure is reported as `external-source-unavailable` with exit code 2 instead of as a product regression. Keep the live checks sequential because the renderer and browser smoke commands rebuild the same `dist/example` output directory.
+`npm run qc:product` runs tests, license/SBOM evidence, build, and `git diff --check`. Hosted `qc:release` adds live Range, renderer, package, URL, and local-file functional checks but omits hardware smoothness because Ubuntu may use SwiftShader. `qc:live-copc` and `qc` retain the unchanged cold/contest/warm performance gates. All modes write `output/qc/qc-status.json`; external outages remain exit code 2.
 `npm run qc:contest-device` runs the full release chain without duplicating the one-session warm check, then performs the stricter three-fresh-session median regression gate. It finishes by running `npm run evidence:contest` and `npm run evidence:contest:check`, so the successful JSON reports, exact package tarball and checksum, browser-result contracts, screenshots, and fresh regression sessions are byte-for-byte bound into `output/contest-evidence/contest-evidence-manifest.json`. Run this final gate from a clean Git worktree: manifest generation intentionally rejects dirty source state. `npm run evidence:contest` can rebuild the manifest from an already complete clean-worktree evidence set, while the read-only `npm run evidence:contest:check` rejects missing, stale, changed, or source-mismatched artifacts. The current approved baseline targets the recorded RTX 3060 WebGL renderer and deliberately rejects incomparable adapters. The live range and unchanged absolute/relative performance assertions remain blocking; the new classification only states whether a verdict was actually possible.
 The strict range probe, installed-package consumer proof, and the same remote
 URL and local-file browser rendering smoke run in the separate GitHub Actions
 workflow `Live COPC Browser Evidence` for pushes, pull requests, and manual
 dispatches. The main `CI` workflow runs only `qc:product`, so an external COPC
 host outage cannot be reported as a deterministic product regression.
-The `Release Candidate` workflow runs the full QC gate for version tags or a
-manual dispatch, then uploads the verified package tarball, renderer and
-smoothness reports, and browser screenshots without publishing them to npm.
+The `Release Candidate` workflow runs `qc:release` and uploads the verified
+functional/package artifacts without publishing; they are not smoothness
+evidence. See [the release procedure](docs/RELEASE.md).
 
 The runnable reference viewer lives in `examples/basic-viewer`. The root `src` folder contains reusable COPC and Cesium integration code used by that example.
 Reusable source entry points are `src/index.ts`, `src/core/index.ts`, and `src/cesium/index.ts`; package exports expose built JS and type declarations as `copc-cesium`, `copc-cesium/core`, and `copc-cesium/cesium`.
@@ -707,10 +709,10 @@ In the basic viewer, custom URLs use WKT auto-detection when the Source CRS fiel
 - [Release Procedure](docs/RELEASE.md)
 - [Sample Data Provenance](docs/DATASETS.md)
 - [2026 Competition Evidence](docs/COMPETITION.md)
-- [KOSSA 2026 Submission Checklist](docs/SUBMISSION_CHECKLIST_KO.md)
-- [Three-Minute Demo Script](docs/DEMO_SCRIPT_KO.md)
+- [KOSSA 2026 Submission Checklist](https://github.com/KimDDong03/COPC_VIEWER/blob/main/docs/SUBMISSION_CHECKLIST_KO.md)
+- [Three-Minute Demo Script](https://github.com/KimDDong03/COPC_VIEWER/blob/main/docs/DEMO_SCRIPT_KO.md)
 - [Third-Party Notices](THIRD_PARTY_NOTICES.md)
-- [Contributing](CONTRIBUTING.md)
+- [Contributing](https://github.com/KimDDong03/COPC_VIEWER/blob/main/CONTRIBUTING.md)
 - [Security Policy](SECURITY.md)
 - [License](LICENSE)
 

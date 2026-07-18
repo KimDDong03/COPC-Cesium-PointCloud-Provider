@@ -49,11 +49,50 @@ test("contest-device omission removes only the duplicate warm live check", () =>
   assert.ok(plan.groups[0].steps.includes("Cold detail camera-stream smoothness QC"));
 });
 
+test("lists hosted release functional checks without smoothness gates", () => {
+  const result = runQc(["--release-functional", "--list"]);
+  const plan = JSON.parse(result.stdout);
+
+  assert.equal(result.status, 0);
+  assert.equal(plan.mode, "release-functional");
+  assert.deepEqual(plan.groups.map((group) => group.id), [
+    "product",
+    "release-functional",
+  ]);
+  assert.deepEqual(plan.groups[1].steps, [
+    "Live COPC HTTP Range evidence",
+    "Renderer benchmark",
+    "Package consumer smoke",
+    "Browser example smoke",
+    "Browser local-file smoke",
+  ]);
+  assert.ok(
+    plan.groups[1].steps.some((step) =>
+      step.includes("camera-stream smoothness QC"),
+    ) === false,
+  );
+});
+
 test("rejects contradictory QC modes", () => {
   const result = runQc(["--product-only", "--live-only", "--list"]);
 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /cannot be used together/);
+});
+
+test("rejects release functional combined with another QC mode", () => {
+  const result = runQc(["--release-functional", "--live-only", "--list"]);
+
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /--live-only and --release-functional cannot be used together/);
+});
+
+test("records release functional status classification", () => {
+  const qcScript = readFileSync(qcPath, "utf8");
+
+  assert.match(qcScript, /mode: getMode\(\)/);
+  assert.match(qcScript, /return "release-functional"/);
+  assert.match(qcScript, /"release-functional-gate-passed"/);
 });
 
 test("keeps the main CI deterministic and moves live package proof to the browser workflow", () => {
@@ -88,7 +127,7 @@ test("preserves classification evidence when release or publish QC cannot comple
   }
 });
 
-test("preserves release browser benchmark evidence when QC fails", () => {
+test("preserves release functional browser evidence when QC fails", () => {
   const workflow = readFileSync(
     path.join(repoRoot, ".github", "workflows", "release-candidate.yml"),
     "utf8",
@@ -104,6 +143,21 @@ test("preserves release browser benchmark evidence when QC fails", () => {
     /output\/smoothness-benchmark\/\*\.json/,
   );
   assert.match(diagnosticsStep, /output\/renderer-benchmark\/\*\.json/);
+  assert.match(diagnosticsStep, /output\/package-smoke\//);
+  assert.match(diagnosticsStep, /output\/example-smoke\//);
+  assert.match(diagnosticsStep, /output\/playwright\//);
+});
+
+test("release and publish reproduction workflows run functional release QC", () => {
+  for (const workflowName of ["release-candidate.yml", "npm-publish.yml"]) {
+    const workflow = readFileSync(
+      path.join(repoRoot, ".github", "workflows", workflowName),
+      "utf8",
+    );
+
+    assert.match(workflow, /run: npm run qc:release/);
+    assert.doesNotMatch(workflow, /run: npm run qc$/m);
+  }
 });
 
 function runQc(args) {
