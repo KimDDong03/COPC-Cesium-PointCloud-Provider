@@ -46,6 +46,10 @@ export interface CopcPointCloudQualitySettings
 export const DEFAULT_COPC_POINT_CLOUD_QUALITY_PRESET: CopcPointCloudQualityPreset =
   "balanced";
 
+// Keep contour contrast independent of point density. Stronger EDL at higher
+// presets exaggerates sub-pixel gaps in low-oblique views.
+const REFERENCE_VIEWER_EDL_STRENGTH = 1;
+
 export const COPC_POINT_CLOUD_QUALITY_SETTINGS: Readonly<
   Record<CopcPointCloudQualityPreset, CopcPointCloudQualitySettings>
 > = {
@@ -118,7 +122,7 @@ export const COPC_POINT_CLOUD_QUALITY_SETTINGS: Readonly<
     sceneFxaa: false,
     temporalLodSafeSwap: true,
     eyeDomeLighting: true,
-    eyeDomeLightingStrength: 1.4,
+    eyeDomeLightingStrength: REFERENCE_VIEWER_EDL_STRENGTH,
     eyeDomeLightingRadius: 0.8,
   },
   detail: {
@@ -154,7 +158,7 @@ export const COPC_POINT_CLOUD_QUALITY_SETTINGS: Readonly<
     sceneFxaa: false,
     temporalLodSafeSwap: true,
     eyeDomeLighting: true,
-    eyeDomeLightingStrength: 1.5,
+    eyeDomeLightingStrength: REFERENCE_VIEWER_EDL_STRENGTH,
     eyeDomeLightingRadius: 0.8,
   },
   ultra: {
@@ -190,7 +194,7 @@ export const COPC_POINT_CLOUD_QUALITY_SETTINGS: Readonly<
     sceneFxaa: false,
     temporalLodSafeSwap: true,
     eyeDomeLighting: true,
-    eyeDomeLightingStrength: 1.7,
+    eyeDomeLightingStrength: REFERENCE_VIEWER_EDL_STRENGTH,
     eyeDomeLightingRadius: 0.8,
   },
 };

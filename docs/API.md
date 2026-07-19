@@ -664,7 +664,9 @@ subject to the configured node, point, and compressed-byte budgets.
 The preview preset uses one geometry batch per primitive, a screen circle, no
 safety halo, no scene FXAA, and no EDL. Balanced, detail, and ultra use up to
 four geometry batches per primitive, ground ellipses, 1.25/1/1 CSS-pixel halos,
-no scene FXAA, and renderer-scoped EDL with strength 1.4/1.5/1.7 and radius 0.8.
+no scene FXAA, and renderer-scoped EDL with strength 1 and radius 0.8.
+The EDL strength stays constant across these presets so increasing point density
+does not also exaggerate sub-pixel contours in low-oblique views.
 
 `createCopcCameraStreamPrefetchSettings()` uses that same LOD target
 to increase background preparation density as the camera gets closer, while
@@ -1424,7 +1426,7 @@ new CopcPointCloudLayer(viewer.scene, {
       splatSafetyHaloPixels: 1,
       pointSplatShape: "ground-ellipse",
       eyeDomeLighting: true,
-      eyeDomeLightingStrength: 1.5,
+      eyeDomeLightingStrength: 1,
       eyeDomeLightingRadius: 0.8,
       maxGeometryBatchesPerPrimitive: 4,
     }),

@@ -8,6 +8,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Balanced, detail, and ultra keep renderer-scoped EDL at a consistent strength
+  of `1`, avoiding density-dependent contour exaggeration in low-oblique views.
+  The renderer quality A/B benchmark can now repeat that fixed low-oblique pose
+  with either normal appearance or an EDL-free geometry mask.
 - Public branding now uses **COPC Cesium PointCloud Provider** and the renamed
   `COPC-Cesium-PointCloud-Provider` repository and Pages URLs, while preserving
   `copc-cesium` as the npm package and import identifier.

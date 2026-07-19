@@ -79,6 +79,7 @@
     "benchmark:eptium-comparison": "node scripts/benchmark-eptium-comparison.mjs",
     "benchmark:persistent-range-cache": "node scripts/benchmark-persistent-range-cache.mjs",
     "benchmark:quality-ab": "node scripts/benchmark-quality-ab.mjs",
+    "benchmark:quality-oblique": "node scripts/benchmark-quality-ab.mjs --camera-pose low-oblique --comparison-mode edl --quality balanced --point-budget 720000 --max-points-per-node 180000",
     "benchmark:smoothness": "node scripts/benchmark-smoothness.mjs",
     "benchmark:smoothness:assert": "node scripts/assert-smoothness-benchmark.mjs",
     "benchmark:smoothness:regression": "node scripts/smoothness-regression-qc.mjs",

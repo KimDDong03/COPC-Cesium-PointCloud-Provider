@@ -24,8 +24,8 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..");
 const outputRoot = path.join(repoRoot, "output");
 const benchmarkRoot = path.join(outputRoot, "quality-ab");
-const flowPath = path.join(benchmarkRoot, "quality-ab-flow.mjs");
-const resultPath = path.join(benchmarkRoot, "quality-ab-result.json");
+const LOW_OBLIQUE_CAMERA_POSE_FINGERPRINT =
+  "-2505623.54836943|-3848204.87079724|4412348.74858553|0.492853545777256|0.756937895433018|0.429115840854446|-0.234144909048320|-0.359606126809559|0.903249464504564|0.838016434195380|-0.545644990830540|7.35367073530783e-14|1600.00000000000|900.000000000000|1600.00000000000|900.000000000000|1.00000000000000|1.04719755119660|1.77777777777778|0.100000000000000|10000000000.0000";
 const playwrightCliPath = resolveLocalPackageBinary(
   repoRoot,
   "@playwright/cli",
@@ -41,7 +41,6 @@ const browserGpu = await resolveBrowserGpuProfile({
   outputRoot,
 });
 const playwrightConfigPath = browserGpu.configPath;
-const variants = ["legacy", "enhanced"];
 const viewport = { width: 1600, height: 900 };
 const quality = readStringArgument("--quality", "detail");
 const pointBudget = readPositiveIntegerArgument("--point-budget", 720_000);
@@ -58,6 +57,71 @@ const cameraSteps = readPositiveIntegerArgument("--camera-steps", 12);
 const cameraDurationMilliseconds = readPositiveIntegerArgument(
   "--camera-duration-ms",
   1_200,
+);
+const cameraPoseMode = readEnumStringArgument("--camera-pose", "default", [
+  "default",
+  "low-oblique",
+]);
+const comparisonMode = readEnumStringArgument("--comparison-mode", "renderer", [
+  "renderer",
+  "edl",
+]);
+const geometryMaskMode = readBooleanArgument("--geometry-mask", false);
+if (comparisonMode === "edl" && cameraPoseMode !== "low-oblique") {
+  throw new Error("--comparison-mode edl requires --camera-pose low-oblique.");
+}
+if (comparisonMode === "edl" && geometryMaskMode) {
+  throw new Error(
+    "--geometry-mask is only valid with --comparison-mode renderer; edl mode captures geometry and appearance explicitly.",
+  );
+}
+const comparisonRoles =
+  comparisonMode === "edl"
+    ? [
+        {
+          role: "baseline",
+          variant: "geometry",
+          renderVariant: "enhanced",
+          geometryMask: true,
+        },
+        {
+          role: "candidate",
+          variant: "appearance",
+          renderVariant: "enhanced",
+          geometryMask: false,
+        },
+      ]
+    : [
+        {
+          role: "baseline",
+          variant: "legacy",
+          renderVariant: "legacy",
+          geometryMask: geometryMaskMode,
+        },
+        {
+          role: "candidate",
+          variant: "enhanced",
+          renderVariant: "enhanced",
+          geometryMask: geometryMaskMode,
+        },
+      ];
+const variants = comparisonRoles.map((role) => role.variant);
+const artifactNameParts = [
+  cameraPoseMode === "low-oblique" ? "low-oblique" : undefined,
+  comparisonMode === "renderer" && geometryMaskMode
+    ? "geometry-mask"
+    : undefined,
+].filter(Boolean);
+const artifactSuffix =
+  artifactNameParts.length === 0 ? "" : `-${artifactNameParts.join("-")}`;
+const artifactBaseName = comparisonMode === "edl" ? "quality-edl" : "quality-ab";
+const flowPath = path.join(
+  benchmarkRoot,
+  `${artifactBaseName}-flow${artifactSuffix}.mjs`,
+);
+const resultPath = path.join(
+  benchmarkRoot,
+  `${artifactBaseName}-result${artifactSuffix}.json`,
 );
 const isWindows = process.platform === "win32";
 const runEvidence = await createRunEvidence({ repoRoot });
@@ -106,7 +170,7 @@ try {
   );
 
   console.log(
-    `Running strict renderer-only A/B: ${quality}, ${pointBudget.toLocaleString()} points, ${viewport.width}x${viewport.height}@1...`,
+    `Running strict ${comparisonMode} quality A/B: ${quality}, ${pointBudget.toLocaleString()} points, ${viewport.width}x${viewport.height}@1...`,
   );
   runPlaywrightCli([
     "--config",
@@ -123,6 +187,7 @@ try {
   }
 
   const comparison = createComparison(analyzedCaptures, {
+    comparisonMode,
     consoleProblems: browserResult.consoleProblems,
     pageErrors: browserResult.pageErrors,
   });
@@ -131,7 +196,8 @@ try {
     schemaVersion: 1,
     generatedAt: new Date().toISOString(),
     configuration: {
-      comparisonMode: "renderer-only",
+      comparisonMode:
+        comparisonMode === "renderer" ? "renderer-only" : comparisonMode,
       quality,
       pointBudget,
       maxPointCountPerNode,
@@ -145,6 +211,19 @@ try {
       browserGpuProfile: browserGpu.profile,
       browserGpuConfigPath: playwrightConfigPath,
       browserGpuRendererPattern: browserGpu.rendererPattern ?? null,
+      ...(comparisonMode === "renderer" && artifactNameParts.length === 0
+        ? {}
+        : {
+            comparisonRoles,
+            cameraPoseMode,
+            geometryMaskMode,
+            fixedCameraPoseFingerprint:
+              cameraPoseMode === "low-oblique"
+                ? LOW_OBLIQUE_CAMERA_POSE_FINGERPRINT
+                : null,
+            artifactSuffix,
+            artifactBaseName,
+          }),
     },
     environment: {
       browserGraphics: browserResult.browserGraphics,
@@ -162,7 +241,7 @@ try {
 
   await writeFile(resultPath, `${JSON.stringify(report, null, 2)}\n`);
   printComparison(comparison);
-  console.log(`Renderer quality A/B result: ${resultPath}`);
+  console.log(`Quality A/B result: ${resultPath}`);
 
   if (comparison.verdict !== "passed") {
     throw new Error(
@@ -183,16 +262,29 @@ try {
 
 function createCapturePlan() {
   const captures = [];
+  const idModeSuffix =
+    artifactNameParts.length === 0 ? "" : `-${artifactNameParts.join("-")}`;
 
   for (let repeat = 1; repeat <= repeats; repeat += 1) {
-    const orderedVariants = repeat % 2 === 1 ? variants : [...variants].reverse();
+    const orderedRoles =
+      repeat % 2 === 1
+        ? comparisonRoles
+        : [...comparisonRoles].reverse();
 
-    for (const variant of orderedVariants) {
-      const id = `autzen-${quality}-r${repeat}-${variant}`;
+    for (const definition of orderedRoles) {
+      const variant = definition.variant;
+      const id = `autzen-${quality}${idModeSuffix}-r${repeat}-${variant}`;
       captures.push({
         id,
         repeat,
         variant,
+        ...(comparisonMode === "edl"
+          ? {
+              role: definition.role,
+              renderVariant: definition.renderVariant,
+              geometryMask: definition.geometryMask,
+            }
+          : {}),
         pointImagePath: path.join(benchmarkRoot, `${id}-points.png`),
         backgroundImagePath: path.join(
           benchmarkRoot,
@@ -209,6 +301,11 @@ function createCapturePlan() {
 function createQualityAbFlow({ baseUrl, captures }) {
   return `async (page) => {
   const captures = ${JSON.stringify(captures)};
+  const cameraPoseMode = ${JSON.stringify(cameraPoseMode)};
+  const rendererGeometryMaskMode = ${JSON.stringify(geometryMaskMode)};
+  const lowObliqueCameraPoseFingerprint = ${JSON.stringify(
+    LOW_OBLIQUE_CAMERA_POSE_FINGERPRINT,
+  )};
   const consoleProblems = [];
   const pageErrors = [];
   const results = [];
@@ -281,6 +378,34 @@ ${createBrowserGpuRendererAssertionSource(browserGpu.rendererPattern)}
   }
 
   async function moveAndMeasure() {
+    if (cameraPoseMode === "low-oblique") {
+      return page.evaluate(async (options) => {
+        const benchmark = window.__copcBasicViewerBenchmark;
+        if (!benchmark) {
+          throw new Error("Basic viewer benchmark API was not installed.");
+        }
+        const isolatedScene =
+          benchmark.isolateSceneForVisualBenchmark();
+        await benchmark.setCameraPoseForVisualBenchmark(
+          options.cameraPoseFingerprint,
+        );
+        const measurement =
+          await benchmark.measurePostRenderForVisualBenchmark({
+            steps: options.steps,
+            durationMilliseconds: options.durationMilliseconds,
+            moveMeters: options.moveMeters,
+          });
+        await benchmark.setCameraPoseForVisualBenchmark(
+          options.cameraPoseFingerprint,
+        );
+        return { ...measurement, isolatedScene };
+      }, {
+        steps: ${JSON.stringify(cameraSteps)},
+        durationMilliseconds: ${JSON.stringify(cameraDurationMilliseconds)},
+        moveMeters: 1,
+        cameraPoseFingerprint: lowObliqueCameraPoseFingerprint,
+      });
+    }
     return page.evaluate(async (options) => {
       const benchmark = window.__copcBasicViewerBenchmark;
       if (!benchmark) {
@@ -343,7 +468,10 @@ ${createBrowserGpuRendererAssertionSource(browserGpu.rendererPattern)}
   for (const capture of captures) {
     const url =
       ${JSON.stringify(`${baseUrl}/?quality=${encodeURIComponent(quality)}&renderer=typed&visualBenchmark=1&cameraStreamMaxPoints=${pointBudget}&maxPointCountPerNode=${maxPointCountPerNode}&renderVariant=`)} +
-      capture.variant;
+      (capture.renderVariant ?? capture.variant) +
+      ((capture.geometryMask ?? rendererGeometryMaskMode)
+        ? "&geometryMaskBenchmark=1"
+        : "");
     await page.goto(url, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(
       () => window.__copcBasicViewerBenchmark !== undefined,
@@ -377,6 +505,7 @@ ${createBrowserGpuRendererAssertionSource(browserGpu.rendererPattern)}
       status,
       movementStatus: movement.status,
       performance: movement.performance,
+      isolatedScene: movement.isolatedScene,
       clearedRevision,
     });
   }
@@ -425,11 +554,18 @@ async function analyzeCapture(capture) {
 }
 
 function createComparison(captures, diagnostics = {}) {
+  const comparisonMode = diagnostics.comparisonMode ?? "renderer";
+  const baselineLabel = comparisonMode === "edl" ? "geometry" : "legacy";
+  const candidateLabel = comparisonMode === "edl" ? "appearance" : "enhanced";
   const baselineCaptures = captures.filter(
-    (capture) => capture.variant === "legacy",
+    (capture) =>
+      capture.role === "baseline" ||
+      (capture.role === undefined && capture.variant === baselineLabel),
   );
   const candidateCaptures = captures.filter(
-    (capture) => capture.variant === "enhanced",
+    (capture) =>
+      capture.role === "candidate" ||
+      (capture.role === undefined && capture.variant === candidateLabel),
   );
   const failures = [];
   for (const problem of diagnostics.consoleProblems ?? []) {
@@ -446,7 +582,7 @@ function createComparison(captures, diagnostics = {}) {
     baselineCaptures.length !== repeats
   ) {
     failures.push(
-      `capture count equivalence (legacy ${baselineCaptures.length}, enhanced ${candidateCaptures.length}, expected ${repeats})`,
+      `capture count equivalence (${baselineLabel} ${baselineCaptures.length}, ${candidateLabel} ${candidateCaptures.length}, expected ${repeats})`,
     );
   }
 
@@ -551,41 +687,75 @@ function createComparison(captures, diagnostics = {}) {
           )
         : 1,
   };
-  const gates = {
-    coverageImproved: coverageRatio >= 1.05,
-    boundedGapsReduced:
-      baseline.visual.boundedGapRatio === 0
-        ? candidate.visual.boundedGapRatio === 0
-        : boundedGapRatio <= 0.95,
-    isolatedPixelsNotWorse: isolatedRatio <= 1.05,
-    edgeComplexityReduced: edgeRatio <= 0.95,
-    baselineShapeRetained:
-      shapeSupport.length === repeats &&
-      shapeSupportSummary.minimumBaselineForegroundRetentionRatio >= 0.95,
-    candidateExpansionWithinSupport:
-      shapeSupport.length === repeats &&
-      shapeSupportSummary.maximumUnsupportedCandidateForegroundRatio <= 0.001,
-    largeVoidsPreserved:
-      shapeSupport.length === repeats &&
-      shapeSupportSummary.maximumLargeVoidIntrusionRatio <= 0.001,
-    p95FrameTimeWithinBudget:
-      candidate.performance.p95FrameMilliseconds <=
-      Math.max(
-        baseline.performance.p95FrameMilliseconds * 1.25,
-        baseline.performance.p95FrameMilliseconds + 2,
-      ),
-  };
+  const p95FrameTimeWithinBudget =
+    candidate.performance.p95FrameMilliseconds <=
+    Math.max(
+      baseline.performance.p95FrameMilliseconds * 1.25,
+      baseline.performance.p95FrameMilliseconds + 2,
+    );
+  const gates =
+    comparisonMode === "edl"
+      ? {
+          geometryForegroundRetained:
+            shapeSupport.length === repeats &&
+            shapeSupportSummary.minimumBaselineForegroundRetentionRatio >= 0.95,
+          unsupportedExpansionWithinSupport:
+            shapeSupport.length === repeats &&
+            shapeSupportSummary.maximumUnsupportedCandidateForegroundRatio <=
+              0.001,
+          largeVoidIntrusionLimited:
+            shapeSupport.length === repeats &&
+            shapeSupportSummary.maximumLargeVoidIntrusionRatio <= 0.001,
+          appearanceCanvasCoverageRetained:
+            candidate.visual.canvasCoverageRatio >=
+            baseline.visual.canvasCoverageRatio * 0.95,
+          boundedGapsWithinBudget:
+            candidate.visual.boundedGapRatio <=
+            baseline.visual.boundedGapRatio + 0.035,
+          edgeComplexityWithinBudget:
+            candidate.visual.edgePerimeterPerForegroundPixel <=
+            baseline.visual.edgePerimeterPerForegroundPixel + 0.1,
+          p95FrameTimeWithinBudget,
+        }
+      : {
+          coverageImproved: coverageRatio >= 1.05,
+          boundedGapsReduced:
+            baseline.visual.boundedGapRatio === 0
+              ? candidate.visual.boundedGapRatio === 0
+              : boundedGapRatio <= 0.95,
+          isolatedPixelsNotWorse: isolatedRatio <= 1.05,
+          edgeComplexityReduced: edgeRatio <= 0.95,
+          baselineShapeRetained:
+            shapeSupport.length === repeats &&
+            shapeSupportSummary.minimumBaselineForegroundRetentionRatio >= 0.95,
+          candidateExpansionWithinSupport:
+            shapeSupport.length === repeats &&
+            shapeSupportSummary.maximumUnsupportedCandidateForegroundRatio <=
+              0.001,
+          largeVoidsPreserved:
+            shapeSupport.length === repeats &&
+            shapeSupportSummary.maximumLargeVoidIntrusionRatio <= 0.001,
+          p95FrameTimeWithinBudget,
+        };
   const equivalent = failures.length === 0;
   const qualityGatePassed =
-    gates.coverageImproved &&
-    gates.boundedGapsReduced &&
-    gates.isolatedPixelsNotWorse &&
-    gates.edgeComplexityReduced &&
-    gates.baselineShapeRetained &&
-    gates.candidateExpansionWithinSupport &&
-    gates.largeVoidsPreserved;
+    comparisonMode === "edl"
+      ? gates.geometryForegroundRetained &&
+        gates.unsupportedExpansionWithinSupport &&
+        gates.largeVoidIntrusionLimited &&
+        gates.appearanceCanvasCoverageRetained &&
+        gates.boundedGapsWithinBudget &&
+        gates.edgeComplexityWithinBudget
+      : gates.coverageImproved &&
+        gates.boundedGapsReduced &&
+        gates.isolatedPixelsNotWorse &&
+        gates.edgeComplexityReduced &&
+        gates.baselineShapeRetained &&
+        gates.candidateExpansionWithinSupport &&
+        gates.largeVoidsPreserved;
 
   return {
+    ...(comparisonMode === "edl" ? { comparisonMode } : {}),
     baseline,
     candidate,
     deltas: {
@@ -805,6 +975,38 @@ function readStringArgument(name, fallback) {
     argument.startsWith(inlinePrefix),
   );
   return inlineArgument?.slice(inlinePrefix.length) || fallback;
+}
+
+function readEnumStringArgument(name, fallback, allowedValues) {
+  const value = readStringArgument(name, fallback);
+  if (!allowedValues.includes(value)) {
+    throw new Error(
+      `${name} must be one of: ${allowedValues.join(", ")}.`,
+    );
+  }
+  return value;
+}
+
+function readBooleanArgument(name, fallback) {
+  const inlinePrefix = `${name}=`;
+  const inlineArgument = process.argv.find((argument) =>
+    argument.startsWith(inlinePrefix),
+  );
+  if (inlineArgument) {
+    const value = inlineArgument.slice(inlinePrefix.length);
+    if (value === "true" || value === "1") return true;
+    if (value === "false" || value === "0") return false;
+    throw new Error(`${name} must be a boolean.`);
+  }
+  const index = process.argv.indexOf(name);
+  if (index === -1) return fallback;
+  const nextValue = process.argv[index + 1];
+  if (nextValue === "true" || nextValue === "1") return true;
+  if (nextValue === "false" || nextValue === "0") return false;
+  if (nextValue?.startsWith("--")) return true;
+  return nextValue === undefined ? true : (() => {
+    throw new Error(`${name} must be a boolean.`);
+  })();
 }
 
 function readPositiveIntegerArgument(name, fallback) {

@@ -82,6 +82,15 @@ describe("createCopcPointCloudQualitySettings", () => {
     ).toBe(true);
   });
 
+  it("keeps EDL contrast bounded and consistent across EDL-enabled presets", () => {
+    const strengths = (["balanced", "detail", "ultra"] as const).map(
+      (preset) =>
+        COPC_POINT_CLOUD_QUALITY_SETTINGS[preset].eyeDomeLightingStrength,
+    );
+
+    expect(strengths).toEqual([1, 1, 1]);
+  });
+
   it("returns a copy so callers can override locally", () => {
     const quality = createCopcPointCloudQualitySettings("preview");
     const mutableQuality = quality as {
