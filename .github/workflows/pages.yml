@@ -43,12 +43,12 @@ jobs:
 
       - name: Build public demo
         env:
-          COPC_VIEWER_PUBLIC_BASE: ${{ steps.pages.outputs.base_path }}/
+          COPC_PUBLIC_BASE: ${{ steps.pages.outputs.base_path }}/
         run: npm run build:example
 
       - name: Verify public demo asset paths
         env:
-          COPC_VIEWER_PUBLIC_BASE: ${{ steps.pages.outputs.base_path }}/
+          COPC_PUBLIC_BASE: ${{ steps.pages.outputs.base_path }}/
         run: npm run verify:pages
 
       - name: Upload GitHub Pages artifact

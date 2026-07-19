@@ -75,7 +75,7 @@ Before publishing:
 - create an annotated Git tag that exactly matches the package version;
 - configure the GitHub `npm` Environment with required reviewers;
 - configure npm trusted publishing for repository
-  `KimDDong03/COPC_VIEWER`, workflow `npm-publish.yml`, and environment `npm`;
+  `KimDDong03/COPC-Cesium-PointCloud-Provider`, workflow `npm-publish.yml`, and environment `npm`;
 - for the first publication only, when trusted publishing cannot yet be bound
   to the new package, place a short-lived granular `NPM_TOKEN` in that protected
   environment and remove it immediately after trusted publishing is enabled;

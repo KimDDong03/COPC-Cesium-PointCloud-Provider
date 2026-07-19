@@ -1,6 +1,7 @@
 # Architecture
 
-`copc-cesium` is a pre-1.0 TypeScript library for loading COPC point cloud data directly into CesiumJS.
+**COPC Cesium PointCloud Provider** is a pre-1.0 TypeScript library distributed
+as `copc-cesium` for loading COPC point cloud data directly into CesiumJS.
 
 The library is intentionally not a standalone viewer product. The example app exists to prove and demonstrate the reusable API.
 

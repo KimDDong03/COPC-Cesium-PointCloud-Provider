@@ -1,13 +1,16 @@
-# copc-cesium
+# COPC Cesium PointCloud Provider
 
-[![CI](https://github.com/KimDDong03/COPC_VIEWER/actions/workflows/ci.yml/badge.svg)](https://github.com/KimDDong03/COPC_VIEWER/actions/workflows/ci.yml)
-[![Live COPC Browser Evidence](https://github.com/KimDDong03/COPC_VIEWER/actions/workflows/example-smoke.yml/badge.svg)](https://github.com/KimDDong03/COPC_VIEWER/actions/workflows/example-smoke.yml)
-[![GitHub Pages](https://github.com/KimDDong03/COPC_VIEWER/actions/workflows/pages.yml/badge.svg)](https://github.com/KimDDong03/COPC_VIEWER/actions/workflows/pages.yml)
+[![CI](https://github.com/KimDDong03/COPC-Cesium-PointCloud-Provider/actions/workflows/ci.yml/badge.svg)](https://github.com/KimDDong03/COPC-Cesium-PointCloud-Provider/actions/workflows/ci.yml)
+[![Live COPC Browser Evidence](https://github.com/KimDDong03/COPC-Cesium-PointCloud-Provider/actions/workflows/example-smoke.yml/badge.svg)](https://github.com/KimDDong03/COPC-Cesium-PointCloud-Provider/actions/workflows/example-smoke.yml)
+[![GitHub Pages](https://github.com/KimDDong03/COPC-Cesium-PointCloud-Provider/actions/workflows/pages.yml/badge.svg)](https://github.com/KimDDong03/COPC-Cesium-PointCloud-Provider/actions/workflows/pages.yml)
 
 CesiumJS-native COPC point-cloud streaming and visualization for browser
 applications.
 
-**Live demo:** <https://kimddong03.github.io/COPC_VIEWER/>
+**Live demo:** <https://kimddong03.github.io/COPC-Cesium-PointCloud-Provider/>
+
+The project is submitted as **COPC Cesium PointCloud Provider**. The npm package
+name and JavaScript import identifier remain `copc-cesium`.
 
 `copc-cesium` reads existing COPC data directly from a URL, `File`, or `Blob`,
 selects the hierarchy nodes needed for the current camera, decodes them in the
@@ -43,8 +46,8 @@ is not a runtime dependency or performance claim.
 
 ## Try the Demo
 
-Use the [public viewer](https://kimddong03.github.io/COPC_VIEWER/) or run it
-locally with Node.js 22:
+Use the [public viewer](https://kimddong03.github.io/COPC-Cesium-PointCloud-Provider/)
+or run it locally with Node.js 22:
 
 ```bash
 npm ci
@@ -202,17 +205,17 @@ browser and package smoke tests, renderer measurements, smoothness checks, and
 a same-device regression comparison. Performance evidence records the actual
 GPU, browser, source state, and commit fingerprint; it is not a universal FPS
 guarantee. See the repository-only
-[performance methodology](https://github.com/KimDDong03/COPC_VIEWER/blob/main/docs/PERFORMANCE.md).
+[performance methodology](https://github.com/KimDDong03/COPC-Cesium-PointCloud-Provider/blob/main/docs/PERFORMANCE.md).
 
 ## Documentation
 
 - [API reference](docs/API.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Sample data provenance](docs/DATASETS.md)
-- [Performance methodology](https://github.com/KimDDong03/COPC_VIEWER/blob/main/docs/PERFORMANCE.md) (repository-only)
-- [Gaia3D competition evidence map](https://github.com/KimDDong03/COPC_VIEWER/blob/main/docs/COMPETITION.md) (repository-only)
-- [Release procedure](https://github.com/KimDDong03/COPC_VIEWER/blob/main/docs/RELEASE.md) (repository-only)
-- [Contributing](https://github.com/KimDDong03/COPC_VIEWER/blob/main/CONTRIBUTING.md)
+- [Performance methodology](https://github.com/KimDDong03/COPC-Cesium-PointCloud-Provider/blob/main/docs/PERFORMANCE.md) (repository-only)
+- [Gaia3D competition evidence map](https://github.com/KimDDong03/COPC-Cesium-PointCloud-Provider/blob/main/docs/COMPETITION.md) (repository-only)
+- [Release procedure](https://github.com/KimDDong03/COPC-Cesium-PointCloud-Provider/blob/main/docs/RELEASE.md) (repository-only)
+- [Contributing](https://github.com/KimDDong03/COPC-Cesium-PointCloud-Provider/blob/main/CONTRIBUTING.md)
 - [Security policy](SECURITY.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)
 - [SPDX SBOM](docs/sbom.spdx.json)

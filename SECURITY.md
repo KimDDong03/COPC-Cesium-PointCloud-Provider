@@ -2,7 +2,8 @@
 
 ## Supported Versions
 
-`copc-cesium` is currently a pre-1.0 project. Until the first tagged release,
+**COPC Cesium PointCloud Provider** (`copc-cesium`) is currently a pre-1.0
+project. Until the first tagged release,
 security fixes target the current `main` branch. After publishing begins, fixes
 are provided for the latest released `0.x` version only.
 
@@ -18,11 +19,11 @@ already have been fixed.
 ## Reporting a Vulnerability
 
 Do not open a public issue for a suspected vulnerability. Report it privately
-through the repository's [GitHub security advisory form](https://github.com/KimDDong03/COPC_VIEWER/security/advisories/new).
+through the repository's [GitHub security advisory form](https://github.com/KimDDong03/COPC-Cesium-PointCloud-Provider/security/advisories/new).
 
 If that form is unavailable, private vulnerability reporting has not yet been
 enabled. Do not disclose technical details publicly. Open only a non-sensitive
-[private-channel request](https://github.com/KimDDong03/COPC_VIEWER/issues/new?template=security_channel_request.yml)
+[private-channel request](https://github.com/KimDDong03/COPC-Cesium-PointCloud-Provider/issues/new?template=security_channel_request.yml)
 asking the maintainer to enable a private reporting channel, then wait for that
 channel before sharing the report. The request form deliberately forbids all
 technical vulnerability details.

@@ -1,15 +1,16 @@
-export const DEFAULT_COPC_VIEWER_PUBLIC_BASE = "/";
+export const DEFAULT_COPC_PUBLIC_BASE = "/";
 
 /**
  * Normalize the deployment base used by the example Vite build.
  *
  * The value is deliberately limited to an absolute URL pathname. This keeps
  * local and CI builds on `/` while allowing a Pages build such as
- * `/COPC_VIEWER/` without accepting origins, query strings, or traversal.
+ * `/COPC-Cesium-PointCloud-Provider/` without accepting origins, query strings,
+ * or traversal.
  */
-export function normalizeCopcViewerPublicBase(value) {
+export function normalizeCopcPublicBase(value) {
   if (value === undefined || value.trim().length === 0) {
-    return DEFAULT_COPC_VIEWER_PUBLIC_BASE;
+    return DEFAULT_COPC_PUBLIC_BASE;
   }
 
   const base = value.trim();
@@ -23,7 +24,7 @@ export function normalizeCopcViewerPublicBase(value) {
     base.includes("#")
   ) {
     throw new Error(
-      "COPC_VIEWER_PUBLIC_BASE must be an absolute pathname that starts and ends with '/'.",
+      "COPC_PUBLIC_BASE must be an absolute pathname that starts and ends with '/'.",
     );
   }
 
@@ -38,13 +39,13 @@ export function normalizeCopcViewerPublicBase(value) {
     )
   ) {
     throw new Error(
-      "COPC_VIEWER_PUBLIC_BASE contains an unsupported or unsafe path segment.",
+      "COPC_PUBLIC_BASE contains an unsupported or unsafe path segment.",
     );
   }
 
   return base;
 }
 
-export function readCopcViewerPublicBase(environment = process.env) {
-  return normalizeCopcViewerPublicBase(environment.COPC_VIEWER_PUBLIC_BASE);
+export function readCopcPublicBase(environment = process.env) {
+  return normalizeCopcPublicBase(environment.COPC_PUBLIC_BASE);
 }

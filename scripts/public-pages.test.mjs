@@ -5,37 +5,37 @@ import { fileURLToPath } from "node:url";
 import { test } from "vitest";
 import { configureCesiumForPublicBase } from "../config/cesium-public-base.mjs";
 import {
-  normalizeCopcViewerPublicBase,
-  readCopcViewerPublicBase,
+  normalizeCopcPublicBase,
+  readCopcPublicBase,
 } from "../config/public-base.mjs";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDirectory, "..");
 
 test("keeps local and existing CI example builds on the root base", () => {
-  assert.equal(normalizeCopcViewerPublicBase(undefined), "/");
-  assert.equal(normalizeCopcViewerPublicBase("  "), "/");
-  assert.equal(readCopcViewerPublicBase({}), "/");
+  assert.equal(normalizeCopcPublicBase(undefined), "/");
+  assert.equal(normalizeCopcPublicBase("  "), "/");
+  assert.equal(readCopcPublicBase({}), "/");
 });
 
 test("accepts an explicit GitHub Pages repository base", () => {
   assert.equal(
-    normalizeCopcViewerPublicBase(" /COPC_VIEWER/ "),
-    "/COPC_VIEWER/",
+    normalizeCopcPublicBase(" /COPC-Cesium-PointCloud-Provider/ "),
+    "/COPC-Cesium-PointCloud-Provider/",
   );
 });
 
 test("rejects public bases that are not safe absolute pathnames", () => {
   for (const value of [
-    "COPC_VIEWER/",
-    "/COPC_VIEWER",
-    "https://example.test/COPC_VIEWER/",
+    "COPC-Cesium-PointCloud-Provider/",
+    "/COPC-Cesium-PointCloud-Provider",
+    "https://example.test/COPC-Cesium-PointCloud-Provider/",
     "//example.test/",
-    "/../COPC_VIEWER/",
-    "/COPC_VIEWER/?preview=1",
-    "/COPC VIEWER/",
+    "/../COPC-Cesium-PointCloud-Provider/",
+    "/COPC-Cesium-PointCloud-Provider/?preview=1",
+    "/COPC Cesium PointCloud Provider/",
   ]) {
-    assert.throws(() => normalizeCopcViewerPublicBase(value));
+    assert.throws(() => normalizeCopcPublicBase(value));
   }
 });
 
@@ -50,9 +50,12 @@ test("keeps Cesium files at the artifact root while publishing subpath URLs", ()
     },
   };
   const [wrappedCesiumPlugin, publicCesiumUrlPlugin] =
-    configureCesiumForPublicBase(cesiumPlugin, "/COPC_VIEWER/");
+    configureCesiumForPublicBase(
+      cesiumPlugin,
+      "/COPC-Cesium-PointCloud-Provider/",
+    );
   const userConfig = {
-    base: "/COPC_VIEWER/",
+    base: "/COPC-Cesium-PointCloud-Provider/",
     build: { outDir: "dist/example" },
   };
 
@@ -66,13 +69,13 @@ test("keeps Cesium files at the artifact root while publishing subpath URLs", ()
   assert.equal(observedConfigs[0].config.base, "/");
   assert.equal(observedConfigs[0].config.build, userConfig.build);
   assert.equal(observedConfigs[0].context, context);
-  assert.equal(userConfig.base, "/COPC_VIEWER/");
+  assert.equal(userConfig.base, "/COPC-Cesium-PointCloud-Provider/");
 
   assert.equal(
     publicCesiumUrlPlugin.transformIndexHtml.handler(
       '<link href="/cesium/Widgets/widgets.css"><script src="/cesium/Cesium.js"></script>',
     ),
-    '<link href="/COPC_VIEWER/cesium/Widgets/widgets.css"><script src="/COPC_VIEWER/cesium/Cesium.js"></script>',
+    '<link href="/COPC-Cesium-PointCloud-Provider/cesium/Widgets/widgets.css"><script src="/COPC-Cesium-PointCloud-Provider/cesium/Cesium.js"></script>',
   );
 });
 
@@ -106,7 +109,7 @@ test("pins the official Pages workflow and verifies the subpath build before upl
   );
   assert.match(
     workflow,
-    /COPC_VIEWER_PUBLIC_BASE: \$\{\{ steps\.pages\.outputs\.base_path \}\}\//,
+    /COPC_PUBLIC_BASE: \$\{\{ steps\.pages\.outputs\.base_path \}\}\//,
   );
   assert.match(workflow, /run: npm run build:example/);
   assert.match(workflow, /run: npm run verify:pages/);
@@ -123,16 +126,42 @@ test("pins the official Pages workflow and verifies the subpath build before upl
   }
 });
 
-test("publishes one canonical demo URL in package and competition documentation", async () => {
-  const [packageJsonText, readme, competition] = await Promise.all([
+test("publishes the canonical project identity and demo URL", async () => {
+  const [packageJsonText, readme, competition, exampleHtml] = await Promise.all([
     readFile(path.join(repoRoot, "package.json"), "utf8"),
     readFile(path.join(repoRoot, "README.md"), "utf8"),
     readFile(path.join(repoRoot, "docs", "COMPETITION.md"), "utf8"),
+    readFile(
+      path.join(repoRoot, "examples", "basic-viewer", "index.html"),
+      "utf8",
+    ),
   ]);
   const packageJson = JSON.parse(packageJsonText);
-  const demoUrl = "https://kimddong03.github.io/COPC_VIEWER/";
+  const projectName = "COPC Cesium PointCloud Provider";
+  const repositoryUrl =
+    "https://github.com/KimDDong03/COPC-Cesium-PointCloud-Provider";
+  const demoUrl =
+    "https://kimddong03.github.io/COPC-Cesium-PointCloud-Provider/";
 
   assert.equal(packageJson.homepage, demoUrl);
+  assert.equal(packageJson.repository.url, `git+${repositoryUrl}.git`);
+  assert.equal(packageJson.bugs.url, `${repositoryUrl}/issues`);
+  assert.match(packageJson.description, new RegExp(`^${projectName}:`));
+  assert.match(readme, new RegExp(`^# ${projectName}$`, "m"));
+  assert.ok(readme.includes("import identifier remain `copc-cesium`"));
   assert.ok(readme.includes(demoUrl));
+  assert.ok(competition.includes(projectName));
   assert.ok(competition.includes(demoUrl));
+  assert.ok(exampleHtml.includes(`<title>${projectName} |`));
+  assert.ok(exampleHtml.includes(`<h1>${projectName}</h1>`));
+  const retiredRepositoryMarker = ["COPC", "VIEWER"].join("_");
+
+  for (const publicDocument of [
+    packageJsonText,
+    readme,
+    competition,
+    exampleHtml,
+  ]) {
+    assert.ok(!publicDocument.includes(retiredRepositoryMarker));
+  }
 });

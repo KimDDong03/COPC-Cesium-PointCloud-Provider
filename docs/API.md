@@ -1,6 +1,7 @@
 # API
 
-`copc-cesium` is a pre-1.0 ESM package. The planned `0.1.0` release establishes
+**COPC Cesium PointCloud Provider** is distributed as the pre-1.0 ESM package
+`copc-cesium`. The planned `0.1.0` release establishes
 the first package-consumer-verified API baseline; minor releases may still
 refine public types while the library is below 1.0.
 

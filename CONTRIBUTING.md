@@ -1,6 +1,7 @@
 # Contributing
 
-Thanks for helping improve `copc-cesium`.
+Thanks for helping improve **COPC Cesium PointCloud Provider**, distributed as
+the `copc-cesium` package.
 
 ## Project Focus
 

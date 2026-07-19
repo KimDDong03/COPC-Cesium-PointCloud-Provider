@@ -1,5 +1,5 @@
 name: Bug report
-description: Report reproducible incorrect behavior in copc-cesium
+description: Report reproducible incorrect behavior in COPC Cesium PointCloud Provider
 title: "[Bug]: "
 body:
   - type: markdown

@@ -1,7 +1,7 @@
 import { access, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { readCopcViewerPublicBase } from "../config/public-base.mjs";
+import { readCopcPublicBase } from "../config/public-base.mjs";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDirectory, "..");
@@ -14,7 +14,7 @@ const requiredWorkerPrefixes = [
 
 export async function verifyPagesBuild({
   buildRoot = defaultBuildRoot,
-  publicBase = readCopcViewerPublicBase(),
+  publicBase = readCopcPublicBase(),
 } = {}) {
   const resolvedBuildRoot = path.resolve(buildRoot);
   const indexPath = path.join(resolvedBuildRoot, "index.html");

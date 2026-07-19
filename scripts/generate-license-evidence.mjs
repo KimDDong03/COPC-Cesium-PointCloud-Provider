@@ -500,7 +500,7 @@ function normalizeSbom(sbom, rootPackage, lock, components) {
   );
 
   sbom.documentNamespace =
-    `https://github.com/KimDDong03/COPC_VIEWER/sbom/spdx/` +
+    `https://github.com/KimDDong03/COPC-Cesium-PointCloud-Provider/sbom/spdx/` +
     `${encodeURIComponent(rootPackage.name)}-${encodeURIComponent(rootPackage.version)}-` +
     inventoryFingerprint;
   sbom.creationInfo.created = resolveSpdxCreationTime();

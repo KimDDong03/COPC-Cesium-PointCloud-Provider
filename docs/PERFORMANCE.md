@@ -1,6 +1,7 @@
 # Performance and Verification
 
-`copc-cesium` is pre-1.0. Performance results are reproducible measurements,
+**COPC Cesium PointCloud Provider** (`copc-cesium`) is pre-1.0. Performance
+results are reproducible measurements,
 not fixed guarantees. Every blocking browser artifact records the actual WebGL
 adapter, browser version, runtime, Git commit, and source fingerprint.
 

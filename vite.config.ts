@@ -2,10 +2,10 @@ import { defineConfig, type ProxyOptions } from "vite";
 import cesium from "vite-plugin-cesium";
 import { configureCesiumForPublicBase } from "./config/cesium-public-base.mjs";
 import { readCopcSampleProxyRoot } from "./config/copc-sample-proxy-root.mjs";
-import { readCopcViewerPublicBase } from "./config/public-base.mjs";
+import { readCopcPublicBase } from "./config/public-base.mjs";
 
 const copcSampleProxyRoot = new URL(readCopcSampleProxyRoot());
-const publicBase = readCopcViewerPublicBase();
+const publicBase = readCopcPublicBase();
 
 export default defineConfig({
   base: publicBase,

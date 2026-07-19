@@ -1,10 +1,10 @@
-# Gaia3D 2026 과제 근거
+# COPC Cesium PointCloud Provider — Gaia3D 2026 과제 근거
 
 [가이아쓰리디 공식 지정과제](https://www.kossa.kr/materials/2026/ossp/tasks-gaia3d.html)의
-COPC 데이터 CesiumJS 직접 가시화 요구와 `copc-cesium`의 구현·검증 근거를
-연결한 문서다.
+COPC 데이터 CesiumJS 직접 가시화 요구와 **COPC Cesium PointCloud Provider**
+프로젝트(`copc-cesium` 패키지)의 구현·검증 근거를 연결한 문서다.
 
-공개 참조 뷰어: <https://kimddong03.github.io/COPC_VIEWER/>
+공개 참조 뷰어: <https://kimddong03.github.io/COPC-Cesium-PointCloud-Provider/>
 
 ## 한 줄 결과
 

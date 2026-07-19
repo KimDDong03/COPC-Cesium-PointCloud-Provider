@@ -1,7 +1,7 @@
 {
   "name": "copc-cesium",
   "version": "0.1.0",
-  "description": "CesiumJS-native COPC point cloud streaming and visualization library.",
+  "description": "COPC Cesium PointCloud Provider: CesiumJS-native COPC point cloud streaming and visualization library.",
   "license": "MIT",
   "packageManager": "npm@11.16.0",
   "devEngines": {
@@ -30,12 +30,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/KimDDong03/COPC_VIEWER.git"
+    "url": "git+https://github.com/KimDDong03/COPC-Cesium-PointCloud-Provider.git"
   },
   "bugs": {
-    "url": "https://github.com/KimDDong03/COPC_VIEWER/issues"
+    "url": "https://github.com/KimDDong03/COPC-Cesium-PointCloud-Provider/issues"
   },
-  "homepage": "https://kimddong03.github.io/COPC_VIEWER/",
+  "homepage": "https://kimddong03.github.io/COPC-Cesium-PointCloud-Provider/",
   "type": "module",
   "main": "./dist/lib/index.js",
   "module": "./dist/lib/index.js",

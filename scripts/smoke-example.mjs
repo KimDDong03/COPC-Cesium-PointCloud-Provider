@@ -600,8 +600,14 @@ ${createBrowserGpuRendererAssertionSource(browserGpu.rendererPattern)}
   await check(
     async () =>
       (await page.title()) ===
-      "copc-cesium | Direct COPC streaming for CesiumJS",
-    "Example page title did not identify the copc-cesium library.",
+      "COPC Cesium PointCloud Provider | Direct COPC streaming for CesiumJS",
+    "Example page title did not identify COPC Cesium PointCloud Provider.",
+  );
+  await check(
+    async () =>
+      (await page.locator(".copc-panel-header h1").textContent()) ===
+      "COPC Cesium PointCloud Provider",
+    "The visible example heading did not show the submitted project name.",
   );
 
   await check(

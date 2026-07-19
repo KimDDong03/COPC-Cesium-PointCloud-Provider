@@ -8,6 +8,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Public branding now uses **COPC Cesium PointCloud Provider** and the renamed
+  `COPC-Cesium-PointCloud-Provider` repository and Pages URLs, while preserving
+  `copc-cesium` as the npm package and import identifier.
 - Camera-stream commits update only dynamic inspection rows and render the demo
   HUD once instead of rebuilding the full metadata panel. Smoothness benchmark
   schema v2 records and validates the apply phases and the correlated next
@@ -26,8 +29,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `ReadPixels` advisory policy while preserving every other console warning and
   error as blocking; hosted QC omits device-only FPS gates and duplicate URL
   smoke execution.
-- The npm tarball keeps consumer and evidence documentation while leaving the
-  submission checklist and demo script in the repository only.
+- The npm tarball keeps consumer and evidence documentation while local
+  submission checklists, demo scripts, and agent instructions remain outside
+  the tracked repository.
 
 ## [0.1.0] - 2026-07-19
 
@@ -367,5 +371,5 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   chase a deeper screen-space target through more pages than the bounded cache
   can retain, eliminating terminal timeouts caused by hierarchy cache churn.
 
-[Unreleased]: https://github.com/KimDDong03/COPC_VIEWER/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/KimDDong03/COPC_VIEWER/releases/tag/v0.1.0
+[Unreleased]: https://github.com/KimDDong03/COPC-Cesium-PointCloud-Provider/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/KimDDong03/COPC-Cesium-PointCloud-Provider/releases/tag/v0.1.0

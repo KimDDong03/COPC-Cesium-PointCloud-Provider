@@ -1,7 +1,7 @@
-export const DEFAULT_COPC_VIEWER_PUBLIC_BASE: "/";
+export const DEFAULT_COPC_PUBLIC_BASE: "/";
 
-export function normalizeCopcViewerPublicBase(value: string | undefined): string;
+export function normalizeCopcPublicBase(value: string | undefined): string;
 
-export function readCopcViewerPublicBase(
+export function readCopcPublicBase(
   environment?: Readonly<Record<string, string | undefined>>,
 ): string;

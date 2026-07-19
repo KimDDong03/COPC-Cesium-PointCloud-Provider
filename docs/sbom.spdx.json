@@ -1,7 +1,7 @@
 {
   "SPDXID": "SPDXRef-DOCUMENT",
   "creationInfo": {
-    "created": "2026-07-16T09:35:48.874Z",
+    "created": "2026-07-19T12:06:15.539Z",
     "creators": [
       "Tool: npm/cli-11.16.0",
       "Tool: scripts/generate-license-evidence.mjs"
@@ -11,7 +11,7 @@
   "documentDescribes": [
     "SPDXRef-Package-copc-cesium-0.1.0"
   ],
-  "documentNamespace": "https://github.com/KimDDong03/COPC_VIEWER/sbom/spdx/copc-cesium-0.1.0-3c648080a7b2123a6e57e920edee25fdc3ce6ee1f75edc710a597acb45b8c7e0",
+  "documentNamespace": "https://github.com/KimDDong03/COPC-Cesium-PointCloud-Provider/sbom/spdx/copc-cesium-0.1.0-3c648080a7b2123a6e57e920edee25fdc3ce6ee1f75edc710a597acb45b8c7e0",
   "name": "copc-cesium@0.1.0",
   "packages": [
     {
@@ -869,7 +869,7 @@
     },
     {
       "SPDXID": "SPDXRef-Package-copc-cesium-0.1.0",
-      "description": "CesiumJS-native COPC point cloud streaming and visualization library.",
+      "description": "COPC Cesium PointCloud Provider: CesiumJS-native COPC point cloud streaming and visualization library.",
       "downloadLocation": "NOASSERTION",
       "externalRefs": [
         {
@@ -879,7 +879,7 @@
         }
       ],
       "filesAnalyzed": false,
-      "homepage": "https://kimddong03.github.io/COPC_VIEWER/",
+      "homepage": "https://kimddong03.github.io/COPC-Cesium-PointCloud-Provider/",
       "licenseDeclared": "MIT",
       "name": "copc-cesium",
       "packageFileName": "",
