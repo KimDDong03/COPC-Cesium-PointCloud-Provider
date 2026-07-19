@@ -23,7 +23,7 @@ const viteCliPath = resolveLocalPackageBinary(repoRoot, "vite", "vite");
 const outputRoot = path.join(repoRoot, "output");
 const benchmarkRoot = path.join(outputRoot, "smoothness-benchmark");
 const benchmarkArtifactSchema = "copc-viewer.smoothness-benchmark";
-const benchmarkArtifactSchemaVersion = 1;
+const benchmarkArtifactSchemaVersion = 2;
 const benchmarkOutputName = readBenchmarkOutputName();
 const benchmarkProfile =
   process.env.COPC_SMOOTHNESS_QC_PRESET?.trim() || undefined;
@@ -178,6 +178,10 @@ const benchmarkPointGeometryWorkerConcurrency = readPositiveIntegerEnv(
   "COPC_SMOOTHNESS_POINT_GEOMETRY_WORKER_CONCURRENCY",
   undefined,
 );
+const benchmarkHierarchyPageLoadConcurrency = readPositiveIntegerEnv(
+  "COPC_SMOOTHNESS_HIERARCHY_PAGE_LOAD_CONCURRENCY",
+  undefined,
+);
 
 if (
   benchmarkPointGeometryWorkerConcurrency !== undefined &&
@@ -185,6 +189,15 @@ if (
 ) {
   throw new Error(
     "COPC_SMOOTHNESS_POINT_GEOMETRY_WORKER_CONCURRENCY must be at most 8.",
+  );
+}
+
+if (
+  benchmarkHierarchyPageLoadConcurrency !== undefined &&
+  benchmarkHierarchyPageLoadConcurrency > 8
+) {
+  throw new Error(
+    "COPC_SMOOTHNESS_HIERARCHY_PAGE_LOAD_CONCURRENCY must be at most 8.",
   );
 }
 
@@ -572,6 +585,13 @@ function createExampleUrl(baseUrl) {
     );
   }
 
+  if (benchmarkHierarchyPageLoadConcurrency !== undefined) {
+    url.searchParams.set(
+      "hierarchyPageLoadConcurrency",
+      String(benchmarkHierarchyPageLoadConcurrency),
+    );
+  }
+
   return url.toString();
 }
 
@@ -598,6 +618,7 @@ function createSmoothnessFlow(
   maxCoalescedPointDataRangeBytes,
   maxCoalescedPointDataRangeGapBytes,
   pointGeometryWorkerConcurrency,
+  hierarchyPageLoadConcurrency,
   browserGpuProfile = "high-performance",
   browserGpuConfigPath = "",
   browserGpuRendererPattern = null,
@@ -627,6 +648,7 @@ function createSmoothnessFlow(
   const maxCoalescedPointDataRangeBytes = ${JSON.stringify(maxCoalescedPointDataRangeBytes)};
   const maxCoalescedPointDataRangeGapBytes = ${JSON.stringify(maxCoalescedPointDataRangeGapBytes)};
   const pointGeometryWorkerConcurrency = ${JSON.stringify(pointGeometryWorkerConcurrency)};
+  const hierarchyPageLoadConcurrency = ${JSON.stringify(hierarchyPageLoadConcurrency)};
   const clearCachesBeforeRun = cacheResetMode !== "none";
   const httpRangePhases = [
     "camera-movement",
@@ -2007,6 +2029,99 @@ ${browserGpuRendererAssertionSource}
     };
   }
 
+  function subtractNonnegativeCounter(before, after, name) {
+    const beforeValue = before?.[name];
+    const afterValue = after?.[name];
+
+    if (!Number.isFinite(beforeValue) || !Number.isFinite(afterValue)) {
+      return undefined;
+    }
+
+    return Math.max(0, afterValue - beforeValue);
+  }
+
+  function createHierarchyPageLoadStatsDelta(before, after) {
+    if (!before || !after) {
+      return undefined;
+    }
+
+    return {
+      loadCount: subtractNonnegativeCounter(before, after, "loadCount"),
+      cacheHitCount: subtractNonnegativeCounter(
+        before,
+        after,
+        "cacheHitCount",
+      ),
+      sharedTaskReuseCount: subtractNonnegativeCounter(
+        before,
+        after,
+        "sharedTaskReuseCount",
+      ),
+      completedLoadCount: subtractNonnegativeCounter(
+        before,
+        after,
+        "completedLoadCount",
+      ),
+      failedLoadCount: subtractNonnegativeCounter(
+        before,
+        after,
+        "failedLoadCount",
+      ),
+      requestedByteCount: subtractNonnegativeCounter(
+        before,
+        after,
+        "requestedByteCount",
+      ),
+      totalLoadMilliseconds: subtractNonnegativeCounter(
+        before,
+        after,
+        "totalLoadMilliseconds",
+      ),
+      batchLoadCount: subtractNonnegativeCounter(
+        before,
+        after,
+        "batchLoadCount",
+      ),
+      totalBatchLoadMilliseconds: subtractNonnegativeCounter(
+        before,
+        after,
+        "totalBatchLoadMilliseconds",
+      ),
+      maxLoadMillisecondsBefore: before.maxLoadMilliseconds,
+      maxLoadMillisecondsAfter: after.maxLoadMilliseconds,
+      maxLoadMillisecondsIncrease: subtractNonnegativeCounter(
+        before,
+        after,
+        "maxLoadMilliseconds",
+      ),
+      maxBatchLoadMillisecondsBefore: before.maxBatchLoadMilliseconds,
+      maxBatchLoadMillisecondsAfter: after.maxBatchLoadMilliseconds,
+      maxBatchLoadMillisecondsIncrease: subtractNonnegativeCounter(
+        before,
+        after,
+        "maxBatchLoadMilliseconds",
+      ),
+      maxConcurrentLoadCountBefore: before.maxConcurrentLoadCount,
+      maxConcurrentLoadCountAfter: after.maxConcurrentLoadCount,
+      maxConcurrentLoadCountIncrease: subtractNonnegativeCounter(
+        before,
+        after,
+        "maxConcurrentLoadCount",
+      ),
+      activeLoadCountBefore: before.activeLoadCount,
+      activeLoadCountAfter: after.activeLoadCount,
+      lastBatchRequestedPageCountBefore: before.lastBatchRequestedPageCount,
+      lastBatchRequestedPageCountAfter: after.lastBatchRequestedPageCount,
+      maxBatchRequestedPageCountBefore: before.maxBatchRequestedPageCount,
+      maxBatchRequestedPageCountAfter: after.maxBatchRequestedPageCount,
+      maxBatchRequestedPageCountIncrease: subtractNonnegativeCounter(
+        before,
+        after,
+        "maxBatchRequestedPageCount",
+      ),
+    };
+  }
+
   function parseAppliedCameraStreamBudget(budgetText) {
     const capMatch = budgetText?.match(/([\\d,]+)\\s+render pts cap/i);
 
@@ -2112,7 +2227,11 @@ ${browserGpuRendererAssertionSource}
           });
         }
 
-        const geometryCacheBeforeText = benchmark.getStatus().geometryCache;
+        const statusBeforeCameraMovement = benchmark.getStatus();
+        const geometryCacheBeforeText =
+          statusBeforeCameraMovement.geometryCache;
+        const hierarchyPageLoadStatsBeforeCameraMovement =
+          statusBeforeCameraMovement.hierarchyPageLoadStats;
 
         const staleFrameCollectorRegistry =
           window.__copcSmoothnessFrameCollectors instanceof Map
@@ -2171,6 +2290,7 @@ ${browserGpuRendererAssertionSource}
                   status?.cameraStreamDiagnosticsData,
                 cameraStreamVisualQuality:
                   status?.cameraStreamVisualQuality,
+                cameraStreamApplyTiming: status?.cameraStreamApplyTiming,
               });
             }
           }
@@ -2289,6 +2409,7 @@ ${browserGpuRendererAssertionSource}
             measuredDurationMilliseconds: completedAt - startedAt,
             cacheReset,
             geometryCacheBeforeText,
+            hierarchyPageLoadStatsBeforeCameraMovement,
             frameCollectorId,
             status,
           };
@@ -2453,6 +2574,14 @@ ${browserGpuRendererAssertionSource}
     const geometryCacheDelta = subtractGeometryCacheCounters(
       geometryCacheBefore,
       geometryCacheAfter,
+    );
+    const hierarchyPageLoadStatsBeforeCameraMovement =
+      measurement.hierarchyPageLoadStatsBeforeCameraMovement;
+    const hierarchyPageLoadStatsFinal =
+      measuredStatus.hierarchyPageLoadStats;
+    const hierarchyPageLoadStatsDelta = createHierarchyPageLoadStatsDelta(
+      hierarchyPageLoadStatsBeforeCameraMovement,
+      hierarchyPageLoadStatsFinal,
     );
     let pointGeometryTiming = parsePointGeometryTiming(
       measuredStatus.pointGeometryTiming,
@@ -2627,6 +2756,7 @@ ${browserGpuRendererAssertionSource}
         measuredStatus.cameraStreamRenderDisposition,
       cameraStreamRendererRevision:
         measuredStatus.cameraStreamRendererRevision,
+      cameraStreamApplyTiming: measuredStatus.cameraStreamApplyTiming,
       cameraStreamSelectedNodeKeys:
         measuredStatus.cameraStreamSelectedNodeKeys,
       cameraStreamHierarchyHeld:
@@ -2643,6 +2773,9 @@ ${browserGpuRendererAssertionSource}
       geometryCacheDelta,
       decodedPointDataCache: measuredStatus.decodedPointDataCache,
       hierarchyCacheStats: measuredStatus.hierarchyCacheStats,
+      hierarchyPageLoadStatsBeforeCameraMovement,
+      hierarchyPageLoadStatsFinal,
+      hierarchyPageLoadStatsDelta,
       hierarchyCacheAfterPrefetch: prefetchStatus.hierarchyCacheStats,
       cameraStreamCompletion,
       postPrefetchRefinement,
@@ -2960,6 +3093,7 @@ ${browserGpuRendererAssertionSource}
     maxCoalescedPointDataRangeBytes,
     maxCoalescedPointDataRangeGapBytes,
     pointGeometryWorkerConcurrency,
+    hierarchyPageLoadConcurrency,
     sampleCases: sampleCases.map((sampleCase) => ({
       id: sampleCase.id,
       label: sampleCase.label,
@@ -3017,6 +3151,10 @@ function printBenchmarkSummary(result) {
       result.pointGeometryWorkerConcurrency === undefined
         ? ""
         : `, geometry workers ${result.pointGeometryWorkerConcurrency.toLocaleString()}`
+    }${
+      result.hierarchyPageLoadConcurrency === undefined
+        ? ""
+        : `, hierarchy page loads ${result.hierarchyPageLoadConcurrency.toLocaleString()}`
     }`,
   );
 
@@ -3267,6 +3405,7 @@ try {
       benchmarkMaxCoalescedPointDataRangeBytes,
       benchmarkMaxCoalescedPointDataRangeGapBytes,
       benchmarkPointGeometryWorkerConcurrency,
+      benchmarkHierarchyPageLoadConcurrency,
       browserGpu.profile,
       playwrightConfigPath,
       browserGpu.rendererPattern ?? null,
@@ -3308,6 +3447,9 @@ try {
       benchmarkPointGeometryWorkerConcurrency === undefined
         ? ""
         : `${benchmarkPointGeometryWorkerConcurrency.toLocaleString()} point geometry workers,`,
+      benchmarkHierarchyPageLoadConcurrency === undefined
+        ? ""
+        : `${benchmarkHierarchyPageLoadConcurrency.toLocaleString()} hierarchy page loads,`,
       benchmarkMinSelectedDepthOverride === undefined
         ? "same-depth sample targets; mixed-depth budget progression"
         : `min selected depth ${benchmarkMinSelectedDepthOverride}`,

@@ -74,6 +74,32 @@ const mocks = vi.hoisted(() => ({
     positions: new Float64Array(options.pointData.x.length * 3),
     colors: new Uint8Array(options.pointData.x.length * 4),
   })),
+  createPointGeometryBatchFromCopcPointDataView: vi.fn((options: {
+    readonly nodeKey: string;
+    readonly view: { readonly pointCount: number };
+    readonly maxPointCount: number;
+    readonly spatialPointOrder: Uint32Array;
+  }) => {
+    const sampledPointCount = Math.min(
+      options.view.pointCount,
+      options.maxPointCount,
+    );
+
+    return {
+      pointSamples: {
+        nodeKey: options.nodeKey,
+        nodePointCount: options.view.pointCount,
+        sampledPointCount,
+        points: [],
+      },
+      geometryBatch: {
+        key: options.nodeKey,
+        pointCount: sampledPointCount,
+        positions: new Float64Array(sampledPointCount * 3),
+        colors: new Uint8Array(sampledPointCount * 4),
+      },
+    };
+  }),
 }));
 
 vi.mock("copc", () => ({
@@ -105,6 +131,8 @@ vi.mock("./pointGeometryBatch", () => ({
   createNodePointSampleBatchKey: mocks.createNodePointSampleBatchKey,
   createPointGeometryBatchFromSerializableTransform:
     mocks.createPointGeometryBatchFromSerializableTransform,
+  createPointGeometryBatchFromCopcPointDataView:
+    mocks.createPointGeometryBatchFromCopcPointDataView,
 }));
 
 describe("CesiumCopcPointGeometryWorker decoded point data cache", () => {
@@ -479,16 +507,24 @@ describe("CesiumCopcPointGeometryWorker decoded point data cache", () => {
     expect(mocks.createSpatiallyDistributedPointIndices).toHaveBeenCalledTimes(
       1,
     );
-    expect(mocks.sampleCopcPointDataView).toHaveBeenCalledTimes(2);
+    expect(mocks.sampleCopcPointDataView).not.toHaveBeenCalled();
+    expect(
+      mocks.createPointGeometryBatchFromSerializableTransform,
+    ).not.toHaveBeenCalled();
+    expect(
+      mocks.createPointGeometryBatchFromCopcPointDataView,
+    ).toHaveBeenCalledTimes(2);
     const spatialPointOrder = mocks.createSpatiallyDistributedPointIndices.mock
       .results[0]?.value as Uint32Array | undefined;
 
     expect(spatialPointOrder).toBeInstanceOf(Uint32Array);
     expect(
-      mocks.sampleCopcPointDataView.mock.calls[0]?.[0].spatialPointOrder,
+      mocks.createPointGeometryBatchFromCopcPointDataView.mock.calls[0]?.[0]
+        .spatialPointOrder,
     ).toBe(spatialPointOrder);
     expect(
-      mocks.sampleCopcPointDataView.mock.calls[1]?.[0].spatialPointOrder,
+      mocks.createPointGeometryBatchFromCopcPointDataView.mock.calls[1]?.[0]
+        .spatialPointOrder,
     ).toBe(spatialPointOrder);
     expect(worker.transferLists[0]).toHaveLength(2);
     expect(worker.transferLists[1]).toHaveLength(2);
@@ -608,13 +644,24 @@ describe("CesiumCopcPointGeometryWorker decoded point data cache", () => {
 
     worker.dispatch(createPrefetchRequest(1, "1-0-0-0"));
     await worker.waitForMessageCount(1);
+    expect(mocks.sampleCopcPointDataView).not.toHaveBeenCalled();
+    expect(
+      mocks.createPointGeometryBatchFromSerializableTransform,
+    ).not.toHaveBeenCalled();
+    expect(
+      mocks.createPointGeometryBatchFromCopcPointDataView,
+    ).not.toHaveBeenCalled();
+
     worker.dispatch(createLoadRequest(2, "1-0-0-0", 100));
     await worker.waitForMessageCount(2);
 
     expect(mocks.loadCopcNodePointDataView).toHaveBeenCalledTimes(1);
-    expect(mocks.sampleCopcPointDataView).toHaveBeenCalledTimes(1);
+    expect(mocks.sampleCopcPointDataView).not.toHaveBeenCalled();
     expect(
       mocks.createPointGeometryBatchFromSerializableTransform,
+    ).not.toHaveBeenCalled();
+    expect(
+      mocks.createPointGeometryBatchFromCopcPointDataView,
     ).toHaveBeenCalledTimes(1);
     expect(worker.messages[0]).toMatchObject({
       type: "prefetchNodePointData:success",
@@ -648,7 +695,7 @@ describe("CesiumCopcPointGeometryWorker decoded point data cache", () => {
     await worker.waitForMessageCount(1);
 
     expect(
-      mocks.createPointGeometryBatchFromSerializableTransform,
+      mocks.createPointGeometryBatchFromCopcPointDataView,
     ).toHaveBeenCalledWith(
       expect.objectContaining({
         pointColorStyle: request.pointColorStyle,

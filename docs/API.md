@@ -309,6 +309,7 @@ readable by browser HTTP range requests, or `options.source` for a browser
 | `maxPointCountPerNode` | `5_000` inside lower-level point sampling | Default sample budget for each rendered hierarchy node. |
 | `maxCachedHierarchyPages` | `64` | Loaded hierarchy page cache limit. |
 | `maxCachedHierarchyPageBytes` | `16 * 1024 * 1024` | Estimated loaded hierarchy page byte limit. Loaded non-root leaf hierarchy pages are evicted back to pending references when either the page-count or byte limit is exceeded. |
+| `maxConcurrentHierarchyPageLoads` | `2` | Bounded concurrency for independent hierarchy pages selected in one expansion batch. Dependent parent/child batches remain ordered, and cache merge/eviction order remains deterministic. |
 | `maxCachedSampleSets` | `32` | Point sample cache entry limit. |
 | `maxCachedPointSampleBytes` | `32 * 1024 * 1024` | Estimated decoded point sample cache byte limit. |
 | `maxCachedPointGeometryBatches` | `96` | Integrated COPC geometry batch cache limit for worker-prepared Cesium payloads. |
@@ -1573,6 +1574,7 @@ const input: CopcSourceInput = url; // URL string, File, or Blob
 const source = new CopcSource(input, {
   maxCachedHierarchyPages: 64,
   maxCachedHierarchyPageBytes: 16 * 1024 * 1024,
+  maxConcurrentHierarchyPageLoads: 2,
   maxCachedSampleSets: 32,
 });
 
@@ -1584,6 +1586,11 @@ const pointSamples = await source.loadNodePointSamples({
   requestPriority: 10,
 });
 ```
+
+`source.getHierarchyPageLoadStats()` returns cumulative logical hierarchy-page
+load, shared-task reuse, active/peak concurrency, requested-page byte, and batch
+wall-time counters. These are COPC loader-boundary measurements; they are not a
+replacement for browser-observed HTTP request and transfer-byte evidence.
 
 This is the boundary that should stay independent of Cesium imports. When source
 point-sample workers are enabled, `requestPriority` gives current-view reads a

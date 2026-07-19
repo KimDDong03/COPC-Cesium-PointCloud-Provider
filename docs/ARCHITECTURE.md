@@ -145,6 +145,10 @@ The current implementation includes:
   datasets, including vertical-unit conversion. Pre-load and custom adapter
   paths keep an absolute-height fallback.
 - `CopcPointCloudLayer.expandHierarchyForCamera` for camera-targeted hierarchy expansion.
+- Independent hierarchy pages selected in one expansion batch use bounded
+  parallel reads (two by default). Parent/child discovery remains sequential;
+  merge provenance and cache eviction are normalized in request order after
+  overlapping batches settle.
 - `CopcPointCloudLayer.renderAutomatic` for selecting and rendering nodes in one call.
 - `CopcPointCloudLayer.selectNodesForCamera` for selecting nodes without immediately rendering.
 - `CopcPointCloudLayer.prepareNodes` for warming selected node data and worker-prepared geometry caches without changing the currently rendered Cesium primitives.
@@ -313,6 +317,11 @@ Camera-based selection requires both directions:
   so aliases are not double-counted; the basic viewer enforces a 384 MiB
   per-layer hard cap in addition to entry-count limits.
 - Worker loading currently targets point data and worker-prepared Cesium geometry; hierarchy metadata selection remains on the main thread.
+  The integrated geometry worker streams the selected decoded-view values
+  directly into the final position and color buffers instead of first
+  materializing sampled X/Y/Z, RGB, classification, and intensity arrays. The
+  standalone point-sample API still returns its requested object or typed-array
+  representation, and integrated prefetch remains decode-only.
 - With default soft cancellation, integrated geometry workers proxy COPC byte
   reads through one main-thread range broker while LAZ view construction stays
   parallel inside the workers. The pool lazily plans point-data spans up to

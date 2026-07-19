@@ -116,6 +116,7 @@ export interface CopcPointCloudLayerOptions {
   readonly maxPointCountPerNode?: number;
   readonly maxCachedHierarchyPages?: number;
   readonly maxCachedHierarchyPageBytes?: number;
+  readonly maxConcurrentHierarchyPageLoads?: number;
   readonly maxCachedSampleSets?: number;
   readonly maxCachedPointSampleBytes?: number;
   readonly maxCachedPointGeometryBatches?: number;
@@ -574,6 +575,8 @@ export class CopcPointCloudLayer {
       rangeGetterOptions: options.rangeGetterOptions,
       maxCachedHierarchyPages: options.maxCachedHierarchyPages,
       maxCachedHierarchyPageBytes: options.maxCachedHierarchyPageBytes,
+      maxConcurrentHierarchyPageLoads:
+        options.maxConcurrentHierarchyPageLoads,
       maxCachedSampleSets: options.maxCachedSampleSets,
       maxCachedPointSampleBytes: options.maxCachedPointSampleBytes,
       maxDecodedPointDataViewsPerWorker:

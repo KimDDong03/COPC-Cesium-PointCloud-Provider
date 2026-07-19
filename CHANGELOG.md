@@ -6,6 +6,20 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Camera-stream commits update only dynamic inspection rows and render the demo
+  HUD once instead of rebuilding the full metadata panel. Smoothness benchmark
+  schema v2 records and validates the apply phases and the correlated next
+  `postRender` boundary.
+- Camera-targeted hierarchy expansion loads independent pages with a deterministic
+  bounded concurrency of two by default. Public options can tune the limit, and
+  benchmark artifacts record logical page-load and batch wall-time evidence.
+- Integrated geometry workers now write sampled decoded COPC values directly
+  into the final position and color buffers. This removes the transient typed
+  attribute arrays while preserving sample order, batch keys, transforms, color
+  behavior, bounds, and the decode-only prefetch path.
+
 ### Fixed
 
 - Release browser benchmarks now apply the existing exact headless-Linux WebGL

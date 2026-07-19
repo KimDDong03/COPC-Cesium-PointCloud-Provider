@@ -418,36 +418,35 @@ still mandatory in every final-detail preset.
 
 ## Exact Terminal-Gate Checkpoint
 
-The latest cold-detail checkpoint was measured on 2026-07-17 with the
-typed-array primitive renderer and the recorded RTX 3060 WebGL adapter. It
-rendered 360,000 points from all 80 required additive nodes, using a depth 3-5
-mixed-depth antichain frontier with 100% node and weighted coverage, zero
-missing or stale/unexpected nodes, zero pending current-view hierarchy pages,
-and `isTerminalReady: true`.
+The latest cold-detail checkpoint was measured on 2026-07-19 with the fused
+decoded-view-to-geometry path, typed-array primitive renderer, and recorded RTX
+3060 WebGL adapter. It rendered 360,000 points from all 80 required additive
+nodes, using a depth 3-5 mixed-depth antichain frontier with 100% node and
+weighted coverage, zero missing or stale/unexpected nodes, zero pending
+current-view hierarchy pages, and `isTerminalReady: true`.
 
 | Profile | Runs | Points | Required nodes | Movement avg FPS | Movement p95 | Movement max | First response | First-response source |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| Cold detail Millsite | 1 | 360,000 | 80/80 | 59.2 | 16.8 ms | 33.4 ms | 4.4 ms | `app-render-retained` |
+| Fused cold detail Millsite | 1 | 360,000 | 80/80 | 59.2 | 16.8 ms | 33.4 ms | 6.4 ms | `app-render-retained` |
 
-Frame collection continued for 24.517 seconds through hierarchy and terminal
+Frame collection continued for 19.322 seconds through hierarchy and terminal
 refinement. Across that phase it recorded 59.5 average FPS, 16.8 ms p95,
-83.3 ms maximum, three frames above 50 ms, and zero frames above 100 ms, all
-inside the cold-detail gate. The final retained exact result reported depth 5,
-selection/render/total CPU timing of 2.4/3.2/17.1 ms, renderer revision 8, and
-maximum worker point-data-view/round-trip timing of 1,789.3/1,798.7 ms (the
-historical artifact labeled the first value as decode). The first visible
-response retained the existing 2,800-point frame; it is application response
-latency, not full terminal-load latency.
+83.4 ms maximum, two frames above 50 ms, and zero frames above 100 ms, all
+inside the cold-detail gate. The run issued 134 measured Range requests with
+17,584,657 response-body bytes. The first visible response retained an existing
+frame; it is application response latency, not full terminal-load latency.
 
-The authoritative result is
-`output/smoothness-benchmark/smoothness-cold-detail.json` with SHA-256
-`e1be4f55e6e981822ef5c59f8239c6ba82e5a2699138facd7d013f4b57f735e4`.
-Its assertion report is
-`output/smoothness-benchmark/smoothness-cold-detail-assertion.json` with
+The authoritative local diagnostic is
+`output/smoothness-benchmark/smoothness-fused-geometry-final.json` with
 SHA-256
-`0d7d99f687ade681bf5c717d0f07201d300ac3fa0b597c33bce4c909fa3db9b6`.
+`60c1331e4b6c0bc23ef674f8947aaf7c4ca90312fdca40a2f2aeb005c4e9845b`.
+Its assertion report is
+`output/smoothness-benchmark/smoothness-fused-geometry-final-assertion.json`
+with SHA-256
+`b877317af7ccd29de6888a58e64226e3ed679f8a8226b4f4ae32bae9696c0b83`.
 These values are machine-specific regression evidence from a dirty source
-snapshot, not cross-device guarantees.
+snapshot, not clean contest evidence or cross-device guarantees. Regenerate
+the contest manifest from the final clean submission commit.
 
 ## Superseded Pre-Terminal-Gate Checkpoint
 
@@ -874,6 +873,80 @@ group, it is merged once instead of rebuilding a growing 1 -> 2 -> 3 -> 4
 buffer. During progressive camera updates, completed chunks retain their keys
 while later nodes finish.
 
+The camera-stream example also avoids rebuilding the complete inspection panel
+for each progressive commit. It updates the dynamic rows, renders the HUD once,
+and leaves camera-node suggestion work at the camera-move and hierarchy-change
+boundaries. Smoothness artifact schema v2 records state, render-set, metadata,
+HUD, status, total apply, and next-`postRender` timings and rejects missing,
+negative, inconsistent, or request-mismatched evidence. The next-`postRender`
+interval is a correlation boundary, not a pure GPU timer; it may include Cesium
+primitive preparation, buffer upload, rendering, and any wait until the next
+frame.
+
+Camera-targeted hierarchy expansion now loads independent pages in a bounded
+batch while keeping dependent levels sequential. The reusable source and layer
+default to two concurrent page loads; callers can override
+`maxConcurrentHierarchyPageLoads`. Concurrent completion does not determine the
+retained hierarchy: overlapping batches defer eviction, normalize their LRU
+touches by batch-start and input order, and then reapply the page and byte
+limits. Partial failures keep successful sibling merges retryable and preserve
+the original load or abort error.
+
+The 2026-07-19 RTX 3060 cold-detail comparison alternated two serial controls,
+two concurrency-four candidates, then measured concurrency two twice. All six
+runs used the same 360,000-point budget, Millsite camera, layer cache reset, and
+typed renderer. Every run produced the same selected keys and render signature,
+360,000 points, 80/80 final nodes, 100% weighted coverage, terminal-ready
+quality, 23 hierarchy page loads, 50,528 logical page bytes, 134 browser HTTP
+Range requests, and 17,584,657 finished Range bytes. No hierarchy load failed;
+no duplicate/overlap bytes or hierarchy eviction appeared.
+
+| hierarchy concurrency | hierarchy batch wall median | largest-batch median | terminal-refinement median | movement FPS / p95 median |
+| --- | ---: | ---: | ---: | ---: |
+| 1 (serial control) | 5,528.3 ms | 3,472.8 ms | 21,015.1 ms | 58.4 / 16.8 ms |
+| 2 (retained default) | 4,907.4 ms | 2,945.7 ms | 20,780.8 ms | 58.4 / 16.8 ms |
+| 4 (opt-in comparison) | 4,427.8 ms | 2,495.7 ms | 20,950.2 ms | 55.7 / 25.0 ms |
+
+Concurrency two therefore reduced the directly owned hierarchy batch wall by
+11.2% and its largest batch by 15.2% without the movement-frame variation seen
+in the concurrency-four pair. It is the conservative default; four remains an
+explicit dataset/network-specific tuning option. Point-data fetch and decode
+still dominate end-to-end terminal time, so the near-flat terminal median is
+reported rather than attributing a larger viewer-wide gain to hierarchy work.
+`requestedByteCount` is logical hierarchy-page input at the COPC loader boundary,
+not network traffic; the separate browser HTTP ledger contains metadata,
+hierarchy, preview, point-data, and prefetch requests.
+
+The six cold-detail assertions were not release PASS evidence: each exceeded
+the existing allowance of one terminal-refinement frame over 100 ms (two or
+three were observed), and one concurrency-four run also measured 150.1 ms
+against the 150 ms maximum. Those failures were retained rather than weakening
+the gate. They affected serial and parallel runs while hierarchy quality,
+traffic, and failure counters remained equal, so they do not invalidate the
+isolated hierarchy wall-time comparison and must not be presented as a full
+cold-detail gate pass. Raw and assertion artifacts are retained under
+`output/smoothness-benchmark/smoothness-hierarchy-{serial,parallel,parallel2}-*.json`.
+
+After retaining concurrency two as the default, the standard RTX 3060
+`warm-zoom-detail` run passed its assertion for both measured repeats. Both
+rendered 360,000 points and 80/80 final nodes at terminal-ready quality; the
+movement summary was approximately 60 FPS with a 16.8 ms p95 and 17.3 ms
+maximum. The warm measurements issued no new logical hierarchy page loads, and
+their cumulative stats retained a peak hierarchy concurrency of two from the
+warmup. This is reuse/regression evidence, not a second cold hierarchy speedup
+claim. See `smoothness-warm-zoom-detail.json` and its matching assertion report.
+
+A deferred `GeometryFactory` experiment also attempted to bypass Cesium's first
+copy of already prepared typed arrays in 3D-only scenes. Two early three-run
+diagnostics reduced the observed terminal frames over 50 ms from four to two,
+but the result did not survive the alternating schema-v2 spot check. The raw
+control passed with four frames over 50 ms and a 116.7 ms maximum; the factory
+candidate then produced five frames over 50 ms, a 133.1 ms maximum, and two
+frames over 100 ms, failing the cold-detail gate. The experiment is therefore
+not retained. Live Range latency changed between runs, so total load time was
+not treated as renderer evidence. This rejected result prevents a deterministic
+copy-count reduction from being misreported as a verified frame-time win.
+
 Adaptive splats project each batch's CRS-aware world-space spacing and retained
 sample ratio to screen pixels, then clamp the size to the active quality
 preset's minimum and maximum. Missing spacing metadata keeps the fixed-size
@@ -1102,6 +1175,33 @@ post-terminal prefetch. It held 59.2 FPS, 16.8 ms p95, 33.3 ms maximum frame,
 and 100% terminal node/weight coverage. The adjacent-phase split can vary when
 requests race a boundary, while the combined total is deterministic for this
 workload.
+
+### 2 MiB Span Confirmation and Fused Worker Geometry
+
+On 2026-07-19, two RTX 3060 cold-detail runs changed only the coalesced span
+from 2 MiB to 4 MiB. Both kept 134 requests / 17,584,657 bytes, so the cap
+combined nothing and was rejected despite passing strict assertions.
+
+The adopted path reads stable decoded-view indices directly into final buffers,
+skipping temporary sampled attribute arrays. Node/sample counts, keys, and
+decode-only prefetch are unchanged. Millsite A/B settings stayed at 360,000
+points, four geometry workers, hierarchy concurrency two, and 2 MiB/64 KiB
+Range planning. All six artifacts had identical keys/signature, 80/80 nodes,
+full coverage, and the same Range ledger.
+
+| Geometry path | Runs | Final sample + geometry CPU mean | Terminal refinement | Movement FPS / p95 |
+| --- | ---: | ---: | ---: | ---: |
+| Typed arrays, then geometry | 3 | 147.4 ms | 20,391.8-20,790.8 ms | 58.4-59.2 / 16.8-17.1 ms |
+| Fused decoded view to geometry | 3 | 69.0 ms | 19,321.5-20,287.0 ms | 59.2 / 16.7-16.8 ms |
+
+These final diagnostics all had 73/80 geometry hits and seven processed nodes.
+Combined CPU fell 53.2%. After fusion, sampling covers spatial-order setup and
+geometry includes decoded reads/final writes, so their sum is compared. Live
+Range timing still dominates terminal duration. All fused assertions passed;
+movement maxima were 33.3-33.4 ms, terminal maxima 83.1-83.4 ms, with no
+>100 ms terminal frame, Range error/duplication, or cache eviction. Removed
+arrays total up to 30 bytes per sample, or 10.8 MB per 360,000 points with all
+attributes. This is allocation arithmetic; results remain environment-specific.
 
 A one-repeat equal-count Eptium check then confirmed that the 64 KiB default
 preserved the existing visual and p95 gates while retaining the known

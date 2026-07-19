@@ -16,7 +16,7 @@ const defaultOutputPath = path.join(
   "smoothness-assertion.json",
 );
 const benchmarkArtifactSchema = "copc-viewer.smoothness-benchmark";
-const benchmarkArtifactSchemaVersion = 1;
+const benchmarkArtifactSchemaVersion = 2;
 
 const inputPath = readStringArg("--input") ?? defaultInputPath;
 const outputPath = readStringArg("--output") ?? defaultOutputPath;
@@ -167,6 +167,7 @@ const checkedResults = results.map((result) => {
     waitForFinalDetail,
     benchmarkArtifact.isCurrent,
     requireWarmHierarchyHold,
+    benchmark.hierarchyPageLoadConcurrency,
   );
 
   failures.push(...resultFailures);
@@ -458,6 +459,7 @@ function checkResult(
   waitForFinalDetail,
   requireCurrentEvidence,
   requireWarmHierarchyHold,
+  hierarchyPageLoadConcurrency,
 ) {
   const label = createResultLabel(result);
   const summary = result.summary ?? {};
@@ -473,6 +475,15 @@ function checkResult(
   const visualQuality =
     result.cameraStreamVisualQuality ??
     result.status?.cameraStreamVisualQuality;
+
+  resultFailures.push(
+    ...validateCameraStreamApplyTiming(result, label, requireCurrentEvidence),
+    ...validateHierarchyPageLoadStats(
+      result,
+      label,
+      hierarchyPageLoadConcurrency,
+    ),
+  );
 
   if (requireWarmHierarchyHold) {
     resultFailures.push(...checkWarmHierarchyResult(result, label));
@@ -837,6 +848,419 @@ function checkResult(
   }
 
   return resultFailures;
+}
+
+function validateCameraStreamApplyTiming(
+  result,
+  label,
+  requireCurrentEvidence,
+) {
+  const timing =
+    result.cameraStreamApplyTiming ?? result.status?.cameraStreamApplyTiming;
+  if (!timing || typeof timing !== "object") {
+    return requireCurrentEvidence
+      ? [`${label}: current benchmark artifact did not report camera-stream apply timing.`]
+      : [];
+  }
+
+  const failures = [];
+  const measuredStatusRequestId = result.status?.cameraStreamRequestId;
+  const expectedRequestId =
+    measuredStatusRequestId ?? result.expectedCameraStreamRequestId;
+  const topLevelRenderDisposition = result.cameraStreamRenderDisposition;
+  const statusRenderDisposition =
+    result.status?.cameraStreamRenderDisposition;
+  const segmentNames = [
+    "stateMilliseconds",
+    "renderSetMilliseconds",
+    "metadataMilliseconds",
+    "hudMilliseconds",
+    "statusMilliseconds",
+  ];
+
+  if (!Number.isSafeInteger(timing.requestId) || timing.requestId <= 0) {
+    failures.push(
+      `${label}: camera-stream apply request ID ${formatNumber(timing.requestId)} must be a positive safe integer.`,
+    );
+  } else if (
+    Number.isSafeInteger(expectedRequestId) &&
+    timing.requestId !== expectedRequestId
+  ) {
+    failures.push(
+      `${label}: camera-stream apply request ID ${timing.requestId} does not match measured status request ${expectedRequestId}.`,
+    );
+  }
+  if (
+    requireCurrentEvidence &&
+    (!Number.isSafeInteger(expectedRequestId) || expectedRequestId <= 0)
+  ) {
+    failures.push(
+      `${label}: current benchmark artifact did not report a positive measured or expected camera-stream request ID for apply-timing correlation.`,
+    );
+  }
+
+  const validRenderDispositions = new Set([
+    "new-render",
+    "retained-exact-render",
+    "retained-progress-render",
+  ]);
+  if (!validRenderDispositions.has(timing.renderDisposition)) {
+    failures.push(
+      `${label}: camera-stream apply render disposition ${String(timing.renderDisposition)} is invalid.`,
+    );
+  } else {
+    for (const [sourceLabel, expectedRenderDisposition] of [
+      ["result", topLevelRenderDisposition],
+      ["measured status", statusRenderDisposition],
+    ]) {
+      if (
+        typeof expectedRenderDisposition === "string" &&
+        timing.renderDisposition !== expectedRenderDisposition
+      ) {
+        failures.push(
+          `${label}: camera-stream apply render disposition ${timing.renderDisposition} does not match ${sourceLabel} ${expectedRenderDisposition}.`,
+        );
+      }
+    }
+  }
+  if (
+    requireCurrentEvidence &&
+    typeof topLevelRenderDisposition !== "string" &&
+    typeof statusRenderDisposition !== "string"
+  ) {
+    failures.push(
+      `${label}: current benchmark artifact did not report a render disposition for apply-timing correlation.`,
+    );
+  }
+
+  for (const segmentName of segmentNames) {
+    if (!Number.isFinite(timing[segmentName]) || timing[segmentName] < 0) {
+      failures.push(
+        `${label}: camera-stream apply ${segmentName} ${formatMilliseconds(timing[segmentName])} must be a non-negative finite number.`,
+      );
+    }
+  }
+  if (!Number.isFinite(timing.totalMilliseconds) || timing.totalMilliseconds < 0) {
+    failures.push(
+      `${label}: camera-stream apply total ${formatMilliseconds(timing.totalMilliseconds)} must be a non-negative finite number.`,
+    );
+  }
+
+  const segmentTotal = segmentNames.reduce(
+    (total, segmentName) => total + Number(timing[segmentName]),
+    0,
+  );
+  if (
+    Number.isFinite(segmentTotal) &&
+    Number.isFinite(timing.totalMilliseconds) &&
+    Math.abs(segmentTotal - timing.totalMilliseconds) > 0.05
+  ) {
+    failures.push(
+      `${label}: camera-stream apply segment total ${formatMilliseconds(segmentTotal)} does not match reported total ${formatMilliseconds(timing.totalMilliseconds)}.`,
+    );
+  }
+
+  const postApplyMilliseconds = timing.postApplyToNextPostRenderMilliseconds;
+  const applyStartToPostMilliseconds =
+    timing.applyStartToNextPostRenderMilliseconds;
+  if (
+    !Number.isFinite(postApplyMilliseconds) ||
+    postApplyMilliseconds < 0 ||
+    !Number.isFinite(applyStartToPostMilliseconds) ||
+    applyStartToPostMilliseconds < 0
+  ) {
+    failures.push(
+      `${label}: camera-stream apply timing must include non-negative finite next-postRender measurements.`,
+    );
+  } else if (
+    Number.isFinite(timing.totalMilliseconds) &&
+    Math.abs(
+      timing.totalMilliseconds + postApplyMilliseconds -
+        applyStartToPostMilliseconds,
+    ) > 0.05
+  ) {
+    failures.push(
+      `${label}: camera-stream apply-to-postRender total is inconsistent with its apply and post-apply segments.`,
+    );
+  }
+
+  return failures;
+}
+
+function validateHierarchyPageLoadStats(
+  result,
+  label,
+  hierarchyPageLoadConcurrency,
+) {
+  const before = result.hierarchyPageLoadStatsBeforeCameraMovement;
+  const final = result.hierarchyPageLoadStatsFinal;
+  const delta = result.hierarchyPageLoadStatsDelta;
+  const present = [before, final, delta].filter(
+    (value) => value !== undefined,
+  );
+
+  if (present.length === 0) {
+    return [];
+  }
+
+  const failures = [];
+
+  if (present.length !== 3) {
+    failures.push(
+      `${label}: hierarchy page load stats must include the coherent before/final/delta trio when any hierarchy stats are present.`,
+    );
+    return failures;
+  }
+
+  failures.push(
+    ...validateHierarchyPageLoadStatsSnapshot(
+      before,
+      `${label}: hierarchyPageLoadStatsBeforeCameraMovement`,
+    ),
+    ...validateHierarchyPageLoadStatsSnapshot(
+      final,
+      `${label}: hierarchyPageLoadStatsFinal`,
+    ),
+    ...validateHierarchyPageLoadStatsDelta(
+      before,
+      final,
+      delta,
+      `${label}: hierarchyPageLoadStatsDelta`,
+    ),
+  );
+
+  if (before.activeLoadCount !== 0) {
+    failures.push(
+      `${label}: hierarchyPageLoadStatsBeforeCameraMovement.activeLoadCount must be 0 before measured camera movement.`,
+    );
+  }
+  if (final.activeLoadCount !== 0) {
+    failures.push(
+      `${label}: hierarchyPageLoadStatsFinal.activeLoadCount must be 0 after measured camera movement.`,
+    );
+  }
+  if (delta.failedLoadCount !== 0) {
+    failures.push(
+      `${label}: hierarchyPageLoadStatsDelta.failedLoadCount must be 0 during the measured camera movement window.`,
+    );
+  }
+
+  if (
+    Number.isSafeInteger(hierarchyPageLoadConcurrency) &&
+    hierarchyPageLoadConcurrency > 0
+  ) {
+    for (const [statsLabel, stats] of [
+      ["before", before],
+      ["final", final],
+    ]) {
+      if (stats.maxConcurrentLoadCount > hierarchyPageLoadConcurrency) {
+        failures.push(
+          `${label}: hierarchy ${statsLabel} maxConcurrentLoadCount ${formatNumber(stats.maxConcurrentLoadCount)} exceeds configured hierarchy page load concurrency ${formatNumber(hierarchyPageLoadConcurrency)}.`,
+        );
+      }
+    }
+    if (
+      delta.maxConcurrentLoadCountAfter > hierarchyPageLoadConcurrency ||
+      delta.maxConcurrentLoadCountIncrease > hierarchyPageLoadConcurrency
+    ) {
+      failures.push(
+        `${label}: hierarchyPageLoadStatsDelta concurrency exceeds configured hierarchy page load concurrency ${formatNumber(hierarchyPageLoadConcurrency)}.`,
+      );
+    }
+  }
+
+  return failures;
+}
+
+function validateHierarchyPageLoadStatsSnapshot(stats, label) {
+  const failures = [];
+  const integerKeys = [
+    "loadCount",
+    "cacheHitCount",
+    "sharedTaskReuseCount",
+    "completedLoadCount",
+    "failedLoadCount",
+    "activeLoadCount",
+    "maxConcurrentLoadCount",
+    "requestedByteCount",
+    "batchLoadCount",
+    "lastBatchRequestedPageCount",
+    "maxBatchRequestedPageCount",
+  ];
+  const finiteTimeKeys = [
+    "totalLoadMilliseconds",
+    "maxLoadMilliseconds",
+    "totalBatchLoadMilliseconds",
+    "maxBatchLoadMilliseconds",
+  ];
+
+  if (!stats || typeof stats !== "object") {
+    return [`${label} must be an object.`];
+  }
+
+  for (const key of integerKeys) {
+    if (!Number.isSafeInteger(stats[key]) || stats[key] < 0) {
+      failures.push(`${label}.${key} must be a non-negative safe integer.`);
+    }
+  }
+
+  for (const key of finiteTimeKeys) {
+    if (!Number.isFinite(stats[key]) || stats[key] < 0) {
+      failures.push(
+        `${label}.${key} ${formatMilliseconds(stats[key])} must be a non-negative finite number.`,
+      );
+    }
+  }
+
+  return failures;
+}
+
+function validateHierarchyPageLoadStatsDelta(before, final, delta, label) {
+  const failures = [];
+  const cumulativeKeys = [
+    "loadCount",
+    "cacheHitCount",
+    "sharedTaskReuseCount",
+    "completedLoadCount",
+    "failedLoadCount",
+    "requestedByteCount",
+    "totalLoadMilliseconds",
+    "batchLoadCount",
+    "totalBatchLoadMilliseconds",
+  ];
+  const snapshotDeltaKeys = [
+    "maxLoadMilliseconds",
+    "maxBatchLoadMilliseconds",
+    "maxConcurrentLoadCount",
+    "maxBatchRequestedPageCount",
+  ];
+  const integerDeltaKeys = [
+    "loadCount",
+    "cacheHitCount",
+    "sharedTaskReuseCount",
+    "completedLoadCount",
+    "failedLoadCount",
+    "requestedByteCount",
+    "batchLoadCount",
+    "maxConcurrentLoadCountBefore",
+    "maxConcurrentLoadCountAfter",
+    "maxConcurrentLoadCountIncrease",
+    "activeLoadCountBefore",
+    "activeLoadCountAfter",
+    "lastBatchRequestedPageCountBefore",
+    "lastBatchRequestedPageCountAfter",
+    "maxBatchRequestedPageCountBefore",
+    "maxBatchRequestedPageCountAfter",
+    "maxBatchRequestedPageCountIncrease",
+  ];
+  const finiteDeltaKeys = [
+    "totalLoadMilliseconds",
+    "totalBatchLoadMilliseconds",
+    "maxLoadMillisecondsBefore",
+    "maxLoadMillisecondsAfter",
+    "maxLoadMillisecondsIncrease",
+    "maxBatchLoadMillisecondsBefore",
+    "maxBatchLoadMillisecondsAfter",
+    "maxBatchLoadMillisecondsIncrease",
+  ];
+
+  if (!delta || typeof delta !== "object") {
+    return [`${label} must be an object.`];
+  }
+
+  for (const key of integerDeltaKeys) {
+    if (!Number.isSafeInteger(delta[key]) || delta[key] < 0) {
+      failures.push(`${label}.${key} must be a non-negative safe integer.`);
+    }
+  }
+
+  for (const key of finiteDeltaKeys) {
+    if (!Number.isFinite(delta[key]) || delta[key] < 0) {
+      failures.push(
+        `${label}.${key} ${formatMilliseconds(delta[key])} must be a non-negative finite number.`,
+      );
+    }
+  }
+
+  for (const key of cumulativeKeys) {
+    if (
+      Number.isFinite(before[key]) &&
+      Number.isFinite(final[key]) &&
+      final[key] < before[key]
+    ) {
+      failures.push(
+        `${label}: cumulative ${key} regressed from ${formatNumber(before[key])} to ${formatNumber(final[key])}.`,
+      );
+    }
+
+    const expectedDelta =
+      Number.isFinite(before[key]) && Number.isFinite(final[key])
+        ? Math.max(0, final[key] - before[key])
+        : undefined;
+
+    if (
+      expectedDelta !== undefined &&
+      Number.isFinite(delta[key]) &&
+      Math.abs(delta[key] - expectedDelta) > 0.05
+    ) {
+      failures.push(
+        `${label}.${key} ${formatNumber(delta[key])} does not match final-before ${formatNumber(expectedDelta)}.`,
+      );
+    }
+  }
+
+  for (const key of snapshotDeltaKeys) {
+    const beforeKey = `${key}Before`;
+    const afterKey = `${key}After`;
+    const increaseKey = `${key}Increase`;
+
+    if (delta[beforeKey] !== before[key]) {
+      failures.push(
+        `${label}.${beforeKey} ${formatNumber(delta[beforeKey])} does not match before ${formatNumber(before[key])}.`,
+      );
+    }
+    if (delta[afterKey] !== final[key]) {
+      failures.push(
+        `${label}.${afterKey} ${formatNumber(delta[afterKey])} does not match final ${formatNumber(final[key])}.`,
+      );
+    }
+
+    const expectedIncrease =
+      Number.isFinite(before[key]) && Number.isFinite(final[key])
+        ? Math.max(0, final[key] - before[key])
+        : undefined;
+
+    if (
+      expectedIncrease !== undefined &&
+      Number.isFinite(delta[increaseKey]) &&
+      Math.abs(delta[increaseKey] - expectedIncrease) > 0.05
+    ) {
+      failures.push(
+        `${label}.${increaseKey} ${formatNumber(delta[increaseKey])} does not match final-before ${formatNumber(expectedIncrease)}.`,
+      );
+    }
+  }
+
+  for (const key of [
+    "activeLoadCount",
+    "lastBatchRequestedPageCount",
+  ]) {
+    const beforeKey = `${key}Before`;
+    const afterKey = `${key}After`;
+
+    if (delta[beforeKey] !== before[key]) {
+      failures.push(
+        `${label}.${beforeKey} ${formatNumber(delta[beforeKey])} does not match before ${formatNumber(before[key])}.`,
+      );
+    }
+    if (delta[afterKey] !== final[key]) {
+      failures.push(
+        `${label}.${afterKey} ${formatNumber(delta[afterKey])} does not match final ${formatNumber(final[key])}.`,
+      );
+    }
+  }
+
+  return failures;
 }
 
 function checkPostPrefetchRefinement(result, label) {
@@ -1660,6 +2084,8 @@ function summarizeResult(result, failures) {
     cameraStreamFirstResponseMilliseconds:
       result.cameraStreamFirstResponseMilliseconds,
     cameraStreamTotalMilliseconds: diagnostics.totalMilliseconds,
+    cameraStreamApplyTiming:
+      result.cameraStreamApplyTiming ?? result.status?.cameraStreamApplyTiming,
     cameraStreamMode: waitForFinalDetail ? "final-detail" : "interactive",
     cameraStreamPrefetch: result.cameraStreamPrefetch,
     postPrefetchRefinement: result.postPrefetchRefinement,

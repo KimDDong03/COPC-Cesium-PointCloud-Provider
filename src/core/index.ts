@@ -27,6 +27,7 @@ export type {
 } from "./copc/CopcDecodedPointDataCache";
 export {
   CopcSource,
+  type CopcHierarchyPageLoadStats,
   type CopcSourceDescriptor,
   type CopcSourceInput,
   type CopcPointSampleLoadingMode,

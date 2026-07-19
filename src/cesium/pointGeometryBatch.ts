@@ -4,10 +4,22 @@ import type {
   CopcPointDataSample,
   CopcPointDataSampleArrays,
 } from "../core/copc/CopcPointDataSample";
+import {
+  checkForCopcPointSamplingAbort,
+  normalizeCopcPointClassification,
+  normalizeCopcPointColorComponent,
+  normalizeCopcPointIntensity,
+  readCopcSpatialPointIndex,
+  throwIfCopcPointSamplingAborted,
+  validateCopcPointCount,
+  validateCopcSpatialPointOrder,
+  type CopcPointDataView,
+} from "../core/copc/loadCopcNodePointSamples";
 import type { CopcHierarchyNodeSummary } from "../core/copc/CopcHierarchySummary";
 import type { CopcInspection } from "../core/copc/CopcInspection";
 import type { PointGeometryBatch } from "./CopcPointCloudRenderer";
 import {
+  colorizeCopcPointComponents,
   colorizeCopcPoint,
   type ResolvedCopcPointColorStyle,
 } from "./copcPointColorizer";
@@ -227,6 +239,60 @@ export function createPointGeometryBatchFromSerializableTransform(options: {
   });
 }
 
+export function createPointGeometryBatchFromCopcPointDataView(options: {
+  readonly nodeKey: string;
+  readonly view: CopcPointDataView;
+  readonly maxPointCount: number;
+  readonly spatialPointOrder: Uint32Array;
+  readonly transform: CesiumPointGeometryTransform;
+  readonly pointColorStyle?: ResolvedCopcPointColorStyle;
+  readonly signal?: AbortSignal;
+}): {
+  readonly pointSamples: CopcNodePointSampleResult;
+  readonly geometryBatch: PointGeometryBatch;
+} {
+  const { view } = options;
+  validateCopcPointCount("view.pointCount", view.pointCount);
+  validateCopcPointCount("maxPointCount", options.maxPointCount);
+  validateCopcSpatialPointOrder(options.spatialPointOrder, view.pointCount);
+  throwIfCopcPointSamplingAborted(options.signal);
+
+  const sampledPointCount = Math.min(view.pointCount, options.maxPointCount);
+  const pointSamples: CopcNodePointSampleResult = {
+    nodeKey: options.nodeKey,
+    nodePointCount: view.pointCount,
+    sampledPointCount,
+    points: [],
+  };
+
+  if (sampledPointCount === 0) {
+    return {
+      pointSamples,
+      geometryBatch: {
+        key: createNodePointSampleBatchKey(pointSamples),
+        pointCount: 0,
+        positions: new Float64Array(0),
+        colors: new Uint8Array(0),
+        positionBounds: undefined,
+        hasTranslucentColors: false,
+      },
+    };
+  }
+
+  return {
+    pointSamples,
+    geometryBatch: createPointGeometryBatchFromCopcPointDataViewData({
+      key: createNodePointSampleBatchKey(pointSamples),
+      view,
+      sampledPointCount,
+      spatialPointOrder: options.spatialPointOrder,
+      transform: options.transform,
+      pointColorStyle: options.pointColorStyle,
+      signal: options.signal,
+    }),
+  };
+}
+
 export function createPointDataSampleArraysFromPoints(
   points: readonly CopcPointDataSample[],
 ): CopcPointDataSampleArrays {
@@ -398,26 +464,189 @@ function createPointGeometryBatchFromPointData(options: {
   };
 }
 
+function createPointGeometryBatchFromCopcPointDataViewData(options: {
+  readonly key: string;
+  readonly view: CopcPointDataView;
+  readonly sampledPointCount: number;
+  readonly spatialPointOrder: Uint32Array;
+  readonly transform: CesiumPointGeometryTransform;
+  readonly pointColorStyle?: ResolvedCopcPointColorStyle;
+  readonly signal: AbortSignal | undefined;
+}): PointGeometryBatch {
+  const pointCount = options.sampledPointCount;
+  const positions = new Float64Array(pointCount * 3);
+  const colors = new Uint8Array(pointCount * 4);
+  const getX = options.view.getter("X");
+  const getY = options.view.getter("Y");
+  const getZ = options.view.getter("Z");
+  const colorGetters = getCopcPointDataViewColorGetters(options.view);
+  const getClassification = getOptionalCopcPointDataViewGetter(
+    options.view,
+    "Classification",
+  );
+  const getIntensity = getOptionalCopcPointDataViewGetter(
+    options.view,
+    "Intensity",
+  );
+  const coordinateTransform = createSerializableCoordinateTransformForSource(
+    {
+      pointCount,
+      getPointIndex: (sampleIndex) =>
+        readCopcSpatialPointIndex(
+          options.spatialPointOrder,
+          sampleIndex,
+          options.view.pointCount,
+        ),
+      getX,
+      getY,
+    },
+    options.transform,
+  );
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let minZ = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  let maxZ = Number.NEGATIVE_INFINITY;
+
+  for (let sampleIndex = 0; sampleIndex < pointCount; sampleIndex += 1) {
+    checkForCopcPointSamplingAbort(options.signal, sampleIndex);
+    const pointIndex = readCopcSpatialPointIndex(
+      options.spatialPointOrder,
+      sampleIndex,
+      options.view.pointCount,
+    );
+    const x = getX(pointIndex);
+    const y = getY(pointIndex);
+    const z = getZ(pointIndex);
+    const position = coordinateTransform(x, y, z);
+    const packedColor = colorizeCopcPointComponents(
+      z,
+      colorGetters
+        ? normalizeCopcPointColorComponent(colorGetters.red(pointIndex))
+        : undefined,
+      colorGetters
+        ? normalizeCopcPointColorComponent(colorGetters.green(pointIndex))
+        : undefined,
+      colorGetters
+        ? normalizeCopcPointColorComponent(colorGetters.blue(pointIndex))
+        : undefined,
+      getClassification
+        ? normalizeCopcPointClassification(getClassification(pointIndex))
+        : undefined,
+      getIntensity
+        ? normalizeCopcPointIntensity(getIntensity(pointIndex))
+        : undefined,
+      options.pointColorStyle,
+    );
+    const positionOffset = sampleIndex * 3;
+    const colorOffset = sampleIndex * 4;
+
+    positions[positionOffset] = position[0];
+    positions[positionOffset + 1] = position[1];
+    positions[positionOffset + 2] = position[2];
+    if (
+      Number.isFinite(position[0]) &&
+      Number.isFinite(position[1]) &&
+      Number.isFinite(position[2])
+    ) {
+      minX = Math.min(minX, position[0]);
+      minY = Math.min(minY, position[1]);
+      minZ = Math.min(minZ, position[2]);
+      maxX = Math.max(maxX, position[0]);
+      maxY = Math.max(maxY, position[1]);
+      maxZ = Math.max(maxZ, position[2]);
+    }
+    colors[colorOffset] = (packedColor >> 16) & 255;
+    colors[colorOffset + 1] = (packedColor >> 8) & 255;
+    colors[colorOffset + 2] = packedColor & 255;
+    colors[colorOffset + 3] = DEFAULT_GEOMETRY_POINT_COLOR.alpha;
+  }
+
+  throwIfCopcPointSamplingAborted(options.signal);
+
+  return {
+    key: options.key,
+    pointCount,
+    positions,
+    colors,
+    positionBounds:
+      minX <= maxX && minY <= maxY && minZ <= maxZ
+        ? { minX, minY, minZ, maxX, maxY, maxZ }
+        : undefined,
+    hasTranslucentColors: false,
+  };
+}
+
 function createSerializableCoordinateTransform(
   pointData: CopcPointDataSampleArrays,
   transform: CesiumPointGeometryTransform,
 ): (x: number, y: number, z: number) => readonly [number, number, number] {
+  return createSerializableCoordinateTransformForSource(
+    {
+      pointCount: pointData.x.length,
+      getX: (pointIndex) => pointData.x[pointIndex],
+      getY: (pointIndex) => pointData.y[pointIndex],
+    },
+    transform,
+  );
+}
+
+interface SampledHorizontalCoordinateSource {
+  readonly pointCount: number;
+  readonly getPointIndex?: (sampleIndex: number) => number;
+  readonly getX: (index: number) => number;
+  readonly getY: (index: number) => number;
+}
+
+function createSerializableCoordinateTransformForSource(
+  source: SampledHorizontalCoordinateSource,
+  transform: CesiumPointGeometryTransform,
+): (x: number, y: number, z: number) => readonly [number, number, number] {
   if (transform.kind === "geographic") {
     return (x, y, z) =>
-      cartesianFromDegrees(
-        x,
-        y,
-        z * transform.heightScaleToMeters,
-      );
+      cartesianFromDegrees(x, y, z * transform.heightScaleToMeters);
   }
 
-  const horizontalTransform =
-    transform.kind === "epsg:2992"
-      ? createEpsg2992LocalLinearTransform(pointData)
-      : createProj4LocalLinearTransform(pointData, transform);
+  let project: (x: number, y: number) => readonly [number, number];
+
+  if (transform.kind === "epsg:2992") {
+    configureKnownCopcProjections();
+    const projection = proj4(EPSG_2992, WGS84);
+    project = (x, y) => projection.forward([x, y]) as [number, number];
+  } else {
+    const sourceCrs = transform.sourceCrs;
+    const targetCrs = transform.targetCrs ?? WGS84;
+
+    if (!sourceCrs) {
+      throw new Error(
+        "Serializable proj4 point geometry transform requires a source CRS.",
+      );
+    }
+
+    const projection = proj4(
+      transform.sourceDefinition ?? sourceCrs,
+      transform.targetDefinition ?? targetCrs,
+    );
+    project = (x, y) => projection.forward([x, y]) as [number, number];
+  }
+
+  const [originX, originY] = findFiniteHorizontalPoint(source);
+  const [originLongitude, originLatitude] = project(originX, originY);
+  const [xStepLongitude, xStepLatitude] = project(originX + 1, originY);
+  const [yStepLongitude, yStepLatitude] = project(originX, originY + 1);
+  const longitudePerX = xStepLongitude - originLongitude;
+  const latitudePerX = xStepLatitude - originLatitude;
+  const longitudePerY = yStepLongitude - originLongitude;
+  const latitudePerY = yStepLatitude - originLatitude;
 
   return (x, y, z) => {
-    const [longitudeDegrees, latitudeDegrees] = horizontalTransform(x, y);
+    const deltaX = x - originX;
+    const deltaY = y - originY;
+    const longitudeDegrees =
+      originLongitude + deltaX * longitudePerX + deltaY * longitudePerY;
+    const latitudeDegrees =
+      originLatitude + deltaX * latitudePerX + deltaY * latitudePerY;
 
     return cartesianFromDegrees(
       longitudeDegrees,
@@ -427,68 +656,13 @@ function createSerializableCoordinateTransform(
   };
 }
 
-function createEpsg2992LocalLinearTransform(
-  pointData: CopcPointDataSampleArrays,
-): (x: number, y: number) => readonly [number, number] {
-  configureKnownCopcProjections();
-  const projection = proj4(EPSG_2992, WGS84);
-  return createProjectedLocalLinearTransform(
-    pointData,
-    (x, y) => projection.forward([x, y]) as [number, number],
-  );
-}
-
-function createProj4LocalLinearTransform(
-  pointData: CopcPointDataSampleArrays,
-  transform: CesiumPointGeometryTransform,
-): (x: number, y: number) => readonly [number, number] {
-  const sourceCrs = transform.sourceCrs;
-  const targetCrs = transform.targetCrs ?? WGS84;
-
-  if (!sourceCrs) {
-    throw new Error("Serializable proj4 point geometry transform requires a source CRS.");
-  }
-
-  const sourceProjection = transform.sourceDefinition ?? sourceCrs;
-  const targetProjection = transform.targetDefinition ?? targetCrs;
-  const projection = proj4(sourceProjection, targetProjection);
-
-  return createProjectedLocalLinearTransform(
-    pointData,
-    (x, y) => projection.forward([x, y]) as [number, number],
-  );
-}
-
-function createProjectedLocalLinearTransform(
-  pointData: CopcPointDataSampleArrays,
-  project: (x: number, y: number) => readonly [number, number],
-): (x: number, y: number) => readonly [number, number] {
-  const [originX, originY] = findFinitePointDataOrigin(pointData);
-  const [originLongitude, originLatitude] = project(originX, originY);
-  const [xStepLongitude, xStepLatitude] = project(originX + 1, originY);
-  const [yStepLongitude, yStepLatitude] = project(originX, originY + 1);
-  const longitudePerX = xStepLongitude - originLongitude;
-  const latitudePerX = xStepLatitude - originLatitude;
-  const longitudePerY = yStepLongitude - originLongitude;
-  const latitudePerY = yStepLatitude - originLatitude;
-
-  return (x, y) => {
-    const deltaX = x - originX;
-    const deltaY = y - originY;
-
-    return [
-      originLongitude + deltaX * longitudePerX + deltaY * longitudePerY,
-      originLatitude + deltaX * latitudePerX + deltaY * latitudePerY,
-    ];
-  };
-}
-
-function findFinitePointDataOrigin(
-  pointData: CopcPointDataSampleArrays,
+function findFiniteHorizontalPoint(
+  source: SampledHorizontalCoordinateSource,
 ): readonly [number, number] {
-  for (let pointIndex = 0; pointIndex < pointData.x.length; pointIndex += 1) {
-    const x = pointData.x[pointIndex];
-    const y = pointData.y[pointIndex];
+  for (let sampleIndex = 0; sampleIndex < source.pointCount; sampleIndex += 1) {
+    const pointIndex = source.getPointIndex?.(sampleIndex) ?? sampleIndex;
+    const x = source.getX(pointIndex);
+    const y = source.getY(pointIndex);
 
     if (Number.isFinite(x) && Number.isFinite(y)) {
       return [x, y];
@@ -496,6 +670,39 @@ function findFinitePointDataOrigin(
   }
 
   return [0, 0];
+}
+
+function getOptionalCopcPointDataViewGetter(
+  view: CopcPointDataView,
+  name: string,
+): ((index: number) => number) | undefined {
+  return name in view.dimensions ? view.getter(name) : undefined;
+}
+
+function getCopcPointDataViewColorGetters(
+  view: CopcPointDataView,
+):
+  | {
+      readonly red: (index: number) => number;
+      readonly green: (index: number) => number;
+      readonly blue: (index: number) => number;
+    }
+  | undefined {
+  if (
+    !(
+      "Red" in view.dimensions &&
+      "Green" in view.dimensions &&
+      "Blue" in view.dimensions
+    )
+  ) {
+    return undefined;
+  }
+
+  return {
+    red: view.getter("Red"),
+    green: view.getter("Green"),
+    blue: view.getter("Blue"),
+  };
 }
 
 function cartesianFromDegrees(

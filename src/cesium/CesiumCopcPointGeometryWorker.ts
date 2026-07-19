@@ -8,14 +8,12 @@ import {
 import { getSharedLazPerf } from "../core/copc/createLazPerf";
 import {
   loadCopcNodePointDataView,
-  sampleCopcPointDataView,
   type CopcPointDataView,
 } from "../core/copc/loadCopcNodePointSamples";
 import {
   createSpatiallyDistributedPointIndices,
   SPATIAL_POINT_ORDER_BYTES_PER_POINT,
 } from "../core/copc/createSpatiallyDistributedPointIndices";
-import type { CopcNodePointSampleResult } from "../core/copc/CopcPointDataSample";
 import type {
   CopcDecodedPointDataCacheNodeKey,
   CopcDecodedPointDataCacheSnapshot,
@@ -31,8 +29,7 @@ import type {
   CesiumCopcPointGeometryWorkerSerializedError,
 } from "./CesiumCopcPointGeometryWorkerProtocol";
 import {
-  createNodePointSampleBatchKey,
-  createPointGeometryBatchFromSerializableTransform,
+  createPointGeometryBatchFromCopcPointDataView,
 } from "./pointGeometryBatch";
 
 interface WorkerCopcSource {
@@ -186,13 +183,6 @@ async function handleRequest(
       pointDataView.entry,
       pointDataView.view,
     );
-    const pointSamplesWithData = sampleCopcPointDataView({
-      nodeKey: request.nodeKey,
-      view: pointDataView.view,
-      maxPointCount: request.maxPointCount,
-      sampleFormat: "typed",
-      spatialPointOrder,
-    });
     const sampleEndedAt = nowMilliseconds();
 
     if (isRequestCanceled(request.id)) {
@@ -200,19 +190,17 @@ async function handleRequest(
       return;
     }
 
-    if (!pointSamplesWithData.pointData) {
-      throw new Error("Typed COPC point data was not produced.");
-    }
-
     const geometryStartedAt = nowMilliseconds();
-    const geometryBatch = createPointGeometryBatchFromSerializableTransform({
-      key: createNodePointSampleBatchKey(pointSamplesWithData),
-      pointData: pointSamplesWithData.pointData,
-      transform: request.transform,
-      pointColorStyle: request.pointColorStyle,
-    });
+    const { pointSamples, geometryBatch } =
+      createPointGeometryBatchFromCopcPointDataView({
+        nodeKey: request.nodeKey,
+        view: pointDataView.view,
+        maxPointCount: request.maxPointCount,
+        spatialPointOrder,
+        transform: request.transform,
+        pointColorStyle: request.pointColorStyle,
+      });
     const geometryEndedAt = nowMilliseconds();
-    const pointSamples = stripTransferOnlyPointData(pointSamplesWithData);
 
     if (isRequestCanceled(request.id)) {
       postCanceledResponse(request, cacheSnapshot);
@@ -349,17 +337,6 @@ function postCanceledResponse(
         : "loadNodePointGeometry:canceled",
     cache,
   });
-}
-
-function stripTransferOnlyPointData(
-  result: CopcNodePointSampleResult,
-): CopcNodePointSampleResult {
-  return {
-    nodeKey: result.nodeKey,
-    nodePointCount: result.nodePointCount,
-    sampledPointCount: result.sampledPointCount,
-    points: [],
-  };
 }
 
 function getPointGeometryBatchTransferables(

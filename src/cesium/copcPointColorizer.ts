@@ -43,18 +43,14 @@ export function colorizeCopcPoint(
   pointIndex: number,
   style: ResolvedCopcPointColorStyle = ATTRIBUTE_POINT_COLOR_STYLE,
 ): number {
-  if (style.mode === "elevation") {
-    return colorizeNormalizedElevation(
-      normalizeElevation(pointData.z[pointIndex], style),
-    );
-  }
-
-  return colorizeCopcAttributes(
+  return colorizeCopcPointComponents(
+    pointData.z[pointIndex],
     pointData.red?.[pointIndex],
     pointData.green?.[pointIndex],
     pointData.blue?.[pointIndex],
     pointData.classification?.[pointIndex],
     pointData.intensity?.[pointIndex],
+    style,
   );
 }
 
@@ -118,6 +114,22 @@ export function resolveCopcPointColorStyle(
     minimumZ,
     inverseZRange: 1 / range,
   });
+}
+
+export function colorizeCopcPointComponents(
+  z: number,
+  red: number | undefined,
+  green: number | undefined,
+  blue: number | undefined,
+  classification: number | undefined,
+  intensity: number | undefined,
+  style: ResolvedCopcPointColorStyle = ATTRIBUTE_POINT_COLOR_STYLE,
+): number {
+  if (style.mode === "elevation") {
+    return colorizeNormalizedElevation(normalizeElevation(z, style));
+  }
+
+  return colorizeCopcAttributes(red, green, blue, classification, intensity);
 }
 
 function normalizeElevation(

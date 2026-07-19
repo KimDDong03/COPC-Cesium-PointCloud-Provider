@@ -365,6 +365,64 @@ test("basic viewer marks camera movement complete before final stream refinement
   );
 });
 
+test("camera stream commits update dynamic metadata without rebuilding the inspection panel", async () => {
+  const source = await readFile(basicViewerMainPath, "utf8");
+  const benchmarkSource = await readFile(benchmarkScriptPath, "utf8");
+  const applyStart = source.indexOf(
+    "function applyCameraStreamRenderResult(options:",
+  );
+  const applyEnd = source.indexOf(
+    "function updateCameraStreamMetadataRows(",
+    applyStart,
+  );
+  const applySource = source.slice(applyStart, applyEnd);
+  const metadataEnd = source.indexOf(
+    "function recordCameraStreamApplyTiming(",
+    applyEnd,
+  );
+  const metadataSource = source.slice(applyEnd, metadataEnd);
+
+  assert.notEqual(applyStart, -1);
+  assert.ok(applyEnd > applyStart);
+  assert.ok(metadataEnd > applyEnd);
+  assert.doesNotMatch(applySource, /renderInspection\(/);
+  assert.doesNotMatch(applySource, /updateSuggestedNode\(/);
+  assert.match(applySource, /updateCameraStreamMetadataRows\(options\)/);
+  assert.match(applySource, /recordCameraStreamApplyTiming\(\{/);
+  for (const rowLabel of [
+    "Point renderer",
+    "Renderer timing",
+    "Renderer payload",
+    "Point geometry timing",
+    "Point geometry cache",
+    "Decoded worker cache",
+    "Camera stream diagnostics",
+    "Camera stream coverage",
+    "Camera stream visual quality",
+    "Camera stream prefetch",
+    "Camera stream budget",
+    "Camera stream LOD",
+    "Hierarchy pages",
+    "Point cache",
+    "Render set",
+    "Auto LOD",
+  ]) {
+    assert.match(metadataSource, new RegExp(`"${rowLabel}"`));
+  }
+  assert.match(
+    source,
+    /cameraStreamApplyTiming: lastCameraStreamApplyTiming/,
+  );
+  assert.match(
+    source,
+    /hierarchyPageLoadStats: currentLayer\?\.source\.getHierarchyPageLoadStats\(\)/,
+  );
+  assert.match(
+    benchmarkSource,
+    /cameraStreamApplyTiming: status\?\.cameraStreamApplyTiming/,
+  );
+});
+
 test("basic viewer keeps a committed render stable during movement", async () => {
   const source = await readFile(basicViewerMainPath, "utf8");
   const retainDuringMove = source.indexOf(
@@ -517,9 +575,14 @@ test("basic viewer forwards the coalesced range gap query without changing post-
   assert.ok(postTerminalGeometry < postTerminalResolve);
   assert.match(source, /"maxCoalescedPointDataRangeGapBytes"/);
   assert.match(source, /"pointGeometryWorkerConcurrency"/);
+  assert.match(source, /"hierarchyPageLoadConcurrency"/);
   assert.match(
     source,
     /POINT_GEOMETRY_WORKER_CONCURRENCY_OVERRIDE\s*=\s*\n\s*readPointGeometryWorkerConcurrencyOverride\(\)/,
+  );
+  assert.match(
+    source,
+    /HIERARCHY_PAGE_LOAD_CONCURRENCY\s*=\s*\n\s*readHierarchyPageLoadConcurrencyOverride\(\)/,
   );
   assert.match(
     source,
@@ -544,7 +607,7 @@ test("benchmark report records the current artifact schema", async () => {
     source,
     /const benchmarkArtifactSchema = "copc-viewer\.smoothness-benchmark";/,
   );
-  assert.match(source, /const benchmarkArtifactSchemaVersion = 1;/);
+  assert.match(source, /const benchmarkArtifactSchemaVersion = 2;/);
   assert.match(
     source,
     /const report = \{[\s\S]*schema: benchmarkArtifactSchema,[\s\S]*schemaVersion: benchmarkArtifactSchemaVersion,/,
@@ -563,7 +626,15 @@ test("smoothness benchmark records prefetch and coalesced range config plus scop
   );
   assert.match(
     source,
+    /COPC_SMOOTHNESS_HIERARCHY_PAGE_LOAD_CONCURRENCY/,
+  );
+  assert.match(
+    source,
     /COPC_SMOOTHNESS_POINT_GEOMETRY_WORKER_CONCURRENCY must be at most 8/,
+  );
+  assert.match(
+    source,
+    /COPC_SMOOTHNESS_HIERARCHY_PAGE_LOAD_CONCURRENCY must be at most 8/,
   );
   assert.match(
     source,
@@ -576,6 +647,10 @@ test("smoothness benchmark records prefetch and coalesced range config plus scop
   assert.match(
     source,
     /"pointGeometryWorkerConcurrency",\s*String\(benchmarkPointGeometryWorkerConcurrency\)/,
+  );
+  assert.match(
+    source,
+    /"hierarchyPageLoadConcurrency",\s*String\(benchmarkHierarchyPageLoadConcurrency\)/,
   );
   assert.match(flow, /page\.on\("request", \(request\) =>/);
   assert.match(flow, /const range = readHeader\(headers, "range"\)/);
@@ -598,10 +673,95 @@ test("smoothness benchmark records prefetch and coalesced range config plus scop
   assert.match(flow, /maxCoalescedPointDataRangeBytes,/);
   assert.match(flow, /maxCoalescedPointDataRangeGapBytes,/);
   assert.match(flow, /pointGeometryWorkerConcurrency,/);
+  assert.match(flow, /hierarchyPageLoadConcurrency,/);
+  assert.match(flow, /const statusBeforeCameraMovement = benchmark\.getStatus\(\)/);
+  assert.match(flow, /hierarchyPageLoadStatsBeforeCameraMovement/);
+  assert.match(flow, /hierarchyPageLoadStatsFinal/);
+  assert.match(flow, /hierarchyPageLoadStatsDelta/);
+  assert.match(flow, /function createHierarchyPageLoadStatsDelta/);
   assert.match(flow, /httpRangePhaseSummaries: httpRangeEvidence\.phaseSummaries/);
   assert.match(flow, /phase: activeHttpRangeScope\?\.phase/);
   assert.match(flow, /setHttpRangeScopePhase\(httpRangeScope, "terminal-refinement"\)/);
   assert.match(flow, /setHttpRangeScopePhase\(httpRangeScope, "post-terminal-prefetch"\)/);
+});
+
+test("generated hierarchy page load stats delta subtracts only cumulative counters", async () => {
+  const flow = await createGeneratedFlow();
+  const helpers = extractGeneratedHelpers(
+    flow,
+    "function subtractNonnegativeCounter(",
+    "function parseAppliedCameraStreamBudget(",
+  );
+  const createHierarchyPageLoadStatsDelta = eval(
+    `${helpers}\ncreateHierarchyPageLoadStatsDelta;`,
+  );
+
+  assert.deepEqual(
+    createHierarchyPageLoadStatsDelta(
+      {
+        loadCount: 10,
+        cacheHitCount: 3,
+        sharedTaskReuseCount: 2,
+        completedLoadCount: 7,
+        failedLoadCount: 1,
+        activeLoadCount: 2,
+        maxConcurrentLoadCount: 4,
+        requestedByteCount: 1000,
+        totalLoadMilliseconds: 80,
+        maxLoadMilliseconds: 60,
+        batchLoadCount: 5,
+        totalBatchLoadMilliseconds: 120,
+        maxBatchLoadMilliseconds: 90,
+        lastBatchRequestedPageCount: 2,
+        maxBatchRequestedPageCount: 3,
+      },
+      {
+        loadCount: 14,
+        cacheHitCount: 6,
+        sharedTaskReuseCount: 5,
+        completedLoadCount: 10,
+        failedLoadCount: 1,
+        activeLoadCount: 0,
+        maxConcurrentLoadCount: 5,
+        requestedByteCount: 1800,
+        totalLoadMilliseconds: 140,
+        maxLoadMilliseconds: 60,
+        batchLoadCount: 7,
+        totalBatchLoadMilliseconds: 210,
+        maxBatchLoadMilliseconds: 110,
+        lastBatchRequestedPageCount: 4,
+        maxBatchRequestedPageCount: 4,
+      },
+    ),
+    {
+      loadCount: 4,
+      cacheHitCount: 3,
+      sharedTaskReuseCount: 3,
+      completedLoadCount: 3,
+      failedLoadCount: 0,
+      requestedByteCount: 800,
+      totalLoadMilliseconds: 60,
+      batchLoadCount: 2,
+      totalBatchLoadMilliseconds: 90,
+      maxLoadMillisecondsBefore: 60,
+      maxLoadMillisecondsAfter: 60,
+      maxLoadMillisecondsIncrease: 0,
+      maxBatchLoadMillisecondsBefore: 90,
+      maxBatchLoadMillisecondsAfter: 110,
+      maxBatchLoadMillisecondsIncrease: 20,
+      maxConcurrentLoadCountBefore: 4,
+      maxConcurrentLoadCountAfter: 5,
+      maxConcurrentLoadCountIncrease: 1,
+      activeLoadCountBefore: 2,
+      activeLoadCountAfter: 0,
+      lastBatchRequestedPageCountBefore: 2,
+      lastBatchRequestedPageCountAfter: 4,
+      maxBatchRequestedPageCountBefore: 3,
+      maxBatchRequestedPageCountAfter: 4,
+      maxBatchRequestedPageCountIncrease: 1,
+    },
+  );
+  assert.equal(createHierarchyPageLoadStatsDelta(undefined, {}), undefined);
 });
 
 test("generated HTTP range summary counts wire metadata without worker-byte inference and groups phases", async () => {

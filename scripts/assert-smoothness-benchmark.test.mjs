@@ -227,6 +227,123 @@ test("requires current artifact terminal and decoded-cache evidence", async () =
   assert.match(failures, /did not report decoded point-data cache stats/);
 });
 
+test("requires camera-stream apply timing in current artifacts", async () => {
+  const benchmark = createBenchmark(1);
+  delete benchmark.results[0].cameraStreamApplyTiming;
+
+  const result = await runAssertion(benchmark);
+
+  assert.equal(result.status, 1);
+  assert.match(
+    result.report.failures.join("\n"),
+    /did not report camera-stream apply timing/,
+  );
+});
+
+test("rejects inconsistent camera-stream apply timing evidence", async () => {
+  const benchmark = createBenchmark(1);
+  const timing = benchmark.results[0].cameraStreamApplyTiming;
+  timing.requestId = 8;
+  timing.metadataMilliseconds = -1;
+  timing.totalMilliseconds = 99;
+  delete timing.postApplyToNextPostRenderMilliseconds;
+
+  const result = await runAssertion(benchmark);
+  const failures = result.report.failures.join("\n");
+
+  assert.equal(result.status, 1);
+  assert.match(failures, /does not match measured status request 7/);
+  assert.match(failures, /metadataMilliseconds .* must be a non-negative/);
+  assert.match(failures, /segment total .* does not match reported total/);
+  assert.match(failures, /must include non-negative finite next-postRender/);
+});
+
+test("correlates apply timing against fallback request and disposition evidence", async () => {
+  const fallbackBenchmark = createBenchmark(1);
+  const fallbackResult = fallbackBenchmark.results[0];
+  fallbackResult.expectedCameraStreamRequestId = 7;
+  delete fallbackResult.status.cameraStreamRequestId;
+
+  const fallback = await runAssertion(fallbackBenchmark);
+
+  assert.equal(fallback.status, 0, fallback.stderr);
+
+  const malformedBenchmark = createBenchmark(1);
+  const malformedResult = malformedBenchmark.results[0];
+  delete malformedResult.status.cameraStreamRequestId;
+  delete malformedResult.cameraStreamRenderDisposition;
+  delete malformedResult.status.cameraStreamRenderDisposition;
+
+  const malformed = await runAssertion(malformedBenchmark);
+  const failures = malformed.report.failures.join("\n");
+
+  assert.equal(malformed.status, 1);
+  assert.match(
+    failures,
+    /did not report a positive measured or expected camera-stream request ID/,
+  );
+  assert.match(
+    failures,
+    /did not report a render disposition for apply-timing correlation/,
+  );
+});
+
+test("accepts current artifacts without optional hierarchy page load stats", async () => {
+  const benchmark = createBenchmark(1);
+  const result = benchmark.results[0];
+  delete result.hierarchyPageLoadStatsBeforeCameraMovement;
+  delete result.hierarchyPageLoadStatsFinal;
+  delete result.hierarchyPageLoadStatsDelta;
+
+  const assertion = await runAssertion(benchmark);
+
+  assert.equal(assertion.status, 0, assertion.stderr);
+});
+
+test("rejects partial hierarchy page load stats telemetry", async () => {
+  const benchmark = createBenchmark(1);
+  delete benchmark.results[0].hierarchyPageLoadStatsDelta;
+
+  const result = await runAssertion(benchmark);
+
+  assert.equal(result.status, 1);
+  assert.match(
+    result.report.failures.join("\n"),
+    /must include the coherent before\/final\/delta trio/,
+  );
+});
+
+test("rejects incoherent hierarchy page load stats deltas", async () => {
+  const benchmark = createBenchmark(1);
+  const result = benchmark.results[0];
+  result.hierarchyPageLoadStatsDelta.loadCount = 99;
+  result.hierarchyPageLoadStatsDelta.failedLoadCount = 1;
+  result.hierarchyPageLoadStatsDelta.activeLoadCountAfter = 1;
+
+  const assertion = await runAssertion(benchmark);
+  const failures = assertion.report.failures.join("\n");
+
+  assert.equal(assertion.status, 1);
+  assert.match(failures, /loadCount .* does not match final-before/);
+  assert.match(failures, /failedLoadCount must be 0/);
+  assert.match(failures, /activeLoadCountAfter .* does not match final/);
+});
+
+test("rejects hierarchy page load stats above configured concurrency", async () => {
+  const benchmark = createBenchmark(1);
+  benchmark.hierarchyPageLoadConcurrency = 2;
+  benchmark.results[0].hierarchyPageLoadStatsFinal.maxConcurrentLoadCount = 3;
+  benchmark.results[0].hierarchyPageLoadStatsDelta.maxConcurrentLoadCountAfter = 3;
+
+  const result = await runAssertion(benchmark);
+
+  assert.equal(result.status, 1);
+  assert.match(
+    result.report.failures.join("\n"),
+    /exceeds configured hierarchy page load concurrency 2/,
+  );
+});
+
 test("rejects partially versioned artifacts instead of treating them as legacy", async () => {
   const benchmark = createBenchmark(1);
   delete benchmark.schemaVersion;
@@ -236,7 +353,7 @@ test("rejects partially versioned artifacts instead of treating them as legacy",
   assert.equal(result.status, 1);
   assert.match(
     result.report.failures.join("\n"),
-    /benchmark\.schemaVersion must be 1; received undefined/,
+    /benchmark\.schemaVersion must be 2; received undefined/,
   );
   assert.equal(result.report.benchmarkArtifact.isLegacyUnversioned, false);
 });
@@ -568,12 +685,13 @@ test("rejects partial or stale node-sample reuse as zero-worker evidence", async
 function createBenchmark(cacheHitCount) {
   return {
     schema: "copc-viewer.smoothness-benchmark",
-    schemaVersion: 1,
+    schemaVersion: 2,
     profile: "warm-zoom-detail",
     repeatCount: 1,
     warmupRunCount: 1,
     durationMilliseconds: 1_200,
     waitForFinalDetail: true,
+    hierarchyPageLoadConcurrency: 4,
     browserGraphics: {
       renderer: "Test GPU Renderer",
     },
@@ -610,6 +728,65 @@ function createBenchmark(cacheHitCount) {
         cameraStreamDiagnostics: {
           totalMilliseconds: 100,
           selectedDepth: 5,
+        },
+        cameraStreamRenderDisposition: "new-render",
+        status: {
+          cameraStreamRequestId: 7,
+          cameraStreamRenderDisposition: "new-render",
+        },
+        cameraStreamApplyTiming: {
+          requestId: 7,
+          renderDisposition: "new-render",
+          stateMilliseconds: 0.1,
+          renderSetMilliseconds: 0.2,
+          metadataMilliseconds: 0.3,
+          hudMilliseconds: 0.1,
+          statusMilliseconds: 0.1,
+          totalMilliseconds: 0.8,
+          postApplyToNextPostRenderMilliseconds: 15.2,
+          applyStartToNextPostRenderMilliseconds: 16,
+        },
+        hierarchyPageLoadStatsBeforeCameraMovement:
+          createHierarchyPageLoadStats(),
+        hierarchyPageLoadStatsFinal: createHierarchyPageLoadStats({
+          loadCount: 7,
+          completedLoadCount: 7,
+          requestedByteCount: 1_400,
+          totalLoadMilliseconds: 240,
+          maxLoadMilliseconds: 80,
+          batchLoadCount: 3,
+          totalBatchLoadMilliseconds: 120,
+          maxBatchLoadMilliseconds: 55,
+          maxConcurrentLoadCount: 4,
+          lastBatchRequestedPageCount: 4,
+          maxBatchRequestedPageCount: 4,
+        }),
+        hierarchyPageLoadStatsDelta: {
+          loadCount: 2,
+          cacheHitCount: 0,
+          sharedTaskReuseCount: 0,
+          completedLoadCount: 2,
+          failedLoadCount: 0,
+          requestedByteCount: 400,
+          totalLoadMilliseconds: 40,
+          batchLoadCount: 1,
+          totalBatchLoadMilliseconds: 20,
+          maxLoadMillisecondsBefore: 70,
+          maxLoadMillisecondsAfter: 80,
+          maxLoadMillisecondsIncrease: 10,
+          maxBatchLoadMillisecondsBefore: 50,
+          maxBatchLoadMillisecondsAfter: 55,
+          maxBatchLoadMillisecondsIncrease: 5,
+          maxConcurrentLoadCountBefore: 3,
+          maxConcurrentLoadCountAfter: 4,
+          maxConcurrentLoadCountIncrease: 1,
+          activeLoadCountBefore: 0,
+          activeLoadCountAfter: 0,
+          lastBatchRequestedPageCountBefore: 3,
+          lastBatchRequestedPageCountAfter: 4,
+          maxBatchRequestedPageCountBefore: 3,
+          maxBatchRequestedPageCountAfter: 4,
+          maxBatchRequestedPageCountIncrease: 1,
         },
         cameraStreamPrefetch: {
           state: "completed",
@@ -716,6 +893,27 @@ function createHierarchyCacheStats() {
     trackedPendingPageCount: 136,
     cacheEvictionCount: 0,
     isOverLimit: false,
+  };
+}
+
+function createHierarchyPageLoadStats(overrides = {}) {
+  return {
+    loadCount: 5,
+    cacheHitCount: 0,
+    sharedTaskReuseCount: 0,
+    completedLoadCount: 5,
+    failedLoadCount: 0,
+    activeLoadCount: 0,
+    maxConcurrentLoadCount: 3,
+    requestedByteCount: 1_000,
+    totalLoadMilliseconds: 200,
+    maxLoadMilliseconds: 70,
+    batchLoadCount: 2,
+    totalBatchLoadMilliseconds: 100,
+    maxBatchLoadMilliseconds: 50,
+    lastBatchRequestedPageCount: 3,
+    maxBatchRequestedPageCount: 3,
+    ...overrides,
   };
 }
 

@@ -382,6 +382,13 @@ describe("CopcSource point sample cache", () => {
     expect(
       () =>
         new CopcSource("https://example.com/sample.copc.laz", {
+          maxConcurrentHierarchyPageLoads: 0,
+        }),
+    ).toThrow("maxConcurrentHierarchyPageLoads must be a positive integer.");
+
+    expect(
+      () =>
+        new CopcSource("https://example.com/sample.copc.laz", {
           maxConcurrentPointSampleWorkerRequests: 0,
         }),
     ).toThrow(
@@ -1839,6 +1846,855 @@ describe("CopcSource point sample cache", () => {
         "0-0-0-0",
         "1-0-0-0",
       ]);
+      expect(source.getHierarchyPageLoadStats()).toEqual(
+        expect.objectContaining({
+          loadCount: 2,
+          cacheHitCount: 1,
+          sharedTaskReuseCount: 0,
+          completedLoadCount: 2,
+          activeLoadCount: 0,
+        }),
+      );
+    } finally {
+      pageSpy.mockRestore();
+    }
+  });
+
+  it("caps default parallel hierarchy page batches and records raw page load stats", async () => {
+    const source = new CopcSource("https://example.com/sample.copc.laz");
+    const childPages = new Map<number, Deferred<Hierarchy.Subtree>>();
+    const activeChildPageOffsets: number[] = [];
+    const mutableSource = source as unknown as {
+      copcPromise: Promise<CopcData>;
+    };
+
+    mutableSource.copcPromise = Promise.resolve({
+      info: {
+        cube: [0, 0, 0, 8, 8, 8],
+        rootHierarchyPage: { pageOffset: 10, pageLength: 20 },
+      },
+    } as CopcData);
+    const pageSpy = vi
+      .spyOn(Copc, "loadHierarchyPage")
+      .mockImplementation(async (_getter, page) => {
+        if (page.pageOffset === 10) {
+          return {
+            nodes: {
+              "0-0-0-0": createNode(100),
+            },
+            pages: {
+              "1-0-0-0": { pageOffset: 30, pageLength: 40 },
+              "1-1-0-0": { pageOffset: 90, pageLength: 10 },
+              "1-0-1-0": { pageOffset: 110, pageLength: 11 },
+              "1-1-1-0": { pageOffset: 130, pageLength: 13 },
+              "1-0-0-1": { pageOffset: 150, pageLength: 15 },
+            },
+          };
+        }
+
+        const deferred = createDeferred<Hierarchy.Subtree>();
+
+        childPages.set(page.pageOffset, deferred);
+        activeChildPageOffsets.push(page.pageOffset);
+        return deferred.promise;
+      });
+
+    try {
+      const resultPromise = source.loadHierarchyPages([
+        "1-0-0-0",
+        "1-1-0-0",
+        "1-0-1-0",
+        "1-1-1-0",
+        "1-0-0-1",
+      ]);
+
+      await waitForValue(() => activeChildPageOffsets.length, 2);
+
+      expect(source.getHierarchyPageLoadStats()).toEqual(
+        expect.objectContaining({
+          loadCount: 3,
+          activeLoadCount: 2,
+          maxConcurrentLoadCount: 2,
+          requestedByteCount: 70,
+          batchLoadCount: 1,
+          lastBatchRequestedPageCount: 5,
+          maxBatchRequestedPageCount: 5,
+        }),
+      );
+
+      childPages.get(30)?.resolve({
+        nodes: {
+          "1-0-0-0": createNode(50),
+        },
+        pages: {},
+      });
+      await waitForValue(() => activeChildPageOffsets.length, 3);
+      childPages.get(90)?.resolve({
+        nodes: {
+          "1-1-0-0": createNode(90),
+        },
+        pages: {},
+      });
+      await waitForValue(() => activeChildPageOffsets.length, 4);
+      childPages.get(110)?.resolve({
+        nodes: {
+          "1-0-1-0": createNode(110),
+        },
+        pages: {},
+      });
+      await waitForValue(() => activeChildPageOffsets.length, 5);
+
+      for (const [pageOffset, deferred] of childPages) {
+        if (pageOffset === 30 || pageOffset === 90 || pageOffset === 110) {
+          continue;
+        }
+
+        deferred.resolve({
+          nodes: {
+            [pageOffsetToNodeKey(pageOffset)]: createNode(pageOffset),
+          },
+          pages: {},
+        });
+      }
+
+      const result = await resultPromise;
+
+      expect(result.loadedPageKeys).toEqual([
+        "1-0-0-0",
+        "1-1-0-0",
+        "1-0-1-0",
+        "1-1-1-0",
+        "1-0-0-1",
+      ]);
+      expect(source.getHierarchyPageLoadStats()).toEqual(
+        expect.objectContaining({
+          loadCount: 6,
+          cacheHitCount: 0,
+          sharedTaskReuseCount: 0,
+          completedLoadCount: 6,
+          failedLoadCount: 0,
+          activeLoadCount: 0,
+          maxConcurrentLoadCount: 2,
+          requestedByteCount: 109,
+          batchLoadCount: 1,
+          lastBatchRequestedPageCount: 5,
+          maxBatchRequestedPageCount: 5,
+        }),
+      );
+      expect(
+        source.getHierarchyPageLoadStats().totalLoadMilliseconds,
+      ).toBeGreaterThanOrEqual(
+        source.getHierarchyPageLoadStats().maxLoadMilliseconds,
+      );
+      expect(
+        source.getHierarchyPageLoadStats().totalBatchLoadMilliseconds,
+      ).toBeGreaterThanOrEqual(
+        source.getHierarchyPageLoadStats().maxBatchLoadMilliseconds,
+      );
+    } finally {
+      pageSpy.mockRestore();
+    }
+  });
+
+  it("preserves input-order loaded hierarchy page keys despite out-of-order parallel completion", async () => {
+    const source = new CopcSource("https://example.com/sample.copc.laz", {
+      maxConcurrentHierarchyPageLoads: 2,
+    });
+    const childPages = new Map<number, Deferred<Hierarchy.Subtree>>();
+    const mutableSource = source as unknown as {
+      copcPromise: Promise<CopcData>;
+    };
+
+    mutableSource.copcPromise = Promise.resolve({
+      info: {
+        cube: [0, 0, 0, 8, 8, 8],
+        rootHierarchyPage: { pageOffset: 10, pageLength: 20 },
+      },
+    } as CopcData);
+    const pageSpy = vi
+      .spyOn(Copc, "loadHierarchyPage")
+      .mockImplementation(async (_getter, page) => {
+        if (page.pageOffset === 10) {
+          return {
+            nodes: {
+              "0-0-0-0": createNode(100),
+            },
+            pages: {
+              "1-0-0-0": { pageOffset: 30, pageLength: 40 },
+              "1-1-0-0": { pageOffset: 90, pageLength: 10 },
+            },
+          };
+        }
+
+        const deferred = createDeferred<Hierarchy.Subtree>();
+
+        childPages.set(page.pageOffset, deferred);
+        return deferred.promise;
+      });
+
+    try {
+      const resultPromise = source.loadHierarchyPages([
+        "1-1-0-0",
+        "1-0-0-0",
+        "1-1-0-0",
+        "0-0-0-0",
+      ]);
+
+      await waitForValue(() => childPages.size, 2);
+      childPages.get(30)?.resolve({
+        nodes: {
+          "1-0-0-0": createNode(50),
+        },
+        pages: {},
+      });
+      childPages.get(90)?.resolve({
+        nodes: {
+          "1-1-0-0": createNode(40),
+        },
+        pages: {},
+      });
+
+      const result = await resultPromise;
+
+      expect(result.loadedPageKeys).toEqual(["1-1-0-0", "1-0-0-0"]);
+      expect(result.hierarchy.nodes.map(({ key }) => key)).toEqual([
+        "0-0-0-0",
+        "1-0-0-0",
+        "1-1-0-0",
+      ]);
+      expect(pageSpy).toHaveBeenCalledTimes(3);
+      expect(source.getHierarchyPageLoadStats()).toEqual(
+        expect.objectContaining({
+          loadCount: 3,
+          completedLoadCount: 3,
+          maxConcurrentLoadCount: 2,
+          requestedByteCount: 70,
+          batchLoadCount: 1,
+          lastBatchRequestedPageCount: 2,
+        }),
+      );
+    } finally {
+      pageSpy.mockRestore();
+    }
+  });
+
+  it("loads later requested child pages after an earlier requested parent reveals them", async () => {
+    const source = new CopcSource("https://example.com/sample.copc.laz", {
+      maxConcurrentHierarchyPageLoads: 2,
+    });
+    const mutableSource = source as unknown as {
+      copcPromise: Promise<CopcData>;
+    };
+    const loadedOffsets: number[] = [];
+
+    mutableSource.copcPromise = Promise.resolve({
+      info: {
+        cube: [0, 0, 0, 8, 8, 8],
+        rootHierarchyPage: { pageOffset: 10, pageLength: 20 },
+      },
+    } as CopcData);
+    const pageSpy = vi
+      .spyOn(Copc, "loadHierarchyPage")
+      .mockImplementation(async (_getter, page) => {
+        loadedOffsets.push(page.pageOffset);
+
+        if (page.pageOffset === 10) {
+          return {
+            nodes: {
+              "0-0-0-0": createNode(100),
+            },
+            pages: {
+              "1-0-0-0": { pageOffset: 30, pageLength: 40 },
+              "1-1-0-0": { pageOffset: 90, pageLength: 10 },
+            },
+          };
+        }
+
+        if (page.pageOffset === 30) {
+          return {
+            nodes: {
+              "1-0-0-0": createNode(50),
+            },
+            pages: {
+              "2-0-0-0": { pageOffset: 70, pageLength: 80 },
+            },
+          };
+        }
+
+        if (page.pageOffset === 90) {
+          return {
+            nodes: {
+              "1-1-0-0": createNode(40),
+            },
+            pages: {},
+          };
+        }
+
+        return {
+          nodes: {
+            "2-0-0-0": createNode(25),
+          },
+          pages: {},
+        };
+      });
+
+    try {
+      const result = await source.loadHierarchyPages([
+        "1-0-0-0",
+        "2-0-0-0",
+        "1-1-0-0",
+      ]);
+
+      expect(result.loadedPageKeys).toEqual([
+        "1-0-0-0",
+        "2-0-0-0",
+        "1-1-0-0",
+      ]);
+      expect(result.hierarchy.nodes.map(({ key }) => key)).toEqual([
+        "0-0-0-0",
+        "1-0-0-0",
+        "1-1-0-0",
+        "2-0-0-0",
+      ]);
+      expect(loadedOffsets).toEqual([10, 30, 70, 90]);
+      expect(source.getHierarchyPageLoadStats()).toEqual(
+        expect.objectContaining({
+          batchLoadCount: 2,
+          lastBatchRequestedPageCount: 2,
+          maxBatchRequestedPageCount: 2,
+        }),
+      );
+    } finally {
+      pageSpy.mockRestore();
+    }
+  });
+
+  it("throws for an unavailable requested hierarchy page only after earlier valid pages load", async () => {
+    const source = new CopcSource("https://example.com/sample.copc.laz");
+    const mutableSource = source as unknown as {
+      copcPromise: Promise<CopcData>;
+    };
+    const loadedOffsets: number[] = [];
+
+    mutableSource.copcPromise = Promise.resolve({
+      info: {
+        cube: [0, 0, 0, 8, 8, 8],
+        rootHierarchyPage: { pageOffset: 10, pageLength: 20 },
+      },
+    } as CopcData);
+    const pageSpy = vi
+      .spyOn(Copc, "loadHierarchyPage")
+      .mockImplementation(async (_getter, page) => {
+        loadedOffsets.push(page.pageOffset);
+
+        if (page.pageOffset === 10) {
+          return {
+            nodes: {
+              "0-0-0-0": createNode(100),
+            },
+            pages: {
+              "1-0-0-0": { pageOffset: 30, pageLength: 40 },
+            },
+          };
+        }
+
+        return {
+          nodes: {
+            "1-0-0-0": createNode(50),
+          },
+          pages: {},
+        };
+      });
+
+    try {
+      await expect(
+        source.loadHierarchyPages(["1-0-0-0", "2-0-0-0"]),
+      ).rejects.toThrow("COPC hierarchy page was not found: 2-0-0-0");
+
+      expect(loadedOffsets).toEqual([10, 30]);
+      await expect(source.loadHierarchySummary()).resolves.toMatchObject({
+        nodes: expect.arrayContaining([
+          expect.objectContaining({ key: "1-0-0-0" }),
+        ]),
+      });
+    } finally {
+      pageSpy.mockRestore();
+    }
+  });
+
+  it("normalizes reverse-completed hierarchy batch eviction to serial input-order LRU", async () => {
+    const source = new CopcSource("https://example.com/sample.copc.laz", {
+      maxCachedHierarchyPages: 2,
+      maxConcurrentHierarchyPageLoads: 2,
+    });
+    const firstPage = createDeferred<Hierarchy.Subtree>();
+    const secondPage = createDeferred<Hierarchy.Subtree>();
+    const mutableSource = source as unknown as {
+      copcPromise: Promise<CopcData>;
+    };
+
+    mutableSource.copcPromise = Promise.resolve({
+      info: {
+        cube: [0, 0, 0, 8, 8, 8],
+        rootHierarchyPage: { pageOffset: 10, pageLength: 20 },
+      },
+    } as CopcData);
+    const pageSpy = vi
+      .spyOn(Copc, "loadHierarchyPage")
+      .mockImplementation(async (_getter, page) => {
+        if (page.pageOffset === 10) {
+          return {
+            nodes: {
+              "0-0-0-0": createNode(100),
+            },
+            pages: {
+              "1-0-0-0": { pageOffset: 30, pageLength: 40 },
+              "1-1-0-0": { pageOffset: 90, pageLength: 10 },
+            },
+          };
+        }
+
+        if (page.pageOffset === 30) {
+          return firstPage.promise;
+        }
+
+        return secondPage.promise;
+      });
+
+    try {
+      const resultPromise = source.loadHierarchyPages([
+        "1-0-0-0",
+        "1-1-0-0",
+      ]);
+
+      await waitForValue(
+        () => source.getHierarchyPageLoadStats().activeLoadCount,
+        2,
+      );
+      secondPage.resolve({
+        nodes: {
+          "1-1-0-0": createNode(40),
+        },
+        pages: {},
+      });
+      firstPage.resolve({
+        nodes: {
+          "1-0-0-0": createNode(50),
+        },
+        pages: {},
+      });
+
+      const result = await resultPromise;
+
+      expect(result.hierarchy.nodes.map(({ key }) => key)).toEqual([
+        "0-0-0-0",
+        "1-1-0-0",
+      ]);
+      expect(result.hierarchy.pendingPages).toEqual([
+        expect.objectContaining({
+          key: "1-0-0-0",
+          sourceHierarchyPageId: "10:20",
+        }),
+      ]);
+      expect(source.getHierarchyCacheStats()).toEqual(
+        expect.objectContaining({
+          loadedPageCount: 2,
+          cacheEvictionCount: 1,
+          isOverLimit: false,
+        }),
+      );
+    } finally {
+      pageSpy.mockRestore();
+    }
+  });
+
+  it("normalizes overlapping hierarchy batches by batch start order before eviction", async () => {
+    const source = new CopcSource("https://example.com/sample.copc.laz", {
+      maxCachedHierarchyPages: 3,
+      maxConcurrentHierarchyPageLoads: 2,
+    });
+    const childPages = new Map<number, Deferred<Hierarchy.Subtree>>();
+    const mutableSource = source as unknown as {
+      copcPromise: Promise<CopcData>;
+    };
+
+    mutableSource.copcPromise = Promise.resolve({
+      info: {
+        cube: [0, 0, 0, 8, 8, 8],
+        rootHierarchyPage: { pageOffset: 10, pageLength: 20 },
+      },
+    } as CopcData);
+    const pageSpy = vi
+      .spyOn(Copc, "loadHierarchyPage")
+      .mockImplementation(async (_getter, page) => {
+        if (page.pageOffset === 10) {
+          return {
+            nodes: {
+              "0-0-0-0": createNode(100),
+            },
+            pages: {
+              "1-0-0-0": { pageOffset: 30, pageLength: 40 },
+              "1-1-0-0": { pageOffset: 90, pageLength: 10 },
+              "1-0-1-0": { pageOffset: 110, pageLength: 11 },
+              "1-1-1-0": { pageOffset: 130, pageLength: 13 },
+            },
+          };
+        }
+
+        const deferred = createDeferred<Hierarchy.Subtree>();
+
+        childPages.set(page.pageOffset, deferred);
+        return deferred.promise;
+      });
+
+    try {
+      await source.loadHierarchySummary();
+      const firstBatch = source.loadHierarchyPages([
+        "1-0-0-0",
+        "1-1-0-0",
+      ]);
+      const secondBatch = source.loadHierarchyPages([
+        "1-0-1-0",
+        "1-1-1-0",
+      ]);
+
+      await waitForValue(() => childPages.size, 4);
+
+      for (const pageOffset of [110, 130, 90, 30]) {
+        childPages.get(pageOffset)?.resolve({
+          nodes: {
+            [pageOffsetToNodeKey(pageOffset)]: createNode(pageOffset),
+          },
+          pages: {},
+        });
+      }
+
+      await Promise.all([firstBatch, secondBatch]);
+      const finalHierarchy = await source.loadHierarchySummary();
+
+      expect(finalHierarchy.nodes.map(({ key }) => key)).toEqual([
+        "0-0-0-0",
+        "1-0-1-0",
+        "1-1-1-0",
+      ]);
+      expect(finalHierarchy.pendingPages.map(({ key }) => key)).toEqual([
+        "1-0-0-0",
+        "1-1-0-0",
+      ]);
+      expect(source.getHierarchyCacheStats()).toEqual(
+        expect.objectContaining({
+          loadedPageCount: 3,
+          cacheEvictionCount: 2,
+          isOverLimit: false,
+        }),
+      );
+    } finally {
+      pageSpy.mockRestore();
+    }
+  });
+
+  it("keeps successful parallel hierarchy pages and retries failed pages without launching later work", async () => {
+    const source = new CopcSource("https://example.com/sample.copc.laz", {
+      maxConcurrentHierarchyPageLoads: 2,
+    });
+    const firstPage = createDeferred<Hierarchy.Subtree>();
+    const mutableSource = source as unknown as {
+      copcPromise: Promise<CopcData>;
+    };
+    const pageAttempts = new Map<number, number>();
+
+    mutableSource.copcPromise = Promise.resolve({
+      info: {
+        cube: [0, 0, 0, 8, 8, 8],
+        rootHierarchyPage: { pageOffset: 10, pageLength: 20 },
+      },
+    } as CopcData);
+    const pageSpy = vi
+      .spyOn(Copc, "loadHierarchyPage")
+      .mockImplementation(async (_getter, page) => {
+        pageAttempts.set(
+          page.pageOffset,
+          (pageAttempts.get(page.pageOffset) ?? 0) + 1,
+        );
+
+        if (page.pageOffset === 10) {
+          return {
+            nodes: {
+              "0-0-0-0": createNode(100),
+            },
+            pages: {
+              "1-0-0-0": { pageOffset: 30, pageLength: 40 },
+              "1-1-0-0": { pageOffset: 90, pageLength: 10 },
+              "1-0-1-0": { pageOffset: 110, pageLength: 11 },
+            },
+          };
+        }
+
+        if (page.pageOffset === 30) {
+          return firstPage.promise;
+        }
+
+        if (
+          page.pageOffset === 90 &&
+          (pageAttempts.get(page.pageOffset) ?? 0) === 1
+        ) {
+          throw new Error("child page failed");
+        }
+
+        return {
+          nodes: {
+            [pageOffsetToNodeKey(page.pageOffset)]: createNode(page.pageOffset),
+          },
+          pages: {},
+        };
+      });
+
+    try {
+      const rejectedBatch = expect(
+        source.loadHierarchyPages([
+          "1-0-0-0",
+          "1-1-0-0",
+          "1-0-1-0",
+        ]),
+      ).rejects.toThrow("child page failed");
+
+      await waitForValue(() => pageAttempts.get(90) ?? 0, 1);
+      firstPage.resolve({
+        nodes: {
+          "1-0-0-0": createNode(50),
+        },
+        pages: {},
+      });
+      await rejectedBatch;
+
+      const afterFailure = await source.loadHierarchySummary();
+
+      expect(afterFailure.nodes.map(({ key }) => key)).toEqual([
+        "0-0-0-0",
+        "1-0-0-0",
+      ]);
+      expect(afterFailure.pendingPages.map(({ key }) => key)).toEqual([
+        "1-1-0-0",
+        "1-0-1-0",
+      ]);
+      expect(pageAttempts.get(110)).toBeUndefined();
+      expect(source.getHierarchyPageLoadStats()).toEqual(
+        expect.objectContaining({
+          loadCount: 3,
+          completedLoadCount: 2,
+          failedLoadCount: 1,
+          activeLoadCount: 0,
+          batchLoadCount: 1,
+          lastBatchRequestedPageCount: 3,
+          maxBatchRequestedPageCount: 3,
+        }),
+      );
+
+      await expect(
+        source.loadHierarchyPages(["1-1-0-0", "1-0-1-0"]),
+      ).resolves.toMatchObject({
+        loadedPageKeys: ["1-1-0-0", "1-0-1-0"],
+      });
+      expect(pageAttempts.get(90)).toBe(2);
+      expect(pageAttempts.get(110)).toBe(1);
+      expect(source.getHierarchyPageLoadStats()).toEqual(
+        expect.objectContaining({
+          loadCount: 5,
+          completedLoadCount: 4,
+          failedLoadCount: 1,
+          activeLoadCount: 0,
+          batchLoadCount: 2,
+          lastBatchRequestedPageCount: 2,
+          maxBatchRequestedPageCount: 3,
+        }),
+      );
+    } finally {
+      pageSpy.mockRestore();
+    }
+  });
+
+  it("preserves a hierarchy batch load error when final cleanup also fails", async () => {
+    const source = new CopcSource("https://example.com/sample.copc.laz", {
+      maxConcurrentHierarchyPageLoads: 1,
+    });
+    const mutableSource = source as unknown as {
+      copcPromise: Promise<CopcData>;
+      loadHierarchy: () => Promise<Hierarchy.Subtree>;
+    };
+
+    mutableSource.copcPromise = Promise.resolve({
+      info: {
+        cube: [0, 0, 0, 8, 8, 8],
+        rootHierarchyPage: { pageOffset: 10, pageLength: 20 },
+      },
+    } as CopcData);
+    const pageSpy = vi
+      .spyOn(Copc, "loadHierarchyPage")
+      .mockImplementation(async (_getter, page) => {
+        if (page.pageOffset === 10) {
+          return {
+            nodes: {
+              "0-0-0-0": createNode(100),
+            },
+            pages: {
+              "1-0-0-0": { pageOffset: 30, pageLength: 40 },
+            },
+          };
+        }
+
+        mutableSource.loadHierarchy = async () => {
+          throw new Error("cleanup failed");
+        };
+        throw new Error("child page failed");
+      });
+
+    try {
+      await expect(source.loadHierarchyPages(["1-0-0-0"])).rejects.toThrow(
+        "child page failed",
+      );
+      expect(source.getHierarchyPageLoadStats()).toEqual(
+        expect.objectContaining({
+          failedLoadCount: 1,
+          activeLoadCount: 0,
+        }),
+      );
+    } finally {
+      pageSpy.mockRestore();
+    }
+  });
+
+  it("releases batch eviction hold and restores hierarchy cache limits after failure", async () => {
+    const source = new CopcSource("https://example.com/sample.copc.laz", {
+      maxCachedHierarchyPages: 1,
+      maxConcurrentHierarchyPageLoads: 2,
+    });
+    const firstPage = createDeferred<Hierarchy.Subtree>();
+    const mutableSource = source as unknown as {
+      copcPromise: Promise<CopcData>;
+    };
+
+    mutableSource.copcPromise = Promise.resolve({
+      info: {
+        cube: [0, 0, 0, 8, 8, 8],
+        rootHierarchyPage: { pageOffset: 10, pageLength: 20 },
+      },
+    } as CopcData);
+    const pageSpy = vi
+      .spyOn(Copc, "loadHierarchyPage")
+      .mockImplementation(async (_getter, page) => {
+        if (page.pageOffset === 10) {
+          return {
+            nodes: {
+              "0-0-0-0": createNode(100),
+            },
+            pages: {
+              "1-0-0-0": { pageOffset: 30, pageLength: 40 },
+              "1-1-0-0": { pageOffset: 90, pageLength: 10 },
+            },
+          };
+        }
+
+        if (page.pageOffset === 30) {
+          return firstPage.promise;
+        }
+
+        throw new Error("child page failed");
+      });
+
+    try {
+      const rejectedBatch = expect(
+        source.loadHierarchyPages(["1-0-0-0", "1-1-0-0"]),
+      ).rejects.toThrow("child page failed");
+
+      await waitForValue(
+        () => source.getHierarchyPageLoadStats().activeLoadCount,
+        1,
+      );
+      firstPage.resolve({
+        nodes: {
+          "1-0-0-0": createNode(50),
+        },
+        pages: {},
+      });
+      await rejectedBatch;
+
+      expect(source.getHierarchyCacheStats()).toEqual(
+        expect.objectContaining({
+          loadedPageCount: 1,
+          cacheEvictionCount: 1,
+          isOverLimit: false,
+        }),
+      );
+      await expect(source.loadHierarchySummary()).resolves.toMatchObject({
+        pendingPages: expect.arrayContaining([
+          expect.objectContaining({ key: "1-0-0-0" }),
+          expect.objectContaining({ key: "1-1-0-0" }),
+        ]),
+      });
+    } finally {
+      pageSpy.mockRestore();
+    }
+  });
+
+  it("counts shared hierarchy task reuse separately from raw page promise reuse", async () => {
+    const source = new CopcSource("https://example.com/sample.copc.laz");
+    const childPage = createDeferred<Hierarchy.Subtree>();
+    const mutableSource = source as unknown as {
+      copcPromise: Promise<CopcData>;
+    };
+    let childPageLoadCount = 0;
+
+    mutableSource.copcPromise = Promise.resolve({
+      info: {
+        cube: [0, 0, 0, 8, 8, 8],
+        rootHierarchyPage: { pageOffset: 10, pageLength: 20 },
+      },
+    } as CopcData);
+    const pageSpy = vi
+      .spyOn(Copc, "loadHierarchyPage")
+      .mockImplementation(async (_getter, page) => {
+        if (page.pageOffset === 10) {
+          return {
+            nodes: {
+              "0-0-0-0": createNode(100),
+            },
+            pages: {
+              "1-0-0-0": { pageOffset: 30, pageLength: 40 },
+            },
+          };
+        }
+
+        childPageLoadCount += 1;
+        return childPage.promise;
+      });
+
+    try {
+      await source.loadHierarchySummary();
+      const firstLoad = source.loadHierarchyPages(["1-0-0-0"]);
+      const secondLoad = source.loadHierarchyPages(["1-0-0-0"]);
+      await waitForValue(() => childPageLoadCount, 1);
+
+      childPage.resolve({
+        nodes: {
+          "1-0-0-0": createNode(50),
+        },
+        pages: {},
+      });
+      await Promise.all([firstLoad, secondLoad]);
+
+      expect(childPageLoadCount).toBe(1);
+      expect(source.getHierarchyPageLoadStats()).toEqual(
+        expect.objectContaining({
+          loadCount: 2,
+          cacheHitCount: 0,
+          sharedTaskReuseCount: 1,
+          completedLoadCount: 2,
+          activeLoadCount: 0,
+          batchLoadCount: 2,
+          lastBatchRequestedPageCount: 1,
+          maxBatchRequestedPageCount: 1,
+        }),
+      );
     } finally {
       pageSpy.mockRestore();
     }
@@ -2473,6 +3329,23 @@ function createSamplePoints(
   }));
 }
 
+function pageOffsetToNodeKey(pageOffset: number): string {
+  switch (pageOffset) {
+    case 30:
+      return "1-0-0-0";
+    case 90:
+      return "1-1-0-0";
+    case 110:
+      return "1-0-1-0";
+    case 130:
+      return "1-1-1-0";
+    case 150:
+      return "1-0-0-1";
+    default:
+      throw new Error(`Unexpected test page offset: ${pageOffset}`);
+  }
+}
+
 function isLoadRequest(
   request: CopcPointSampleWorkerRequest,
 ): request is CopcPointSampleWorkerLoadRequest {
@@ -2583,6 +3456,11 @@ class FakePointSampleWorker {
   }
 }
 
+interface Deferred<T> {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T | PromiseLike<T>) => void;
+}
+
 async function waitForWorkerRequestCount(
   worker: FakePointSampleWorker,
   requestCount: number,
@@ -2641,10 +3519,7 @@ async function waitForWorkerPoolLoadRequestCount(
   );
 }
 
-function createDeferred<T>(): {
-  readonly promise: Promise<T>;
-  readonly resolve: (value: T | PromiseLike<T>) => void;
-} {
+function createDeferred<T>(): Deferred<T> {
   let resolve: (value: T | PromiseLike<T>) => void = () => undefined;
   const promise = new Promise<T>((innerResolve) => {
     resolve = innerResolve;

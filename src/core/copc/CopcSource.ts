@@ -74,10 +74,31 @@ export interface LoadHierarchyOptions {
   readonly signal?: AbortSignal;
 }
 
+export interface CopcHierarchyPageLoadStats {
+  readonly loadCount: number;
+  /** Raw hierarchy page promise reuse inside this source, not HTTP/network cache hits. */
+  readonly cacheHitCount: number;
+  /** Shared hierarchy merge task reuse by another caller, distinct from raw page promise reuse. */
+  readonly sharedTaskReuseCount: number;
+  readonly completedLoadCount: number;
+  readonly failedLoadCount: number;
+  readonly activeLoadCount: number;
+  readonly maxConcurrentLoadCount: number;
+  readonly requestedByteCount: number;
+  readonly totalLoadMilliseconds: number;
+  readonly maxLoadMilliseconds: number;
+  readonly batchLoadCount: number;
+  readonly totalBatchLoadMilliseconds: number;
+  readonly maxBatchLoadMilliseconds: number;
+  readonly lastBatchRequestedPageCount: number;
+  readonly maxBatchRequestedPageCount: number;
+}
+
 export interface CopcSourceOptions {
   readonly rangeGetterOptions?: CopcRangeGetterOptions;
   readonly maxCachedHierarchyPages?: number;
   readonly maxCachedHierarchyPageBytes?: number;
+  readonly maxConcurrentHierarchyPageLoads?: number;
   readonly maxCachedSampleSets?: number;
   readonly maxCachedPointSampleBytes?: number;
   readonly maxDecodedPointDataViewsPerWorker?: number;
@@ -98,6 +119,7 @@ const DEFAULT_MAX_POINT_COUNT = 5_000;
 const DEFAULT_NODE_KEY = "0-0-0-0";
 const DEFAULT_MAX_CACHED_HIERARCHY_PAGES = 64;
 const DEFAULT_MAX_CACHED_HIERARCHY_PAGE_BYTES = 16 * 1024 * 1024;
+const DEFAULT_MAX_CONCURRENT_HIERARCHY_PAGE_LOADS = 2;
 const DEFAULT_MAX_CACHED_SAMPLE_SETS = 32;
 const DEFAULT_MAX_CACHED_POINT_SAMPLE_BYTES = 32 * 1024 * 1024;
 const POINT_SAMPLE_COORDINATE_BYTES = 3 * 8;
@@ -123,6 +145,11 @@ interface HierarchyPageCacheEntry {
   readonly pageKey?: string;
   readonly parentPageId?: string;
   readonly isRoot: boolean;
+}
+
+interface HeldHierarchyPageBatch {
+  readonly sequence: number;
+  readonly pageKeys: readonly string[];
 }
 
 interface PointSampleWorkerRequestEntry {
@@ -151,6 +178,7 @@ export class CopcSource {
   private readonly maxCachedPointSampleBytes: number;
   private readonly maxCachedHierarchyPages: number;
   private readonly maxCachedHierarchyPageBytes: number;
+  private readonly maxConcurrentHierarchyPageLoads: number;
   private readonly maxDecodedPointDataViewsPerWorker: number | undefined;
   private readonly maxDecodedPointDataViewBytesPerWorker: number | undefined;
   private readonly maxDecodedPointDataViewBytesAcrossWorkers: number | undefined;
@@ -194,6 +222,24 @@ export class CopcSource {
   private cachedPointSampleBytes = 0;
   private cachedHierarchyPageBytes = 0;
   private hierarchyPageCacheEvictionCount = 0;
+  private hierarchyPageRawLoadCount = 0;
+  private hierarchyPageRawLoadCacheHitCount = 0;
+  private hierarchyPageSharedTaskReuseCount = 0;
+  private hierarchyPageRawLoadCompletedCount = 0;
+  private hierarchyPageRawLoadFailedCount = 0;
+  private hierarchyPageRawActiveLoadCount = 0;
+  private hierarchyPageRawMaxConcurrentLoadCount = 0;
+  private hierarchyPageRawRequestedByteCount = 0;
+  private hierarchyPageRawTotalLoadMilliseconds = 0;
+  private hierarchyPageRawMaxLoadMilliseconds = 0;
+  private hierarchyPageBatchLoadCount = 0;
+  private hierarchyPageTotalBatchLoadMilliseconds = 0;
+  private hierarchyPageMaxBatchLoadMilliseconds = 0;
+  private hierarchyPageLastBatchRequestedPageCount = 0;
+  private hierarchyPageMaxBatchRequestedPageCount = 0;
+  private hierarchyPageBatchEvictionHoldDepth = 0;
+  private hierarchyPageBatchSequence = 0;
+  private readonly heldHierarchyPageBatches: HeldHierarchyPageBatch[] = [];
   private pointSampleCacheHitCount = 0;
   private pointSampleCacheMissCount = 0;
   private pointSampleCacheEvictionCount = 0;
@@ -215,6 +261,9 @@ export class CopcSource {
     const maxCachedHierarchyPageBytes =
       options.maxCachedHierarchyPageBytes ??
       DEFAULT_MAX_CACHED_HIERARCHY_PAGE_BYTES;
+    const maxConcurrentHierarchyPageLoads =
+      options.maxConcurrentHierarchyPageLoads ??
+      DEFAULT_MAX_CONCURRENT_HIERARCHY_PAGE_LOADS;
     const maxCachedSampleSets =
       options.maxCachedSampleSets ?? DEFAULT_MAX_CACHED_SAMPLE_SETS;
     const maxCachedPointSampleBytes =
@@ -237,6 +286,15 @@ export class CopcSource {
     ) {
       throw new Error(
         "maxCachedHierarchyPageBytes must be a positive integer.",
+      );
+    }
+
+    if (
+      !Number.isSafeInteger(maxConcurrentHierarchyPageLoads) ||
+      maxConcurrentHierarchyPageLoads <= 0
+    ) {
+      throw new Error(
+        "maxConcurrentHierarchyPageLoads must be a positive integer.",
       );
     }
 
@@ -298,6 +356,7 @@ export class CopcSource {
     this.url = createCopcSourceLabel(input);
     this.maxCachedHierarchyPages = maxCachedHierarchyPages;
     this.maxCachedHierarchyPageBytes = maxCachedHierarchyPageBytes;
+    this.maxConcurrentHierarchyPageLoads = maxConcurrentHierarchyPageLoads;
     this.maxCachedSampleSets = maxCachedSampleSets;
     this.maxCachedPointSampleBytes = maxCachedPointSampleBytes;
     this.maxConcurrentPointSampleWorkerRequests =
@@ -426,6 +485,8 @@ export class CopcSource {
           this.hierarchyPageLoadTasks.delete(pageId);
         }
       });
+    } else {
+      this.hierarchyPageSharedTaskReuseCount += 1;
     }
 
     await consumeSharedAbortableTask(loadTask, options.signal);
@@ -445,27 +506,50 @@ export class CopcSource {
     options: LoadHierarchyOptions = {},
   ): Promise<LoadHierarchyPagesResult> {
     throwIfAborted(options.signal);
+    const uniquePageKeys = [...new Set(pageKeys)];
     const loadedPageKeys: string[] = [];
-    let hierarchy: CopcHierarchySummary | undefined;
+    let nextIndex = 0;
 
-    for (const pageKey of [...new Set(pageKeys)]) {
+    while (nextIndex < uniquePageKeys.length) {
       const before = await this.loadHierarchySummary(options);
+      const pendingPageKeys = new Set(
+        before.pendingPages.map((page) => page.key),
+      );
+      const loadedNodeKeys = new Set(before.nodes.map((node) => node.key));
 
-      if (!before.pendingPages.some((page) => page.key === pageKey)) {
-        if (before.nodes.some((node) => node.key === pageKey)) {
-          hierarchy = before;
-          continue;
-        }
-
-        throw new Error(`COPC hierarchy page was not found: ${pageKey}`);
+      while (
+        nextIndex < uniquePageKeys.length &&
+        loadedNodeKeys.has(uniquePageKeys[nextIndex] as string)
+      ) {
+        nextIndex += 1;
       }
 
-      hierarchy = await this.loadHierarchyPage(pageKey, options);
-      loadedPageKeys.push(pageKey);
+      if (nextIndex >= uniquePageKeys.length) {
+        break;
+      }
+
+      const pageKeysToLoad: string[] = [];
+
+      while (
+        nextIndex < uniquePageKeys.length &&
+        pendingPageKeys.has(uniquePageKeys[nextIndex] as string)
+      ) {
+        pageKeysToLoad.push(uniquePageKeys[nextIndex] as string);
+        nextIndex += 1;
+      }
+
+      if (pageKeysToLoad.length === 0) {
+        throw new Error(
+          `COPC hierarchy page was not found: ${uniquePageKeys[nextIndex]}`,
+        );
+      }
+
+      await this.loadHierarchyPageBatch(pageKeysToLoad, options);
+      loadedPageKeys.push(...pageKeysToLoad);
     }
 
     return {
-      hierarchy: hierarchy ?? (await this.loadHierarchySummary(options)),
+      hierarchy: await this.loadHierarchySummary(options),
       loadedPageKeys,
     };
   }
@@ -488,6 +572,60 @@ export class CopcSource {
     return this.loadHierarchyPage(nextPageKey, options);
   }
 
+  private async loadHierarchyPageBatch(
+    pageKeys: readonly string[],
+    options: LoadHierarchyOptions,
+  ): Promise<void> {
+    const batchStartTime = performance.now();
+    const batchSequence = this.hierarchyPageBatchSequence;
+
+    this.hierarchyPageBatchSequence += 1;
+    this.hierarchyPageBatchLoadCount += 1;
+    this.hierarchyPageLastBatchRequestedPageCount = pageKeys.length;
+    this.hierarchyPageMaxBatchRequestedPageCount = Math.max(
+      this.hierarchyPageMaxBatchRequestedPageCount,
+      pageKeys.length,
+    );
+    this.hierarchyPageBatchEvictionHoldDepth += 1;
+    this.heldHierarchyPageBatches.push({
+      sequence: batchSequence,
+      pageKeys: [...pageKeys],
+    });
+
+    let hasPrimaryError = false;
+    let primaryError: unknown;
+
+    try {
+      await runLimited(
+        pageKeys,
+        this.maxConcurrentHierarchyPageLoads,
+        (pageKey) => this.loadHierarchyPage(pageKey, options),
+      );
+    } catch (error: unknown) {
+      hasPrimaryError = true;
+      primaryError = error;
+    }
+
+    try {
+      const batchLoadMilliseconds = performance.now() - batchStartTime;
+
+      this.hierarchyPageTotalBatchLoadMilliseconds += batchLoadMilliseconds;
+      this.hierarchyPageMaxBatchLoadMilliseconds = Math.max(
+        this.hierarchyPageMaxBatchLoadMilliseconds,
+        batchLoadMilliseconds,
+      );
+      await this.releaseHierarchyPageBatchEvictionHold();
+    } catch (cleanupError: unknown) {
+      if (!hasPrimaryError) {
+        throw cleanupError;
+      }
+    }
+
+    if (hasPrimaryError) {
+      throw primaryError;
+    }
+  }
+
   getHierarchyCacheStats(): CopcHierarchyCacheStats {
     return {
       loadedPageCount: this.loadedHierarchyPages.size,
@@ -501,6 +639,48 @@ export class CopcSource {
       isOverLimit:
         this.loadedHierarchyPages.size > this.maxCachedHierarchyPages ||
         this.cachedHierarchyPageBytes > this.maxCachedHierarchyPageBytes,
+    };
+  }
+
+  private async releaseHierarchyPageBatchEvictionHold(): Promise<void> {
+    this.hierarchyPageBatchEvictionHoldDepth -= 1;
+
+    if (this.hierarchyPageBatchEvictionHoldDepth > 0) {
+      return;
+    }
+
+    const normalizedPageKeys = dedupeLastInOrder(
+      this.heldHierarchyPageBatches
+        .sort((left, right) => left.sequence - right.sequence)
+        .flatMap((batch) => batch.pageKeys),
+    );
+
+    this.heldHierarchyPageBatches.length = 0;
+    const hierarchy = await this.loadHierarchy();
+
+    this.normalizeLoadedHierarchyPageOrder(normalizedPageKeys);
+    this.evictHierarchyPagesIfNeeded(hierarchy);
+  }
+
+  getHierarchyPageLoadStats(): CopcHierarchyPageLoadStats {
+    return {
+      loadCount: this.hierarchyPageRawLoadCount,
+      cacheHitCount: this.hierarchyPageRawLoadCacheHitCount,
+      sharedTaskReuseCount: this.hierarchyPageSharedTaskReuseCount,
+      completedLoadCount: this.hierarchyPageRawLoadCompletedCount,
+      failedLoadCount: this.hierarchyPageRawLoadFailedCount,
+      activeLoadCount: this.hierarchyPageRawActiveLoadCount,
+      maxConcurrentLoadCount: this.hierarchyPageRawMaxConcurrentLoadCount,
+      requestedByteCount: this.hierarchyPageRawRequestedByteCount,
+      totalLoadMilliseconds: this.hierarchyPageRawTotalLoadMilliseconds,
+      maxLoadMilliseconds: this.hierarchyPageRawMaxLoadMilliseconds,
+      batchLoadCount: this.hierarchyPageBatchLoadCount,
+      totalBatchLoadMilliseconds:
+        this.hierarchyPageTotalBatchLoadMilliseconds,
+      maxBatchLoadMilliseconds: this.hierarchyPageMaxBatchLoadMilliseconds,
+      lastBatchRequestedPageCount:
+        this.hierarchyPageLastBatchRequestedPageCount,
+      maxBatchRequestedPageCount: this.hierarchyPageMaxBatchRequestedPageCount,
     };
   }
 
@@ -884,13 +1064,39 @@ export class CopcSource {
     let promise = this.hierarchyPagePromises.get(pageId);
 
     if (!promise) {
-      promise = Copc.loadHierarchyPage(this.getter, page);
-      this.hierarchyPagePromises.set(pageId, promise);
-      void promise.catch(() => {
-        if (this.hierarchyPagePromises.get(pageId) === promise) {
-          this.hierarchyPagePromises.delete(pageId);
-        }
+      this.hierarchyPageRawLoadCount += 1;
+      this.hierarchyPageRawActiveLoadCount += 1;
+      this.hierarchyPageRawMaxConcurrentLoadCount = Math.max(
+        this.hierarchyPageRawMaxConcurrentLoadCount,
+        this.hierarchyPageRawActiveLoadCount,
+      );
+      this.hierarchyPageRawRequestedByteCount += page.pageLength;
+      const startTime = performance.now();
+
+      promise = Copc.loadHierarchyPage(this.getter, page).then(
+        (subtree) => {
+          this.hierarchyPageRawLoadCompletedCount += 1;
+          return subtree;
+        },
+        (error: unknown) => {
+          this.hierarchyPageRawLoadFailedCount += 1;
+          if (this.hierarchyPagePromises.get(pageId) === promise) {
+            this.hierarchyPagePromises.delete(pageId);
+          }
+          throw error;
+        },
+      ).finally(() => {
+        const loadMilliseconds = performance.now() - startTime;
+        this.hierarchyPageRawActiveLoadCount -= 1;
+        this.hierarchyPageRawTotalLoadMilliseconds += loadMilliseconds;
+        this.hierarchyPageRawMaxLoadMilliseconds = Math.max(
+          this.hierarchyPageRawMaxLoadMilliseconds,
+          loadMilliseconds,
+        );
       });
+      this.hierarchyPagePromises.set(pageId, promise);
+    } else {
+      this.hierarchyPageRawLoadCacheHitCount += 1;
     }
 
     return promise;
@@ -957,7 +1163,22 @@ export class CopcSource {
     this.loadedHierarchyPages.set(pageId, entry);
   }
 
+  private normalizeLoadedHierarchyPageOrder(pageKeys: readonly string[]): void {
+    for (const pageKey of pageKeys) {
+      for (const [pageId, entry] of this.loadedHierarchyPages) {
+        if (entry.pageKey === pageKey) {
+          this.touchLoadedHierarchyPage(pageId);
+          break;
+        }
+      }
+    }
+  }
+
   private evictHierarchyPagesIfNeeded(hierarchy: Hierarchy.Subtree): void {
+    if (this.hierarchyPageBatchEvictionHoldDepth > 0) {
+      return;
+    }
+
     while (
       this.loadedHierarchyPages.size > this.maxCachedHierarchyPages ||
       this.cachedHierarchyPageBytes > this.maxCachedHierarchyPageBytes
@@ -1892,6 +2113,68 @@ function withCallerAbortSignal<T>(
       },
     );
   });
+}
+
+async function runLimited<T>(
+  values: readonly T[],
+  limit: number,
+  run: (value: T) => Promise<unknown>,
+): Promise<void> {
+  let nextIndex = 0;
+  let hasError = false;
+  let firstError: unknown;
+
+  const workers = Array.from(
+    { length: Math.min(limit, values.length) },
+    async () => {
+      while (!hasError) {
+        const index = nextIndex;
+        nextIndex += 1;
+
+        if (index >= values.length) {
+          return;
+        }
+
+        try {
+          await run(values[index] as T);
+        } catch (error: unknown) {
+          if (!hasError) {
+            hasError = true;
+            firstError = error;
+          }
+        }
+      }
+    },
+  );
+
+  await Promise.all(workers);
+
+  if (hasError) {
+    throw firstError;
+  }
+}
+
+function dedupeLastInOrder<T>(values: readonly T[]): readonly T[] {
+  const deduped: T[] = [];
+  const indexes = new Map<T, number>();
+
+  for (const value of values) {
+    const existingIndex = indexes.get(value);
+
+    if (existingIndex !== undefined) {
+      deduped.splice(existingIndex, 1);
+      for (const [key, index] of indexes) {
+        if (index > existingIndex) {
+          indexes.set(key, index - 1);
+        }
+      }
+    }
+
+    indexes.set(value, deduped.length);
+    deduped.push(value);
+  }
+
+  return deduped;
 }
 
 function createAbortError(signal: AbortSignal | undefined): Error {

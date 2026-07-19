@@ -398,16 +398,16 @@ commit, clean/dirty state, and source fingerprint.
 `npm run benchmark:smoothness:cold-reset` clears the active layer caches before a Millsite movement run and measures the first interactive coverage render instead of waiting for every required node. The same camera request may continue refining asynchronously, so this catches cold first-display regressions without treating the captured preview as final.
 `npm run benchmark:smoothness:cold-detail` resets layer caches at 550 m above the transformed cloud bounds. Its measured request requires at least a complete depth-4 frontier, density, bounded point-data-view/queue timing, and a verified terminal additive composition. It then waits up to 30 seconds for post-prefetch refinement and requires a newer request with the same camera epoch and pose fingerprint, completed prefetch, selected depth 5 or deeper, at least 300,000 rendered points, `isTerminalReady: true`, and zero pending hierarchy pages for the view. Frame collection continues through that final stage: terminal-refinement p95/max use the active 67/150 ms gates, and cold detail permits at most one recorded frame above 100 ms while still rejecting any frame above 150 ms. Default, contest, and warm checks retain the zero-frame-above-100-ms contract. `npm run benchmark:smoothness:warm-zoom-detail` uses the same view without resetting caches, records one excluded warmup plus a completed prefetch settle, then holds that layer's hierarchy only for the two measured runs. Both repeats must report the same selected node keys, additive render signature, and hierarchy-cache snapshot; production camera streaming remains free to refine hierarchy normally. Zero worker timing is accepted only when every final node has a fresh retained camera-stream sample. Prepared-geometry cache deltas remain cache-hit evidence but never synthesize zero latency, and mixed runs retain their real worker timing.
 
-The latest passing 2026-07-17 RTX 3060 cold-detail snapshot rendered 360,000
-points from all 80 required additive nodes at selected depth 5, with a depth
-3-5 mixed frontier, 100% node and weighted coverage, zero pending current-view
-hierarchy pages, and terminal-ready composition. Camera movement recorded 59.2
-average FPS, 16.8 ms p95, 33.4 ms max, zero frames above 50 ms, and a 5.5 ms
-retained-frame first response. Frame collection continued through 19.948
-seconds of cold terminal refinement at 59.3 average FPS, 16.8 ms p95, and 83.4
-ms max. The matching warm-detail gate then repeated the exact 80-node frontier
-and additive signature twice at 360,000 points; both runs recorded 60.0 FPS,
-16.8 ms p95, 16.8 ms max, and zero frames above 50 ms.
+The latest passing local diagnostic is the 2026-07-19 RTX 3060 fused-geometry
+cold-detail snapshot. It rendered 360,000 points from all 80 required additive
+nodes at selected depth 5, with a depth 3-5 mixed frontier, 100% node and
+weighted coverage, zero pending current-view hierarchy pages, and
+terminal-ready composition. Camera movement recorded 59.2 average FPS, 16.8 ms
+p95, 33.4 ms max, zero frames above 50 ms, and a 6.4 ms retained-frame first
+response. Frame collection continued through 19.322 seconds of cold terminal
+refinement at 59.5 average FPS, 16.8 ms p95, 83.4 ms max, two frames above 50
+ms, and zero frames above 100 ms. This dirty-worktree diagnostic must be rerun
+from the final clean submission commit before it becomes contest evidence.
 
 The reference viewer keeps a revision-proven committed world-space point frame
 stable while the camera is moving, warms the newly selected detail without a
@@ -611,6 +611,7 @@ const layer = new CopcPointCloudLayer(viewer.scene, {
   url, // or source: fileOrBlob,
   maxCachedHierarchyPages: 64,
   maxCachedHierarchyPageBytes: 16 * 1024 * 1024,
+  maxConcurrentHierarchyPageLoads: 2,
   maxCachedSampleSets: 32,
   maxCachedPointSampleBytes: 32 * 1024 * 1024,
   maxConcurrentPointSampleWorkerRequests: 3,
