@@ -6,6 +6,13 @@ output/
 .codegraph/
 *.log
 
+# Local agent and submission working files
+/AGENTS.md
+/docs/DEMO_SCRIPT_KO.md
+/docs/SUBMISSION_CHECKLIST_KO.md
+/submission/
+/tmp/
+
 .env
 .env.*
 !.env.example

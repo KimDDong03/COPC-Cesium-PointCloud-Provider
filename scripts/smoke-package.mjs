@@ -794,10 +794,7 @@ for (const requiredPath of [
   "THIRD_PARTY_NOTICES.md",
   "docs/API.md",
   "docs/ARCHITECTURE.md",
-  "docs/COMPETITION.md",
   "docs/DATASETS.md",
-  "docs/PERFORMANCE.md",
-  "docs/RELEASE.md",
   "docs/sbom.spdx.json",
   "examples/minimal-layer.ts",
 ]) {
@@ -807,7 +804,11 @@ for (const requiredPath of [
 }
 
 for (const repositoryOnlyPath of [
+  "AGENTS.md",
+  "docs/COMPETITION.md",
   "docs/DEMO_SCRIPT_KO.md",
+  "docs/PERFORMANCE.md",
+  "docs/RELEASE.md",
   "docs/SUBMISSION_CHECKLIST_KO.md",
 ]) {
   if (packedPaths.has(repositoryOnlyPath)) {

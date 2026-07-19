@@ -45,7 +45,7 @@ describe("published package contract", () => {
     }
   });
 
-  test("packages consumer evidence without repository-only submission scripts", () => {
+  test("packages consumer documentation without repository-only operations", () => {
     const publishedDocs = packageJson.files.filter((entry) =>
       entry.startsWith("docs/"),
     );
@@ -53,17 +53,19 @@ describe("published package contract", () => {
     assert.deepEqual(publishedDocs, [
       "docs/API.md",
       "docs/ARCHITECTURE.md",
-      "docs/COMPETITION.md",
       "docs/DATASETS.md",
-      "docs/PERFORMANCE.md",
-      "docs/RELEASE.md",
       "docs/sbom.spdx.json",
     ]);
-    assert.equal(publishedDocs.includes("docs/DEMO_SCRIPT_KO.md"), false);
-    assert.equal(
-      publishedDocs.includes("docs/SUBMISSION_CHECKLIST_KO.md"),
-      false,
-    );
+
+    for (const repositoryOnlyPath of [
+      "docs/COMPETITION.md",
+      "docs/DEMO_SCRIPT_KO.md",
+      "docs/PERFORMANCE.md",
+      "docs/RELEASE.md",
+      "docs/SUBMISSION_CHECKLIST_KO.md",
+    ]) {
+      assert.equal(publishedDocs.includes(repositoryOnlyPath), false);
+    }
   });
 
   test("locks the browser QC CLI and runs only the local binary", () => {
